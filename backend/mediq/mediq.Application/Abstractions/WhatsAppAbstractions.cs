@@ -64,6 +64,66 @@ public sealed record OutboxMessage(
     IReadOnlyDictionary<string, object?>? Extra = null);
 
 /// <summary>
+/// Outbound transport to WhatsApp (the actual send). Implemented by the dev <c>StubWhatsAppSender</c>
+/// (logs + returns a synthetic <c>wamid.stub.&lt;guid&gt;</c>, never touches Meta) or the real
+/// <c>MetaWhatsAppSender</c> (HTTP POST to graph.facebook.com). Selection is by config: when
+/// <c>WhatsApp:AccessToken</c> + <c>WhatsApp:GraphBaseUrl</c> are set, the real sender is wired; else the stub.
+/// The drain worker calls this once per claimed outbox row and persists the outcome.
+/// </summary>
+public interface IWhatsAppSender
+{
+    /// <summary>Sends one message; returns the provider message id on success or a failure with a reason.</summary>
+    Task<WhatsAppSendResult> SendAsync(OutboundMessage message, CancellationToken ct);
+}
+
+/// <summary>A single message to deliver, projected from a <c>docslot.outbox_messages</c> row.</summary>
+public sealed record OutboundMessage(
+    Guid OutboxId,
+    Guid TenantId,
+    Guid? PatientId,
+    string MessageIntent,
+    string ToPhone,
+    string Text,
+    string? CorrelationId,
+    int AttemptCount,
+    int MaxAttempts);
+
+/// <summary>
+/// The outcome of a single send. <see cref="Success"/> ⇒ <see cref="ProviderMessageId"/> is the wamid to
+/// persist; otherwise <see cref="Error"/> explains the failure (stored in <c>last_error</c>, drives retry).
+/// </summary>
+public sealed record WhatsAppSendResult(bool Success, string? ProviderMessageId, string? Error)
+{
+    public static WhatsAppSendResult Sent(string providerMessageId) => new(true, providerMessageId, null);
+    public static WhatsAppSendResult Failed(string error) => new(false, null, error);
+}
+
+/// <summary>
+/// Drain-side store over <c>docslot.outbox_messages</c>: atomically claim a batch of due 'pending' rows
+/// (transition to 'processing' so no other worker/instance double-sends), then mark each terminal outcome
+/// ('sent') or schedule a retry / 'abandoned'. The claim uses <c>FOR UPDATE SKIP LOCKED</c> + a status
+/// transition so it is safe across scale-out.
+/// </summary>
+public interface IOutboxDrainStore
+{
+    /// <summary>
+    /// Claims up to <paramref name="batchSize"/> due messages (<c>status='pending' AND (next_retry_at IS NULL
+    /// OR next_retry_at &lt;= now())</c>), flipping them to 'processing' in the same statement, and returns them.
+    /// </summary>
+    Task<IReadOnlyList<OutboundMessage>> ClaimDueAsync(int batchSize, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>Marks a claimed message delivered: status='sent', sent_at=now, whatsapp_message_id=provider id.</summary>
+    Task MarkSentAsync(Guid outboxId, string providerMessageId, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>
+    /// Records a failed send: attempt_count++, last_error set; if the incremented count reaches max_attempts
+    /// the row is 'abandoned', otherwise it returns to 'pending' with <paramref name="nextRetryAtUtc"/> set
+    /// to the computed exponential backoff.
+    /// </summary>
+    Task MarkFailedAsync(Guid outboxId, string error, DateTime nextRetryAtUtc, DateTime nowUtc, CancellationToken ct);
+}
+
+/// <summary>
 /// Upsertable conversational-contact profile (<c>docslot.wa_contact_profiles</c>, unique on tenant+phone).
 /// Remembers who a number usually books for so a returning patient can be greeted/short-circuited.
 /// </summary>

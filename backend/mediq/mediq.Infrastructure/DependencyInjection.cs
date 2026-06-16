@@ -108,6 +108,10 @@ public static class InfrastructureRegistration
         services.AddScoped<IConversationRepository, Docslot.WhatsApp.ConversationRepository>();
         services.AddScoped<IWhatsAppCatalogReadService, Docslot.WhatsApp.WhatsAppCatalogReadService>();
 
+        // WhatsApp OUTBOUND drain: the store claims/transitions docslot.outbox_messages; the sender delivers.
+        services.AddScoped<IOutboxDrainStore, Docslot.WhatsApp.OutboxDrainStore>();
+        AddWhatsAppSender(services, config);
+
         // Clinical PHI (slice 03b) — encrypted-at-rest, RLS-protected, consent-gated.
         services.AddScoped<IClinicalRepository, Docslot.ClinicalRepository>();
         services.AddScoped<IAbdmConsentService, Docslot.AbdmConsentService>();
@@ -126,5 +130,28 @@ public static class InfrastructureRegistration
         services.AddScoped<IBrokerIdentityResolver, Commission.BrokerIdentityResolver>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Selects the outbound WhatsApp transport from config: the real <see cref="Docslot.WhatsApp.MetaWhatsAppSender"/>
+    /// (typed HttpClient to graph.facebook.com) when BOTH <c>WhatsApp:AccessToken</c> and
+    /// <c>WhatsApp:GraphBaseUrl</c> are present; otherwise the dev <see cref="Docslot.WhatsApp.StubWhatsAppSender"/>
+    /// (logs + synthetic wamid, never calls Meta). Default-safe: with no credentials configured (dev/test) the
+    /// stub is wired, so the outbound path runs end-to-end without a Meta secret.
+    /// </summary>
+    private static void AddWhatsAppSender(IServiceCollection services, IConfiguration config)
+    {
+        var section = config.GetSection(Application.Options.WhatsAppOptions.SectionName);
+        var accessToken = section["AccessToken"];
+        var graphBaseUrl = section["GraphBaseUrl"];
+
+        if (!string.IsNullOrWhiteSpace(accessToken) && !string.IsNullOrWhiteSpace(graphBaseUrl))
+        {
+            services.AddHttpClient<IWhatsAppSender, Docslot.WhatsApp.MetaWhatsAppSender>();
+        }
+        else
+        {
+            services.AddScoped<IWhatsAppSender, Docslot.WhatsApp.StubWhatsAppSender>();
+        }
     }
 }

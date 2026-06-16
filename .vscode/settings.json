@@ -1,1 +1,4 @@
-{}
+{
+  "claudeCommit.cliPath": "/opt/homebrew/bin/claude",
+  "claudeCommit.preferredMethod": "cli"
+}

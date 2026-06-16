@@ -32,6 +32,13 @@ builder.Services.Configure<WhatsAppOptions>(builder.Configuration.GetSection(Wha
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 
+// --- WhatsApp outbound drain worker (delivers docslot.outbox_messages). Enabled by default; toggle off
+// via WhatsApp:OutboxWorkerEnabled=false for API-only / read-only instances. The sender (stub vs real Meta)
+// is selected inside AddInfrastructure by whether an access token is configured. ---
+var whatsAppSection = builder.Configuration.GetSection(WhatsAppOptions.SectionName);
+if (whatsAppSection.GetValue("OutboxWorkerEnabled", true))
+    builder.Services.AddHostedService<mediq.Api.Workers.OutboxDrainWorker>();
+
 // --- Cross-cutting / web ---
 builder.Services.AddRequestContext();
 builder.Services.AddPlatformJwtAuth(builder.Configuration);
