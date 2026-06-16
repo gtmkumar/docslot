@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.3" />
+    <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
+    <PackageReference Include="Serilog.Enrichers.Span" Version="3.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\mediq.Application\mediq.Application.csproj" />
+    <ProjectReference Include="..\mediq.Infrastructure\mediq.Infrastructure.csproj" />
+    <ProjectReference Include="..\mediq.Utilities\mediq.Utilities.csproj" />
+    <ProjectReference Include="..\mediq.ServiceDefaults\mediq.ServiceDefaults.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,22 @@
+---
+name: backend-slice02-platform-api
+description: Slice 02 .NET platform_api backend — OAuth client-credentials + webhooks security facts; cleared PASS 2026-06-14 with tracked prod-hardening
+metadata:
+  type: project
+---
+
+`backend/mediq/` Slice 02 (platform_api: OAuth 2.0 client-credentials + webhook delivery). Audited 2026-06-14 — PASS, no blockers. Build clean, 14/14 tests pass against live `docslot_platform`.
+
+**CORRECT (re-verify, don't re-derive):**
+- Client secret: bcrypt-hashed at rest (`ClientAdmin.cs` reuses Slice-01 `IPasswordHasher`), constant-time verify, returned plaintext ONCE via `ApiClientSecretResult` (register/rotate). `ApiClientDto` NEVER carries secret/hash. Secret generated from `RandomNumberGenerator.GetBytes(32)`.
+- OAuth token (`OAuthCommands.cs`): uniform `invalid_client` (→ ForbiddenException → 403) for unknown/bad-secret/ineligible; `CanIssueToken` requires active+verified. Scope confinement: requested ⊆ granted, ungranted → `invalid_scope` (BusinessRuleException → 422). Empty request = all granted. Token stored as SHA-256 hash; `/oauth/revoke` idempotent by hash. A client CANNOT escalate to an ungranted scope.
+- TWO-SCHEME SEPARATION (airtight, both directions): client JWT sets `token_use=client`, `sub`=clientId, space-delimited `scope` claim (`JwtTokenService.cs:54-77`). `PermissionResolutionMiddleware.cs:21-26` SKIPS client tokens (`isClientToken` short-circuit) → client never gets a user permission set → `RequirePermission` fails closed. `ScopeAuthorizationHandler` requires `IsClientToken && Has(scope)` → user token never satisfies `RequireScope`. Scope set is DB-authoritative (`ScopeResolutionMiddleware` re-checks `api_tokens` live, revoked→empty→fail-closed), not claim-trusting.
+- Webhook signing: `WebhookSigner.cs` HMAC-SHA256(payload, secret) → `X-DocSlot-Signature: sha256=<hex>`; signed over the exact `payload` string the dispatcher sends as StringContent. Secret stored AES-encrypted at rest (reversible, recoverable to sign) via Utilities `EncryptionHelper` + `EncryptionOptions.Passphrase`. Webhook URL validated absolute-https (`CreateWebhookValidator`).
+- Delivery: `WebhookPublisher.cs` outbox (`webhook_deliveries`, idempotency key = event id) + Polly exponential backoff+jitter to `max_retries` + dead-letter ('abandoned') + `RecordOutcomeAsync` for auto-disable. Deliveries carry no secrets.
+- Request log (`ApiClientRequestLogMiddleware.cs`): logs method/path/status/latency/client/tenant/IP/UA ONLY — no body/PHI/secret. Per-client per-minute rate limit enforced BEFORE request (429 + Retry-After).
+- Manual approval: `RegisterApiClient` creates inactive/unverified; `ApiClientsController` gates ALL routes on `platform.api_clients.manage` (real Slice-01 seed key). OAuth token/revoke anonymous-by-design (client auths in body).
+- No hardcoded roles. DRY reuse of Slice-01 hasher/JWT/audit is sound (no weakened variant).
+
+**Consent (`patients.read` is requires_consent=true in schema `02_platform_api.sql:88`):** `PublicApiController` gates `/public/patients` on the `docslot.patients.read` SCOPE only — NO consent check. Acceptable for slice 02 ONLY because the endpoint is a probe returning `data: []` (no PHI served; controller doc says real data lands slice 03). CONDITION: when slice 03 wires real patient/prescription/report/abdm data, the consent gate (requires_consent scopes) MUST be enforced before PHI is returned — else DPDP purpose-limitation violation. `RequiresConsent` is surfaced in `ScopeDto` but not yet enforced anywhere.
+
+**Tracked prod-hardening (NOT slice-02 blockers):** (1) `EncryptionOptions.Passphrase` is a committed dev default ("dev-only-encryption-passphrase-replace-in-production", `mediq.Api/appsettings.json:17`) protecting webhook secrets → move to KMS/secret-manager; webhook signing secret is NOT in `encrypted_fields_registry` (only `users.mfa_secret` is) — register it. (2) Webhook signature has NO timestamp/nonce → replay gap; add a signed timestamp header + tolerance window. (3) Webhook URL: https-only but NO SSRF allowlist — a subscriber URL can target internal/link-local hosts (169.254.169.254 etc.); add an egress allowlist/deny-private-ranges. (4) Coarse `platform.api_clients.manage` gates everything — consider finer `platform.api.*` keys. (5) JWT still HMAC dev key (carryover from Slice 01) → RS256/JWKS. (6) Webhook delivery is synchronous in-request (slice 02) — a durable drainer for 'failed' rows comes later.

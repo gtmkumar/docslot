@@ -1,0 +1,21 @@
+{
+  "enabledPlugins": {
+    "expo@claude-plugins-official": true
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(PGPASSWORD=postgres psql *)",
+      "Bash(./apply_patches.sh)",
+      "Bash(node .claude/*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(curl -s -m 2 http://localhost:5050/health/ready)",
+      "Bash(npm install *)",
+      "Skill(claude-api)",
+      "Bash(grep -E \"\\\\.\\(cs|ts|tsx\\)$\")"
+    ]
+  },
+  "enableAllProjectMcpServers": true
+}

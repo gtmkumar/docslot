@@ -1,0 +1,9 @@
+{
+  "mediq.Api, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "\/Users\/gtmkumar\/Documents\/source\/docslot\/backend\/mediq\/mediq.Api",
+  "mediq.Application, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "\/Users\/gtmkumar\/Documents\/source\/docslot\/backend\/mediq\/mediq.Application",
+  "mediq.Domain, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "\/Users\/gtmkumar\/Documents\/source\/docslot\/backend\/mediq\/mediq.Domain",
+  "mediq.Infrastructure, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "\/Users\/gtmkumar\/Documents\/source\/docslot\/backend\/mediq\/mediq.Infrastructure",
+  "mediq.ServiceDefaults, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "\/Users\/gtmkumar\/Documents\/source\/docslot\/backend\/mediq\/mediq.ServiceDefaults",
+  "mediq.SharedDataModel, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "\/Users\/gtmkumar\/Documents\/source\/docslot\/backend\/mediq\/mediq.SharedDataModel",
+  "mediq.Utilities, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "\/Users\/gtmkumar\/Documents\/source\/docslot\/backend\/mediq\/mediq.Utilities"
+}

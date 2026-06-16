@@ -1,0 +1,18 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pyjwt==2.10.1
+psycopg[binary]==3.2.3
+scikit-learn==1.6.1
+numpy==2.2.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+# RAG: real semantic embeddings (ONNX). Falls back to sklearn HashingVectorizer
+# (already provided by scikit-learn) if the model cannot be downloaded.
+fastembed==0.8.0
+# Optional LLM answer synthesis for /ai/v1/rag/ask (extractive is the default).
+httpx==0.28.1
+# OCR lab-report extraction: pytesseract shells out to the tesseract 5.x binary;
+# Pillow generates the synthetic sample document and loads images for OCR.
+pytesseract==0.3.13
+pillow==12.2.0

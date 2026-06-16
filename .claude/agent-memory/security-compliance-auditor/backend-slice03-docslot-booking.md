@@ -1,0 +1,25 @@
+---
+name: backend-slice03-docslot-booking
+description: Slice 03 docslot booking core — first slice serving real patient data; consent/PoU + webhook-PHI verified; cleared PASS with app-owned-tables condition
+metadata:
+  type: project
+---
+
+`backend/mediq/` Slice 03 (docslot booking core — FIRST slice serving real patient data). Audited 2026-06-14 — PASS, no hard blockers. Build clean, 19/19 tests pass against live `docslot_platform`.
+
+**CORRECT (re-verify, don't re-derive):**
+- CONSENT + PURPOSE-OF-USE (the carried Slice-02 hard condition — now ENFORCED): `GET /patients/{id}` requires `X-Purpose-Of-Use` header → 422 if missing (`PatientsController.cs:38-41`); handler (`PatientDetail.cs:34-55`) checks tenant-link, then `patient.HasActiveConsent` → 403 if absent (DPDP), then writes `purpose_of_use_log` BEFORE returning data. Detail DTO is demographics-only (`PatientDetailDto`: name/maskedPhone/DOB/age/gender/email/lang/consent) — NO clinical PHI (prescriptions/labs/ABDM deferred to 03b/05 behind encryption+RLS).
+- WEBHOOK PHI (critical third-party surface — CLEAN): booking events (`CreateBookingCommand.cs:102`, `BookingActionCommand.cs:64`) carry ONLY opaque ids — `booking_id`, `patient_id`, `slot_id`, `status`, `booking_number`, `tenant_id`, `occurred_at`. NO raw phone, name, age, or chief_complaint in any webhook body. `BookingEventPublisher` envelope wraps these minimal payloads.
+- PHI MASKING: `PhoneMasker.Mask` (`ReadHelpers.cs`) applied in every list/detail projection; `BookingReadService` selects RawPhone internally but only emits masked (`:155`). `PatientListItemDto.MaskedPhone`/`PatientDetailDto.MaskedPhone` are the only phone fields. Raw phone never serialized to a DTO.
+- TENANT ISOLATION: bookings/doctors/slots filter `tenant_id` from JWT claim (`RequireTenant()` = `currentUser.TenantId`, JWT-only since Slice 01 fix). Patient access link-mediated via `patient_tenant_links` (`IsLinkedToTenantAsync` checked before detail/list); cross-tenant identity by phone is intentional but a tenant sees only linked patients.
+- IDEMPOTENCY (durable): `DurableIdempotencyStore` keyed `(tenant_scope, endpoint, key)` UNIQUE + ON CONFLICT DO NOTHING → survives restart/scale-out, tenant-scoped (no cross-tenant replay). `IRequireIdempotency` commands without a key → 422 (`Behaviors.cs:106-108`). Both CreateBooking + BookingAction implement it. Endpoint = METHOD+path discriminator.
+- BOOKING INTEGRITY: `Booking.cs` state machine `Allowed` map = canonical 6-state transitions; illegal → `InvalidBookingTransitionException` → `BusinessRuleException` → 422 (DomainExceptionTranslationBehavior). `booking_number` left null for DB trigger `trg_booking_number`; history by DB trigger `trg_booking_status_log` — C# NEVER inserts history or generates the number (no double-log, no client-forgeable number). Soft-delete only (DeletedAt filters).
+- SLOT HOLDS: `SlotHoldService.HoldAsync` atomic conditional INSERT...SELECT requires `s.tenant_id=@p1` + capacity + NOT EXISTS live hold → no cross-tenant hold, no double-hold race. Convert/Release by server-generated hold_id (not client-supplied) → no hijack.
+- Slice-02 `/public/patients|bookings` STILL return `data: Array.Empty()` — no PHI through third-party surface.
+- Permission gates: read=`docslot.booking.read`, create=`docslot.booking.create`, approve=`docslot.booking.approve`, cancel=`docslot.booking.cancel`, no-show+complete=`docslot.booking.complete`, patient detail/list=`docslot.patient.read`, register=`docslot.patient.update`.
+
+**TRACKED CONDITION — app-owned operational tables (NOT a hard blocker now, but MUST be promoted to canonical SQL):** `OperationalSchemaInitializer` creates `docslot.slot_holds` + `platform.idempotency_keys` via `CREATE TABLE IF NOT EXISTS` at startup. This violates the database-first/canonical-schema principle (schema is the authoritative artifact). Both are tenant-safe as written (`slot_holds` has tenant_id and is tenant-scoped in queries; `idempotency_keys` UNIQUE includes tenant_scope so no cross-tenant poison/replay), so NOT a security blocker. BUT: (a) promote both into versioned canonical SQL (slot_holds→03, idempotency_keys→a platform infra migration); (b) `idx_slot_holds_live` should lead with tenant_id; (c) consider whether slot_holds/idempotency_keys warrant RLS (they hold no PHI — idempotency_keys stores response payloads which COULD include masked booking data; acceptable, but evaluate). Runtime DDL also implies the app DB role has CREATE — tighten in prod.
+
+**Interim permission gates (separation-of-duties flags, acceptable now):** no-show is gated on `docslot.booking.complete` (no `docslot.booking.no_show` key in seed) and POST /patients on `docslot.patient.update` (no `docslot.patient.create` key). Both are documented interim choices consistent with the seed. If finer SoD is wanted, SEED the new permission keys in canonical SQL first, then reference. Not a blocker.
+
+**Carryover prod-hardening (unchanged):** JWT HMAC dev key→RS256/JWKS; DB-level audit append-only (REVOKE on audit_log)→slice 05; AES webhook key→KMS + register in encrypted_fields_registry; webhook replay/SSRF; MessagePack 2.5.192 bump.

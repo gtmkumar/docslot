@@ -1,0 +1,984 @@
+-- ============================================================================
+-- DocSlot Platform Database — Part 3: DocSlot Product Schema
+-- ============================================================================
+-- This is the DocSlot product (appointment booking for healthcare).
+-- All tables scoped by tenant_id (which IS the healthcare facility).
+-- Depends on: platform.* and platform_api.* schemas
+-- ============================================================================
+
+CREATE SCHEMA IF NOT EXISTS docslot;
+COMMENT ON SCHEMA docslot IS 'DocSlot appointment booking product. All tables scoped by tenant_id.';
+
+-- ============================================================================
+-- TABLE D1: HEALTHCARE_FACILITIES (extends tenant with healthcare-specific data)
+-- ============================================================================
+-- Rather than overloading platform.tenants, we extend it with a 1:1 table
+-- containing healthcare-specific attributes. Each tenant subscribed to DocSlot
+-- gets one row here.
+CREATE TABLE docslot.healthcare_facilities (
+    facility_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL UNIQUE REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+
+    facility_type       VARCHAR(30) NOT NULL CHECK (facility_type IN ('individual_doctor', 'hospital', 'pathology_lab', 'clinic', 'pharmacy', 'diagnostic_center')),
+    specialty_focus     VARCHAR(100),
+
+    -- WhatsApp Business config
+    whatsapp_business_phone_id VARCHAR(50),
+    whatsapp_access_token TEXT,                                -- Encrypted
+    whatsapp_verified_at TIMESTAMPTZ,
+
+    -- ABDM/India regulatory
+    hfr_id              VARCHAR(50),                            -- Health Facility Registry ID
+    hfr_status          VARCHAR(20) DEFAULT 'not_registered'
+        CHECK (hfr_status IN ('not_registered', 'pending', 'verified', 'rejected', 'suspended')),
+
+    -- Operational config
+    appointment_settings JSONB NOT NULL DEFAULT '{}',         -- slot_duration_minutes, auto_confirm, etc.
+    business_hours      JSONB NOT NULL DEFAULT '{}',         -- Per-day open/close times
+
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_facilities_type ON docslot.healthcare_facilities(facility_type);
+CREATE INDEX idx_facilities_hfr ON docslot.healthcare_facilities(hfr_id) WHERE hfr_id IS NOT NULL;
+
+CREATE TRIGGER trg_facilities_updated_at BEFORE UPDATE ON docslot.healthcare_facilities
+    FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+-- ============================================================================
+-- TABLE D2: DEPARTMENTS (for hospitals)
+-- ============================================================================
+CREATE TABLE docslot.departments (
+    department_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    name                VARCHAR(100) NOT NULL,
+    code                VARCHAR(20),
+    description         TEXT,
+    icon                VARCHAR(50),
+    display_order       SMALLINT NOT NULL DEFAULT 0,
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(tenant_id, name)
+);
+
+CREATE INDEX idx_departments_tenant ON docslot.departments(tenant_id, display_order) WHERE is_active = true;
+
+-- ============================================================================
+-- TABLE D3: DOCTORS (healthcare providers — also covers lab technicians)
+-- ============================================================================
+CREATE TABLE docslot.doctors (
+    doctor_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    user_id             UUID REFERENCES platform.users(user_id),  -- Links to platform user if doctor logs in
+
+    -- Identity
+    full_name           VARCHAR(200) NOT NULL,
+    display_name        VARCHAR(200),
+    gender              VARCHAR(10) CHECK (gender IS NULL OR gender IN ('male', 'female', 'other', 'prefer_not_say')),
+    profile_image_url   TEXT,
+
+    -- Professional
+    department_id       UUID REFERENCES docslot.departments(department_id),
+    role                VARCHAR(30) NOT NULL DEFAULT 'doctor' CHECK (role IN ('doctor', 'technician', 'nurse', 'pharmacist')),
+    specialization      VARCHAR(100),
+    sub_specialization  VARCHAR(100),
+    qualifications      JSONB NOT NULL DEFAULT '[]',              -- [{degree, college, year}]
+    experience_years    SMALLINT,
+    languages_spoken    VARCHAR(10)[] DEFAULT ARRAY['en'],
+    biography           TEXT,
+
+    -- Pricing
+    consultation_fee    DECIMAL(10,2),
+    follow_up_fee       DECIMAL(10,2),
+
+    -- Contact
+    phone               VARCHAR(15),
+    email               CITEXT,
+
+    -- Indian regulatory (NMC/HPR)
+    nmc_registration_number VARCHAR(50),
+    nmc_state_council   VARCHAR(50),
+    nmc_registration_year INT,
+    nmc_expires_at      DATE,
+    hpr_id              VARCHAR(50),
+    nmc_verification_status VARCHAR(20) DEFAULT 'not_verified'
+        CHECK (nmc_verification_status IN ('not_verified', 'pending', 'verified', 'rejected', 'expired')),
+    nmc_verified_at     TIMESTAMPTZ,
+
+    -- Status
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    is_accepting_new_patients BOOLEAN NOT NULL DEFAULT true,
+
+    -- Audit
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at          TIMESTAMPTZ
+);
+
+CREATE INDEX idx_doctors_tenant ON docslot.doctors(tenant_id) WHERE deleted_at IS NULL AND is_active = true;
+CREATE INDEX idx_doctors_department ON docslot.doctors(department_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_doctors_specialization ON docslot.doctors(tenant_id, specialization) WHERE deleted_at IS NULL;
+CREATE INDEX idx_doctors_nmc ON docslot.doctors(nmc_registration_number) WHERE nmc_registration_number IS NOT NULL;
+CREATE INDEX idx_doctors_user ON docslot.doctors(user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX idx_doctors_search ON docslot.doctors USING gin(full_name gin_trgm_ops) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER trg_doctors_updated_at BEFORE UPDATE ON docslot.doctors
+    FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+-- ============================================================================
+-- TABLE D4: DOCTOR_SCHEDULES (recurring weekly availability)
+-- ============================================================================
+CREATE TABLE docslot.doctor_schedules (
+    schedule_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    doctor_id           UUID NOT NULL REFERENCES docslot.doctors(doctor_id) ON DELETE CASCADE,
+    day_of_week         SMALLINT NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
+    start_time          TIME NOT NULL,
+    end_time            TIME NOT NULL,
+    slot_duration_minutes SMALLINT NOT NULL DEFAULT 15,
+    max_patients_per_slot SMALLINT NOT NULL DEFAULT 1,
+    break_start_time    TIME,
+    break_end_time      TIME,
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    CONSTRAINT chk_schedule_time CHECK (end_time > start_time),
+    CONSTRAINT chk_break_time CHECK (
+        (break_start_time IS NULL AND break_end_time IS NULL) OR
+        (break_start_time IS NOT NULL AND break_end_time IS NOT NULL AND break_end_time > break_start_time)
+    )
+);
+
+CREATE INDEX idx_schedules_doctor ON docslot.doctor_schedules(doctor_id) WHERE is_active = true;
+
+-- ============================================================================
+-- TABLE D5: SCHEDULE_OVERRIDES (holidays, leaves, special hours)
+-- ============================================================================
+CREATE TABLE docslot.schedule_overrides (
+    override_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    doctor_id           UUID NOT NULL REFERENCES docslot.doctors(doctor_id) ON DELETE CASCADE,
+    override_date       DATE NOT NULL,
+    is_blocked          BOOLEAN NOT NULL DEFAULT true,
+    custom_start_time   TIME,
+    custom_end_time     TIME,
+    reason              VARCHAR(200),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(doctor_id, override_date)
+);
+
+-- ============================================================================
+-- TABLE D6: TIME_SLOTS (generated bookable slots)
+-- ============================================================================
+CREATE TABLE docslot.time_slots (
+    slot_id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    doctor_id           UUID NOT NULL REFERENCES docslot.doctors(doctor_id) ON DELETE CASCADE,
+    slot_date           DATE NOT NULL,
+    start_time          TIME NOT NULL,
+    end_time            TIME NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'booked', 'blocked')),
+    current_count       SMALLINT NOT NULL DEFAULT 0,
+    max_count           SMALLINT NOT NULL DEFAULT 1,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(doctor_id, slot_date, start_time)
+);
+
+CREATE INDEX idx_slots_available ON docslot.time_slots(doctor_id, slot_date, status) WHERE status = 'available';
+CREATE INDEX idx_slots_tenant_date ON docslot.time_slots(tenant_id, slot_date);
+
+-- ----------------------------------------------------------------------------
+-- TABLE D6b: SLOT_HOLDS (hold-on-selection with TTL — FR-BOOK-02)
+-- ----------------------------------------------------------------------------
+-- When a patient/staff selects a slot, it is held for ~5 minutes so a concurrent
+-- booker can't double-book while the form is filled. Abandoned holds expire and
+-- free the slot. A booking confirmation converts the hold (consumes capacity).
+-- (Promoted from an app-owned runtime table in slice 05 so the app no longer
+-- issues DDL; the substrate owns the schema.)
+CREATE TABLE docslot.slot_holds (
+    hold_id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    slot_id             UUID NOT NULL REFERENCES docslot.time_slots(slot_id) ON DELETE CASCADE,
+    hold_token          VARCHAR(64) NOT NULL,                 -- opaque token returned to the holder
+    booking_id          UUID,                                 -- set when the hold is converted to a booking
+    status              VARCHAR(20) NOT NULL DEFAULT 'held'
+        CHECK (status IN ('held', 'converted', 'released', 'expired')),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at          TIMESTAMPTZ NOT NULL                  -- created_at + TTL (app sets 5 min)
+);
+
+-- tenant_id-leading composite; partial index for the live-hold concurrency check.
+CREATE INDEX idx_slot_holds_tenant_live ON docslot.slot_holds(tenant_id, slot_id) WHERE status = 'held';
+CREATE INDEX idx_slot_holds_live ON docslot.slot_holds(slot_id) WHERE status = 'held';
+CREATE INDEX idx_slot_holds_expiry ON docslot.slot_holds(expires_at) WHERE status = 'held';
+
+COMMENT ON TABLE docslot.slot_holds IS 'Transient TTL holds on time_slots (FR-BOOK-02). A sweeper expires stale holds; confirmed bookings convert them.';
+
+-- ============================================================================
+-- TABLE D7: PATIENTS (cross-tenant patient identity)
+-- ============================================================================
+-- Patients exist at platform level (one phone = one patient identity)
+-- but visit multiple tenants. ABHA ID enables cross-tenant medical records.
+CREATE TABLE docslot.patients (
+    patient_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Primary identity
+    phone_number        VARCHAR(15) NOT NULL UNIQUE,
+    whatsapp_id         VARCHAR(50),
+
+    -- Demographics
+    full_name           VARCHAR(200),
+    date_of_birth       DATE,
+    age                 SMALLINT,                              -- Computed from DOB or self-reported
+    gender              VARCHAR(10) CHECK (gender IS NULL OR gender IN ('male', 'female', 'other', 'prefer_not_say')),
+    blood_group         VARCHAR(5) CHECK (blood_group IS NULL OR blood_group IN ('A+','A-','B+','B-','AB+','AB-','O+','O-','UNK')),
+
+    -- Contact
+    email               CITEXT,
+    address_line1       VARCHAR(200),
+    city                VARCHAR(100),
+    state               VARCHAR(100),
+    pin_code            VARCHAR(10),
+    country             VARCHAR(2) NOT NULL DEFAULT 'IN',
+
+    -- Emergency contact
+    emergency_contact_name VARCHAR(200),
+    emergency_contact_phone VARCHAR(15),
+    emergency_contact_relationship VARCHAR(50),
+
+    -- Indian identity (DPDP-compliant — store last 4 only). ENCRYPTED at rest (envelope) → TEXT, not VARCHAR(4).
+    aadhaar_last_4      TEXT,
+
+    -- Preferences
+    preferred_language  VARCHAR(10) NOT NULL DEFAULT 'en',
+    preferred_communication VARCHAR(20) DEFAULT 'whatsapp' CHECK (preferred_communication IN ('whatsapp', 'sms', 'email', 'voice_call')),
+
+    -- DPDP consent
+    consent_given_at    TIMESTAMPTZ,
+    consent_version     VARCHAR(20),
+    consent_ip_address  INET,
+    data_retention_until TIMESTAMPTZ,
+    deletion_requested_at TIMESTAMPTZ,
+    last_incoming_message_at TIMESTAMPTZ,                      -- For 24h WhatsApp window tracking
+
+    -- Status
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+
+    -- Audit
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at          TIMESTAMPTZ
+);
+
+CREATE INDEX idx_patients_phone ON docslot.patients(phone_number) WHERE deleted_at IS NULL;
+CREATE INDEX idx_patients_whatsapp ON docslot.patients(whatsapp_id) WHERE whatsapp_id IS NOT NULL AND deleted_at IS NULL;
+CREATE INDEX idx_patients_name_search ON docslot.patients USING gin(full_name gin_trgm_ops) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER trg_patients_updated_at BEFORE UPDATE ON docslot.patients
+    FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+-- ============================================================================
+-- TABLE D8: PATIENT_TENANT_LINKS (which tenants has this patient visited)
+-- ============================================================================
+-- Tracks the relationship between a patient and the healthcare facilities they've visited.
+-- This enables cross-tenant features while respecting tenant data isolation.
+CREATE TABLE docslot.patient_tenant_links (
+    link_id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id) ON DELETE CASCADE,
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    patient_local_id    VARCHAR(50),                            -- Tenant's internal patient ID (MRN)
+    first_visit_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_visit_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    total_visits        INT NOT NULL DEFAULT 0,
+    tenant_notes        TEXT,
+    UNIQUE(patient_id, tenant_id)
+);
+
+CREATE INDEX idx_patient_tenant ON docslot.patient_tenant_links(tenant_id, patient_id);
+
+-- ============================================================================
+-- TABLE D9: FAMILY_MEMBERS (multi-patient under one phone)
+-- ============================================================================
+CREATE TABLE docslot.family_members (
+    family_member_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    primary_patient_id  UUID NOT NULL REFERENCES docslot.patients(patient_id) ON DELETE CASCADE,
+    member_patient_id   UUID NOT NULL REFERENCES docslot.patients(patient_id) ON DELETE CASCADE,
+    relationship        VARCHAR(50) NOT NULL CHECK (relationship IN ('spouse','child','parent','sibling','grandparent','grandchild','other')),
+    is_primary_decision_maker BOOLEAN NOT NULL DEFAULT false,
+    added_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(primary_patient_id, member_patient_id),
+    CHECK (primary_patient_id != member_patient_id)
+);
+
+CREATE INDEX idx_family_primary ON docslot.family_members(primary_patient_id);
+
+-- ============================================================================
+-- TABLE D10: BOOKINGS (the core entity)
+-- ============================================================================
+CREATE TABLE docslot.bookings (
+    booking_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    booking_number      VARCHAR(20) NOT NULL UNIQUE,            -- Human-readable: 'BKG-2026-04-00001'
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    slot_id             UUID NOT NULL REFERENCES docslot.time_slots(slot_id),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id),
+    doctor_id           UUID NOT NULL REFERENCES docslot.doctors(doctor_id),
+    department_id       UUID REFERENCES docslot.departments(department_id),
+
+    -- Booking details
+    booking_type        VARCHAR(20) NOT NULL DEFAULT 'consultation'
+        CHECK (booking_type IN ('consultation', 'follow_up', 'test', 'home_collection', 'procedure', 'tele_consultation')),
+    status              VARCHAR(20) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'cancelled', 'completed', 'no_show', 'rescheduled')),
+
+    -- Patient info snapshot (in case patient data changes later)
+    patient_name_at_booking VARCHAR(200),
+    patient_phone_at_booking VARCHAR(15),
+    patient_age_at_booking SMALLINT,
+
+    -- Booking context
+    booked_via          VARCHAR(20) NOT NULL DEFAULT 'whatsapp'
+        CHECK (booked_via IN ('whatsapp', 'dashboard', 'api', 'walk_in', 'phone_call')),
+    booked_for          VARCHAR(20) NOT NULL DEFAULT 'self'
+        CHECK (booked_for IN ('self', 'family_member', 'other')),
+    booked_for_patient_id UUID REFERENCES docslot.patients(patient_id),
+
+    -- Notes
+    chief_complaint     TEXT,                                    -- Why patient wants to visit
+    notes               TEXT,
+    cancellation_reason TEXT,
+
+    -- Reminders
+    reminder_24h_sent   BOOLEAN NOT NULL DEFAULT false,
+    reminder_1h_sent    BOOLEAN NOT NULL DEFAULT false,
+
+    -- Timestamps
+    booked_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    confirmed_at        TIMESTAMPTZ,
+    cancelled_at        TIMESTAMPTZ,
+    completed_at        TIMESTAMPTZ,
+    no_show_at          TIMESTAMPTZ,
+
+    -- Audit
+    created_by_user_id  UUID REFERENCES platform.users(user_id),
+    cancelled_by_user_id UUID REFERENCES platform.users(user_id),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_bookings_tenant_status ON docslot.bookings(tenant_id, status);
+CREATE INDEX idx_bookings_patient ON docslot.bookings(patient_id, booked_at DESC);
+CREATE INDEX idx_bookings_doctor_date ON docslot.bookings(doctor_id, booked_at);
+CREATE INDEX idx_bookings_pending ON docslot.bookings(tenant_id) WHERE status = 'pending';
+CREATE INDEX idx_bookings_reminders ON docslot.bookings(status)
+    WHERE status = 'confirmed' AND (reminder_24h_sent = false OR reminder_1h_sent = false);
+CREATE INDEX idx_bookings_number ON docslot.bookings(booking_number);
+
+CREATE TRIGGER trg_bookings_updated_at BEFORE UPDATE ON docslot.bookings
+    FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+-- ============================================================================
+-- TABLE D11: BOOKING_STATUS_HISTORY (state transition audit)
+-- ============================================================================
+CREATE TABLE docslot.booking_status_history (
+    history_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    booking_id          UUID NOT NULL REFERENCES docslot.bookings(booking_id) ON DELETE CASCADE,
+    from_status         VARCHAR(20),
+    to_status           VARCHAR(20) NOT NULL,
+    changed_by_user_id  UUID REFERENCES platform.users(user_id),
+    changed_via         VARCHAR(20),
+    reason              TEXT,
+    metadata            JSONB DEFAULT '{}',
+    changed_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_booking_history ON docslot.booking_status_history(booking_id, changed_at DESC);
+
+-- ============================================================================
+-- TABLE D12: OPD_TOKENS (queue management for hospital OPD)
+-- ============================================================================
+CREATE TABLE docslot.opd_tokens (
+    token_id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    booking_id          UUID NOT NULL UNIQUE REFERENCES docslot.bookings(booking_id),
+    doctor_id           UUID NOT NULL REFERENCES docslot.doctors(doctor_id),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    token_date          DATE NOT NULL,
+    token_number        INT NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'waiting'
+        CHECK (status IN ('waiting', 'called', 'in_consultation', 'completed', 'skipped', 'no_show')),
+    called_at           TIMESTAMPTZ,
+    consultation_started_at TIMESTAMPTZ,
+    completed_at        TIMESTAMPTZ,
+    estimated_wait_minutes INT,
+    UNIQUE(doctor_id, token_date, token_number)
+);
+
+CREATE INDEX idx_tokens_active ON docslot.opd_tokens(doctor_id, token_date, token_number)
+    WHERE status IN ('waiting', 'called', 'in_consultation');
+
+-- ============================================================================
+-- TABLE D13: TEST_CATALOG (for pathology labs)
+-- ============================================================================
+CREATE TABLE docslot.test_catalog (
+    test_id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    test_name           VARCHAR(200) NOT NULL,
+    test_code           VARCHAR(50),
+    category            VARCHAR(50),
+    description         TEXT,
+    sample_type         VARCHAR(50),                            -- 'blood', 'urine', 'stool'
+    preparation_instructions TEXT,
+    price               DECIMAL(10,2),
+    discount_price      DECIMAL(10,2),
+    report_turnaround_hours SMALLINT,
+    is_home_collection_available BOOLEAN NOT NULL DEFAULT false,
+    home_collection_fee DECIMAL(10,2),
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_test_catalog_tenant ON docslot.test_catalog(tenant_id, category) WHERE is_active = true;
+CREATE INDEX idx_test_catalog_search ON docslot.test_catalog USING gin(test_name gin_trgm_ops) WHERE is_active = true;
+
+-- ============================================================================
+-- TABLE D14: PROCEDURE_CATALOG (for hospitals — surgical/IPD procedures)
+-- ============================================================================
+CREATE TABLE docslot.procedure_catalog (
+    procedure_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    department_id       UUID REFERENCES docslot.departments(department_id),
+    procedure_name      VARCHAR(200) NOT NULL,
+    procedure_code      VARCHAR(50),
+    category            VARCHAR(50) NOT NULL CHECK (category IN ('surgery', 'admission', 'day_care', 'icu_stay', 'diagnostic_procedure')),
+    description         TEXT,
+    typical_duration_hours DECIMAL(5,2),
+
+    -- Itemized pricing (transparency requirement)
+    base_price          DECIMAL(10,2) NOT NULL,
+    doctor_fee          DECIMAL(10,2) NOT NULL DEFAULT 0,
+    anesthesia_fee      DECIMAL(10,2) NOT NULL DEFAULT 0,
+    consumables_estimate DECIMAL(10,2) NOT NULL DEFAULT 0,
+    room_charges_per_day DECIMAL(10,2) NOT NULL DEFAULT 0,
+    minimum_stay_days   SMALLINT NOT NULL DEFAULT 0,
+
+    estimated_min_total DECIMAL(10,2) NOT NULL,
+    estimated_max_total DECIMAL(10,2) NOT NULL,
+
+    inclusions          JSONB NOT NULL DEFAULT '[]',
+    exclusions          JSONB NOT NULL DEFAULT '[]',
+
+    -- Insurance
+    cashless_eligible   BOOLEAN NOT NULL DEFAULT false,
+    ab_pmjay_covered    BOOLEAN NOT NULL DEFAULT false,
+    ab_pmjay_package_code VARCHAR(20),
+
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_procedures_tenant ON docslot.procedure_catalog(tenant_id, category) WHERE is_active = true;
+CREATE INDEX idx_procedures_pmjay ON docslot.procedure_catalog(ab_pmjay_package_code) WHERE ab_pmjay_covered = true;
+
+-- ============================================================================
+-- TABLE D15: PATIENT_MEDICAL_HISTORY (allergies, conditions, medications)
+-- ============================================================================
+CREATE TABLE docslot.patient_medical_history (
+    history_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id) ON DELETE CASCADE,
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    record_type         VARCHAR(30) NOT NULL CHECK (record_type IN ('allergy', 'chronic_condition', 'surgery', 'medication', 'vaccination', 'family_history', 'lifestyle')),
+    title               TEXT NOT NULL,                          -- ENCRYPTED at rest (envelope); registered in encrypted_fields_registry → must be TEXT, not VARCHAR(200)
+    description         TEXT,                                   -- ENCRYPTED at rest (envelope)
+    started_date        DATE,
+    ended_date          DATE,
+    severity            VARCHAR(20) CHECK (severity IS NULL OR severity IN ('mild', 'moderate', 'severe', 'critical')),
+    icd10_code          VARCHAR(10),                            -- For standardized coding
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    is_critical         BOOLEAN NOT NULL DEFAULT false,         -- Flagged for safety alerts
+    added_by_user_id    UUID REFERENCES platform.users(user_id),
+    added_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata            JSONB DEFAULT '{}'
+);
+
+CREATE INDEX idx_medical_history_patient ON docslot.patient_medical_history(patient_id, record_type) WHERE is_active = true;
+CREATE INDEX idx_medical_history_critical ON docslot.patient_medical_history(patient_id) WHERE is_critical = true;
+
+-- ============================================================================
+-- TABLE D16: PRESCRIPTIONS
+-- ============================================================================
+CREATE TABLE docslot.prescriptions (
+    prescription_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    prescription_number VARCHAR(30) NOT NULL UNIQUE,
+    booking_id          UUID NOT NULL REFERENCES docslot.bookings(booking_id),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id),
+    doctor_id           UUID NOT NULL REFERENCES docslot.doctors(doctor_id),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+
+    -- Clinical content
+    chief_complaints    TEXT,
+    examination         TEXT,
+    diagnosis           TEXT,
+    medications         JSONB NOT NULL DEFAULT '[]',
+    investigations      JSONB DEFAULT '[]',                     -- Tests ordered
+    advice              TEXT,
+    follow_up_in_days   INT,
+
+    -- Generated artifacts
+    pdf_url             TEXT,
+    file_name           VARCHAR(200),
+
+    -- Delivery
+    status              VARCHAR(20) NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'finalized', 'delivered', 'amended')),
+    delivered_at        TIMESTAMPTZ,
+    delivery_message_id VARCHAR(100),
+
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_prescriptions_patient ON docslot.prescriptions(patient_id, created_at DESC);
+CREATE INDEX idx_prescriptions_booking ON docslot.prescriptions(booking_id);
+
+-- ============================================================================
+-- TABLE D17: DRUG_ALERTS (allergies/interactions flagged at prescription time)
+-- ============================================================================
+CREATE TABLE docslot.drug_alerts (
+    alert_id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    prescription_id     UUID NOT NULL REFERENCES docslot.prescriptions(prescription_id),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id),
+    alert_type          VARCHAR(30) NOT NULL CHECK (alert_type IN ('allergy', 'interaction', 'contraindication', 'duplicate', 'pregnancy_warning', 'dosage')),
+    severity            VARCHAR(20) NOT NULL CHECK (severity IN ('low', 'moderate', 'high', 'critical')),
+    medication_name     VARCHAR(200) NOT NULL,
+    conflicting_record_id UUID,
+    description         TEXT NOT NULL,
+    overridden          BOOLEAN NOT NULL DEFAULT false,
+    overridden_by_user_id UUID REFERENCES platform.users(user_id),
+    override_reason     TEXT,
+    overridden_at       TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_drug_alerts_critical ON docslot.drug_alerts(patient_id) WHERE severity = 'critical' AND NOT overridden;
+
+-- ============================================================================
+-- TABLE D18: LAB_REPORTS
+-- ============================================================================
+CREATE TABLE docslot.lab_reports (
+    report_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    report_number       VARCHAR(30) NOT NULL UNIQUE,
+    booking_id          UUID NOT NULL REFERENCES docslot.bookings(booking_id),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    test_id             UUID REFERENCES docslot.test_catalog(test_id),
+
+    file_url            TEXT,
+    file_name           VARCHAR(200),
+    file_size_bytes     BIGINT,
+    file_mime_type      VARCHAR(100),
+
+    -- Structured results (in addition to PDF)
+    structured_results  JSONB,                                   -- {parameter: value, normal_range, status}
+
+    status              VARCHAR(20) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'ready', 'delivered', 'cancelled')),
+    uploaded_at         TIMESTAMPTZ,
+    uploaded_by_user_id UUID REFERENCES platform.users(user_id),
+    delivered_at        TIMESTAMPTZ,
+    delivery_message_id VARCHAR(100),
+
+    -- Critical findings flag
+    has_critical_findings BOOLEAN NOT NULL DEFAULT false,
+    critical_findings_notified_at TIMESTAMPTZ,
+
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_reports_patient ON docslot.lab_reports(patient_id, created_at DESC);
+CREATE INDEX idx_reports_ready ON docslot.lab_reports(tenant_id, status) WHERE status = 'ready';
+CREATE INDEX idx_reports_critical ON docslot.lab_reports(tenant_id) WHERE has_critical_findings = true AND critical_findings_notified_at IS NULL;
+
+
+-- ============================================================================
+-- TABLE D19: CONVERSATIONS (WhatsApp conversation state)
+-- ============================================================================
+CREATE TABLE docslot.conversations (
+    conversation_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    patient_id          UUID REFERENCES docslot.patients(patient_id),
+    whatsapp_phone      VARCHAR(15) NOT NULL,
+    current_step        VARCHAR(50) NOT NULL DEFAULT 'greeting',
+    context             JSONB NOT NULL DEFAULT '{}',
+    detected_language   VARCHAR(10),
+    last_message_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at          TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 minutes'),
+    is_active           BOOLEAN NOT NULL DEFAULT true
+);
+
+CREATE INDEX idx_conversations_active ON docslot.conversations(whatsapp_phone, tenant_id) WHERE is_active = true;
+CREATE INDEX idx_conversations_expired ON docslot.conversations(expires_at) WHERE is_active = true;
+
+-- ============================================================================
+-- TABLE D20: WA_MESSAGE_LOG (WhatsApp message tracking)
+-- ============================================================================
+CREATE TABLE docslot.wa_message_log (
+    log_id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    patient_id          UUID REFERENCES docslot.patients(patient_id),
+    conversation_id     UUID REFERENCES docslot.conversations(conversation_id),
+    whatsapp_message_id VARCHAR(100),
+    direction           VARCHAR(10) NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+    message_type        VARCHAR(20) NOT NULL,                  -- 'text', 'template', 'interactive', 'audio', 'image', 'document'
+    template_name       VARCHAR(100),
+    content             JSONB,
+    status              VARCHAR(20),                            -- 'sent', 'delivered', 'read', 'failed'
+    error_code          VARCHAR(50),
+    cost_usd            DECIMAL(10,4),
+    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delivered_at        TIMESTAMPTZ,
+    read_at             TIMESTAMPTZ,
+    failed_at           TIMESTAMPTZ
+);
+
+CREATE INDEX idx_wa_log_tenant ON docslot.wa_message_log(tenant_id, sent_at DESC);
+CREATE INDEX idx_wa_log_failed ON docslot.wa_message_log(tenant_id) WHERE status = 'failed';
+CREATE INDEX idx_wa_log_message_id ON docslot.wa_message_log(whatsapp_message_id) WHERE whatsapp_message_id IS NOT NULL;
+
+-- ============================================================================
+-- TABLE D21: OUTBOX_MESSAGES (reliable WhatsApp delivery queue)
+-- ============================================================================
+CREATE TABLE docslot.outbox_messages (
+    outbox_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    patient_id          UUID REFERENCES docslot.patients(patient_id),
+    message_intent      VARCHAR(50) NOT NULL,
+    payload             JSONB NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'sent', 'failed', 'abandoned')),
+    attempt_count       SMALLINT NOT NULL DEFAULT 0,
+    max_attempts        SMALLINT NOT NULL DEFAULT 5,
+    last_error          TEXT,
+    next_retry_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sent_at             TIMESTAMPTZ,
+    whatsapp_message_id VARCHAR(100),
+    correlation_id      VARCHAR(100),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_outbox_pending ON docslot.outbox_messages(next_retry_at, status) WHERE status IN ('pending', 'failed');
+
+-- ============================================================================
+-- TABLE D22: PROCESSED_MESSAGES (webhook idempotency)
+-- ============================================================================
+CREATE TABLE docslot.processed_messages (
+    whatsapp_message_id VARCHAR(100) PRIMARY KEY,
+    processed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_processed_recent ON docslot.processed_messages(processed_at DESC);
+
+-- ============================================================================
+-- TABLE D23: WAITLIST
+-- ============================================================================
+CREATE TABLE docslot.waitlist (
+    waitlist_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id),
+    doctor_id           UUID NOT NULL REFERENCES docslot.doctors(doctor_id),
+    requested_date      DATE NOT NULL,
+    requested_time_range VARCHAR(20),
+    status              VARCHAR(20) NOT NULL DEFAULT 'waiting'
+        CHECK (status IN ('waiting', 'notified', 'booked', 'expired', 'cancelled')),
+    notified_at         TIMESTAMPTZ,
+    expires_at          TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_waitlist_active ON docslot.waitlist(doctor_id, requested_date) WHERE status = 'waiting';
+
+-- ============================================================================
+-- TABLE D24: REVIEWS (patient ratings of doctors)
+-- ============================================================================
+CREATE TABLE docslot.reviews (
+    review_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    booking_id          UUID NOT NULL UNIQUE REFERENCES docslot.bookings(booking_id),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id),
+    doctor_id           UUID NOT NULL REFERENCES docslot.doctors(doctor_id),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    rating              SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    comment             TEXT,
+    aspects             JSONB DEFAULT '{}',
+    is_anonymous        BOOLEAN NOT NULL DEFAULT false,
+    is_verified         BOOLEAN NOT NULL DEFAULT true,
+    is_published        BOOLEAN NOT NULL DEFAULT true,
+    response_from_doctor TEXT,
+    responded_at        TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_reviews_doctor_published ON docslot.reviews(doctor_id, created_at DESC) WHERE is_published = true;
+
+-- ============================================================================
+-- TABLE D25: ABDM_HEALTH_RECORDS (FHIR R4 health records)
+-- ============================================================================
+CREATE TABLE docslot.abdm_health_records (
+    record_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    booking_id          UUID REFERENCES docslot.bookings(booking_id),
+    abha_number         VARCHAR(20) NOT NULL,
+    record_type         VARCHAR(50) NOT NULL CHECK (record_type IN ('OPConsultation', 'DischargeSummary', 'Prescription', 'DiagnosticReport', 'ImmunizationRecord', 'WellnessRecord', 'HealthDocumentRecord')),
+    fhir_bundle         JSONB NOT NULL,
+    care_context_id     VARCHAR(100),
+    is_linked_to_phr    BOOLEAN NOT NULL DEFAULT false,
+    linked_at           TIMESTAMPTZ,
+    consent_id          VARCHAR(100),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_abdm_records_patient ON docslot.abdm_health_records(patient_id, created_at DESC);
+CREATE INDEX idx_abdm_records_abha ON docslot.abdm_health_records(abha_number);
+
+-- ============================================================================
+-- TABLE D26: ABDM_CONSENTS
+-- ============================================================================
+CREATE TABLE docslot.abdm_consents (
+    consent_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id          UUID NOT NULL REFERENCES docslot.patients(patient_id),
+    requesting_tenant_id UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    abdm_consent_request_id VARCHAR(100) NOT NULL,
+    abdm_consent_artifact_id VARCHAR(100),
+    purpose             VARCHAR(50) NOT NULL,
+    health_info_types   VARCHAR(50)[],
+    date_range_from     DATE,
+    date_range_to       DATE,
+    expires_at          TIMESTAMPTZ NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'requested'
+        CHECK (status IN ('requested', 'granted', 'denied', 'revoked', 'expired')),
+    granted_at          TIMESTAMPTZ,
+    revoked_at          TIMESTAMPTZ,
+    metadata            JSONB DEFAULT '{}'
+);
+
+CREATE INDEX idx_consents_patient ON docslot.abdm_consents(patient_id, status);
+CREATE INDEX idx_consents_active ON docslot.abdm_consents(expires_at) WHERE status = 'granted';
+
+-- ============================================================================
+-- DOCSLOT-SPECIFIC PERMISSIONS (registered with platform.permissions)
+-- ============================================================================
+DO $$
+DECLARE
+    docslot_product_id UUID;
+BEGIN
+    SELECT product_id INTO docslot_product_id FROM platform.products WHERE product_key = 'docslot';
+
+    INSERT INTO platform.permissions (permission_key, product_id, resource, action, scope, description, is_dangerous) VALUES
+    -- Doctors
+    ('docslot.doctor.create', docslot_product_id, 'doctor', 'create', 'tenant', 'Add doctors', false),
+    ('docslot.doctor.read', docslot_product_id, 'doctor', 'read', 'tenant', 'View doctors', false),
+    ('docslot.doctor.update', docslot_product_id, 'doctor', 'update', 'tenant', 'Edit doctors', false),
+    ('docslot.doctor.delete', docslot_product_id, 'doctor', 'delete', 'tenant', 'Delete doctors', true),
+    ('docslot.doctor.update_self', docslot_product_id, 'doctor', 'update', 'self', 'Edit own profile', false),
+
+    -- Schedules
+    ('docslot.schedule.update', docslot_product_id, 'schedule', 'update', 'tenant', 'Set any doctor schedule', false),
+    ('docslot.schedule.update_self', docslot_product_id, 'schedule', 'update', 'self', 'Set own schedule', false),
+
+    -- Slots
+    ('docslot.slot.read', docslot_product_id, 'slot', 'read', 'tenant', 'View slots', false),
+    ('docslot.slot.block', docslot_product_id, 'slot', 'update', 'tenant', 'Block/unblock slots', false),
+
+    -- Bookings
+    ('docslot.booking.create', docslot_product_id, 'booking', 'create', 'tenant', 'Create bookings', false),
+    ('docslot.booking.read', docslot_product_id, 'booking', 'read', 'tenant', 'View all bookings', false),
+    ('docslot.booking.read_self', docslot_product_id, 'booking', 'read', 'self', 'View own bookings (doctor)', false),
+    ('docslot.booking.approve', docslot_product_id, 'booking', 'approve', 'tenant', 'Approve pending bookings', false),
+    ('docslot.booking.cancel', docslot_product_id, 'booking', 'update', 'tenant', 'Cancel bookings', false),
+    ('docslot.booking.reschedule', docslot_product_id, 'booking', 'update', 'tenant', 'Reschedule bookings', false),
+    ('docslot.booking.complete', docslot_product_id, 'booking', 'update', 'tenant', 'Mark complete', false),
+
+    -- Patients
+    ('docslot.patient.read', docslot_product_id, 'patient', 'read', 'tenant', 'View patients', true),
+    ('docslot.patient.update', docslot_product_id, 'patient', 'update', 'tenant', 'Update patient records', true),
+
+    -- Prescriptions (clinical PHI — slice 03b)
+    ('docslot.prescription.create', docslot_product_id, 'prescription', 'create', 'tenant', 'Issue prescriptions', true),
+    ('docslot.prescription.read', docslot_product_id, 'prescription', 'read', 'tenant', 'Read prescriptions (PHI)', true),
+
+    -- Pathology
+    ('docslot.test.manage', docslot_product_id, 'test', 'update', 'tenant', 'Manage test catalog', false),
+    ('docslot.report.upload', docslot_product_id, 'report', 'create', 'tenant', 'Upload lab reports', false),
+    ('docslot.report.read', docslot_product_id, 'report', 'read', 'tenant', 'Read lab reports (PHI)', true),
+    ('docslot.report.deliver', docslot_product_id, 'report', 'update', 'tenant', 'Deliver reports', false),
+
+    -- Medical history (clinical PHI — slice 03b)
+    ('docslot.medical_history.read', docslot_product_id, 'medical_history', 'read', 'tenant', 'Read patient medical history (PHI)', true),
+
+    -- Procedures
+    ('docslot.procedure.manage', docslot_product_id, 'procedure', 'update', 'tenant', 'Manage procedure catalog', false),
+
+    -- ABDM
+    ('docslot.abdm.records.read', docslot_product_id, 'abdm_records', 'read', 'tenant', 'Access ABDM records', true),
+    ('docslot.abdm.records.create', docslot_product_id, 'abdm_records', 'create', 'tenant', 'Push records to ABDM', false),
+    ('docslot.abdm.consents.manage', docslot_product_id, 'abdm_consents', 'update', 'tenant', 'Manage ABDM consents', true),
+
+    -- Analytics
+    ('docslot.analytics.read', docslot_product_id, 'analytics', 'read', 'tenant', 'View analytics', false);
+
+    -- Assign DocSlot permissions to default tenant roles
+    INSERT INTO platform.role_permissions (role_id, permission_id)
+    SELECT r.role_id, p.permission_id
+    FROM platform.roles r
+    CROSS JOIN platform.permissions p
+    WHERE r.role_key = 'tenant_owner'
+      AND p.product_id = docslot_product_id
+      AND p.scope IN ('tenant', 'self');
+
+    INSERT INTO platform.role_permissions (role_id, permission_id)
+    SELECT r.role_id, p.permission_id
+    FROM platform.roles r
+    CROSS JOIN platform.permissions p
+    WHERE r.role_key = 'tenant_admin'
+      AND p.product_id = docslot_product_id
+      AND p.scope IN ('tenant', 'self')
+      AND p.is_dangerous = false;
+
+    INSERT INTO platform.role_permissions (role_id, permission_id)
+    SELECT r.role_id, p.permission_id
+    FROM platform.roles r
+    CROSS JOIN platform.permissions p
+    WHERE r.role_key = 'tenant_staff'
+      AND p.product_id = docslot_product_id
+      AND p.permission_key IN (
+        'docslot.booking.create', 'docslot.booking.read', 'docslot.booking.approve',
+        'docslot.booking.cancel', 'docslot.booking.reschedule', 'docslot.booking.complete',
+        'docslot.patient.read', 'docslot.patient.update',
+        'docslot.report.upload', 'docslot.report.deliver',
+        'docslot.slot.read', 'docslot.doctor.read'
+      );
+END $$;
+
+-- Create DocSlot-specific roles
+INSERT INTO platform.roles (role_key, name, description, product_id, scope, is_system)
+SELECT 'doctor', 'Doctor', 'Healthcare provider — own data only', product_id, 'tenant', true
+FROM platform.products WHERE product_key = 'docslot';
+
+INSERT INTO platform.role_permissions (role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM platform.roles r
+CROSS JOIN platform.permissions p
+WHERE r.role_key = 'doctor'
+  AND p.permission_key IN (
+    'docslot.doctor.read_self', 'docslot.doctor.update_self',
+    'docslot.schedule.update_self',
+    'docslot.booking.read_self', 'docslot.booking.complete',
+    'docslot.patient.read'
+  );
+
+-- ============================================================================
+-- VIEWS
+-- ============================================================================
+
+-- Doctor average ratings
+CREATE MATERIALIZED VIEW docslot.v_doctor_ratings AS
+SELECT
+    doctor_id,
+    AVG(rating)::DECIMAL(3,2) AS avg_rating,
+    COUNT(*) AS review_count,
+    COUNT(*) FILTER (WHERE rating = 5) AS five_star_count
+FROM docslot.reviews
+WHERE is_published = true
+GROUP BY doctor_id;
+
+CREATE UNIQUE INDEX idx_doctor_ratings ON docslot.v_doctor_ratings(doctor_id);
+
+-- Today's bookings overview per tenant
+CREATE OR REPLACE VIEW docslot.v_tenant_today_overview AS
+SELECT
+    t.tenant_id,
+    COUNT(*) FILTER (WHERE b.booked_at::DATE = CURRENT_DATE) AS bookings_today,
+    COUNT(*) FILTER (WHERE b.status = 'pending') AS pending_approvals,
+    COUNT(*) FILTER (WHERE b.completed_at::DATE = CURRENT_DATE) AS completed_today,
+    COUNT(*) FILTER (WHERE b.no_show_at::DATE = CURRENT_DATE) AS no_shows_today
+FROM platform.tenants t
+LEFT JOIN docslot.bookings b ON b.tenant_id = t.tenant_id
+WHERE t.deleted_at IS NULL AND t.status = 'active'
+GROUP BY t.tenant_id;
+
+-- ============================================================================
+-- AUTO-NUMBER GENERATION
+-- ============================================================================
+
+-- Auto-generate booking numbers like BKG-2026-04-00001
+CREATE SEQUENCE docslot.booking_number_seq;
+
+CREATE OR REPLACE FUNCTION docslot.generate_booking_number()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.booking_number IS NULL THEN
+        NEW.booking_number := 'BKG-' || TO_CHAR(NOW(), 'YYYY-MM') || '-' ||
+                              LPAD(nextval('docslot.booking_number_seq')::TEXT, 5, '0');
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_booking_number BEFORE INSERT ON docslot.bookings
+    FOR EACH ROW EXECUTE FUNCTION docslot.generate_booking_number();
+
+-- Similar for prescription and report numbers
+CREATE SEQUENCE docslot.prescription_number_seq;
+
+CREATE OR REPLACE FUNCTION docslot.generate_prescription_number()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.prescription_number IS NULL THEN
+        NEW.prescription_number := 'PRX-' || TO_CHAR(NOW(), 'YYYY-MM') || '-' ||
+                                   LPAD(nextval('docslot.prescription_number_seq')::TEXT, 5, '0');
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_prescription_number BEFORE INSERT ON docslot.prescriptions
+    FOR EACH ROW EXECUTE FUNCTION docslot.generate_prescription_number();
+
+CREATE SEQUENCE docslot.report_number_seq;
+
+CREATE OR REPLACE FUNCTION docslot.generate_report_number()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.report_number IS NULL THEN
+        NEW.report_number := 'RPT-' || TO_CHAR(NOW(), 'YYYY-MM') || '-' ||
+                             LPAD(nextval('docslot.report_number_seq')::TEXT, 5, '0');
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_report_number BEFORE INSERT ON docslot.lab_reports
+    FOR EACH ROW EXECUTE FUNCTION docslot.generate_report_number();
+
+-- ============================================================================
+-- BOOKING STATUS HISTORY AUTO-LOGGING
+-- ============================================================================
+CREATE OR REPLACE FUNCTION docslot.log_booking_status_change()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.status IS DISTINCT FROM NEW.status THEN
+        INSERT INTO docslot.booking_status_history (booking_id, from_status, to_status, changed_by_user_id)
+        VALUES (NEW.booking_id, OLD.status, NEW.status, NEW.cancelled_by_user_id);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_booking_status_log AFTER UPDATE ON docslot.bookings
+    FOR EACH ROW EXECUTE FUNCTION docslot.log_booking_status_change();
+
+-- ============================================================================
+-- END OF DOCSLOT SCHEMA
+-- ============================================================================
+-- Tables: 26 (D1-D26)
+-- Total platform + docslot tables: 52
+-- Next: 04_ruralreach.sql, 05_safeher.sql, 06_genericfirst.sql (optional)
+-- ============================================================================

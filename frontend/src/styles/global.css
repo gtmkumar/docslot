@@ -1,0 +1,258 @@
+@import 'tailwindcss';
+
+/* ============================================================================
+   DocSlot design tokens — canonical design DNA (ADR-008), ported verbatim from
+   the Claude Design prototype. Base tokens live as CSS variables so they can be
+   re-themed at runtime (light/dark via [data-theme], density via [data-density]).
+   @theme inline (below) aliases them into Tailwind color/font utilities so that
+   `bg-surface`, `text-ink`, `border-line`, `font-mono`, etc. resolve to the same
+   variables — re-theming the variable re-themes every utility. Zero hex literals
+   ever appear in component code; colour always comes through a token.
+   ========================================================================== */
+
+:root {
+  /* Brand */
+  --ink: #0e1f1c; /* deep forest, near-black */
+  --ink-2: #1e332e;
+  --muted: #5c6f69;
+  --muted-2: #8a9994;
+  --line: #e3e8e4;
+  --line-strong: #c9d2cc;
+  --bg: #f6f4ee; /* warm off-white, paper */
+  --bg-2: #fbfaf5;
+  --surface: #ffffff;
+  --surface-sunk: #f1eee5;
+  --primary: #1f5e50; /* deep teal-green, medical */
+  --primary-2: #267a66;
+  --primary-soft: #dce9e3;
+  --accent: #e0633a; /* warm terracotta */
+  --accent-soft: #f8e4d7;
+  --whatsapp: #25d366;
+  --whatsapp-ink: #075e54;
+  --whatsapp-soft: #dcf8e0;
+  --warn: #c2871b;
+  --warn-soft: #f7ebcd;
+  --danger: #b5392e;
+  --danger-soft: #f6dad6;
+  --info: #2a5c8a;
+  --info-soft: #dce7f2;
+
+  /* Radii / shadow */
+  --radius: 12px;
+  --radius-lg: 18px;
+  --radius-sm: 8px;
+  --shadow-sm: 0 1px 0 rgba(14, 31, 28, 0.04), 0 1px 2px rgba(14, 31, 28, 0.04);
+  --shadow: 0 1px 0 rgba(14, 31, 28, 0.04), 0 8px 24px -12px rgba(14, 31, 28, 0.12);
+  --shadow-lg: 0 1px 0 rgba(14, 31, 28, 0.04), 0 24px 60px -20px rgba(14, 31, 28, 0.25);
+
+  --row-h: 56px;
+
+  /* Motion (canonical design DNA, ADR-008) */
+  --motion: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-fast: 200ms;
+  --dur-base: 240ms;
+}
+
+[data-density='compact'] {
+  --row-h: 44px;
+}
+
+[data-theme='dark'] {
+  --ink: #ecefec;
+  --ink-2: #c9d2cc;
+  --muted: #94a39d;
+  --muted-2: #6f7e78;
+  --line: #1f2a28;
+  --line-strong: #2a3733;
+  --bg: #0b1412;
+  --bg-2: #0f1a17;
+  --surface: #14201d;
+  --surface-sunk: #0e1a17;
+  --primary: #4fb39a;
+  --primary-2: #6cc4ad;
+  --primary-soft: #1a3a33;
+  --accent: #ed7b53;
+  --accent-soft: #3a2018;
+  --whatsapp-soft: #143226;
+  --warn-soft: #2c2412;
+  --danger-soft: #2e1614;
+  --info-soft: #142536;
+}
+
+/* Map runtime variables into Tailwind's design-token system. `inline` makes
+   Tailwind emit `var(--ink)` directly (not a resolved value), so dark-mode
+   overrides above flow through `bg-ink`, `text-muted`, etc. at runtime. */
+@theme inline {
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-muted-2: var(--muted-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-surface: var(--surface);
+  --color-surface-sunk: var(--surface-sunk);
+  --color-primary: var(--primary);
+  --color-primary-2: var(--primary-2);
+  --color-primary-soft: var(--primary-soft);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-whatsapp: var(--whatsapp);
+  --color-whatsapp-ink: var(--whatsapp-ink);
+  --color-whatsapp-soft: var(--whatsapp-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+}
+
+@theme {
+  --font-sans: 'Inter Tight', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-deva: 'Noto Sans Devanagari', 'Inter Tight', sans-serif;
+}
+
+/* ---- base ---- */
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+body {
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background: var(--bg);
+  font-feature-settings: 'ss01', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection {
+  background: var(--primary-soft);
+  color: var(--ink);
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+  border: 2px solid var(--bg);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-2);
+}
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* ---- helper utilities used across components ---- */
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: 'zero', 'ss01';
+}
+.deva {
+  font-family: var(--font-deva);
+}
+
+/* ---- slide-over + micro animations (shared by every panel) ---- */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes slideInLeft {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes slideOutRight {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes accordion {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.panel-closing > .panel-aside {
+  animation: slideOutRight 240ms cubic-bezier(0.32, 0.72, 0, 1) forwards !important;
+}
+.panel-closing > .panel-backdrop {
+  animation: fadeOut 200ms ease forwards !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

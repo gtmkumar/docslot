@@ -1,0 +1,11 @@
+- [Frontend PHI & Idempotency Patterns](frontend-phi-idempotency.md) — where the dashboard SPA masks phone, attaches Idempotency-Key, and gates on can()
+- [Backend Dashboard Contracts](backend-dashboard-contracts.md) — Wave 2 DTO/enum conventions, the canonical PHI-masking and enum-wire-value rules to enforce on the frontend
+- [Recurring Frontend/Contract Drift](drift-watchlist.md) — anti-patterns to re-check every wave (raw phone in list DTO, source enum drift, partial idempotency)
+- [Backend Slice 01 platform_core](backend-slice01-platform-core.md) — auth/RBAC/tenant/audit security facts + the X-Tenant-Id header-trust cross-tenant blocker (RESOLVED, cleared)
+- [Backend Slice 02 platform_api](backend-slice02-platform-api.md) — OAuth client-credentials + webhooks; cleared PASS; consent gate deferred to slice 03, AES key/replay/SSRF tracked
+- [Backend Slice 03 docslot booking](backend-slice03-docslot-booking.md) — booking core, first real PHI; consent/PoU + webhook-PHI verified; app-owned tables → promote-to-canonical condition
+- [Backend Slice 05 security_hardening](backend-slice05-security-hardening.md) — field encryption + crypto-erasure verified; audit-chain concurrency race + GUC/BYPASSRLS hardening tracked
+- [Backend Slice 03b clinical PHI](backend-slice03b-clinical-phi.md) — RLS real under least-privilege docslot_app, encrypted clinical fields, audit-chain lock fixed; access_policies column-gate tracked
+- [Backend Slice 07 commission_broker](backend-slice07-commission-broker.md) — CLEARED: broker IDOR + pool-safety fixed (SET LOCAL in tx; dedicated conn safe); super_admin RBAC gap → slice 08
+- [Backend Slice 08 rbac_navigation](backend-slice08-rbac-navigation.md) — CLEARED: super_admin 127/127 sweep, clean key inheritance, menu gates enforce; doctor tenant-scope is pre-existing README/seed drift
+- [Backend Slice 09 WhatsApp webhook](backend-slice09-whatsapp-webhook.md) — PASS-WITH-FINDINGS: HMAC verify-before-side-effects, server-only tenant override (JWT wins), 2-layer dedup, audited CreateBookingCommand; only low/medium findings

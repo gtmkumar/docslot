@@ -1,0 +1,190 @@
+// Left sidebar (matches image.png): logo + RECEPTION DESK eyebrow, org switcher,
+// the backend-driven WORKSPACE nav, and the bottom block (WhatsApp LIVE pill,
+// Settings, profile). The nav tree is rendered from useMenus() — NOT hardcoded,
+// NEVER role-branched. Active route = teal. Badges come from the batched
+// useBadges() poll keyed by badgeSource.
+
+import { Link, useNavigate, useRouterState } from '@tanstack/react-router';
+import { LogOut, Settings as SettingsIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { Avatar } from '@/components/ui/Avatar';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { iconForKey } from '@/components/ui/icons';
+import { useBadges, useMenus } from '@/features/navigation/api';
+import { useLogout } from '@/features/auth/api';
+import { ORGS } from '@/lib/data';
+import { useSession } from '@/stores/session';
+import { useUI } from '@/stores/ui';
+import type { MenuNode } from '@/lib/mock/contracts';
+
+export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
+  const { t, i18n } = useTranslation();
+  const { data: menus, isLoading, isError } = useMenus();
+  const { data: badges } = useBadges();
+  const orgId = useUI((s) => s.orgId);
+  const setOrg = useUI((s) => s.setOrg);
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isHindi = i18n.language === 'hi';
+  const navigate = useNavigate();
+  const user = useSession((s) => s.user);
+  const doLogout = useLogout();
+
+  const onSignOut = async () => {
+    await doLogout.mutateAsync();
+    await navigate({ to: '/login', search: { redirect: undefined } });
+  };
+
+  // Fills its container — width/positioning is owned by AppShell (static rail on
+  // desktop, slide-in drawer on mobile). onNavigate closes the mobile drawer.
+  return (
+    <aside className="flex h-full w-full flex-col border-r border-line bg-surface">
+      {/* Brand */}
+      <div className="flex items-center gap-2.5 px-4 py-4">
+        <span
+          aria-hidden="true"
+          className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-primary text-bg"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <path d="M5 12h4l2-7 4 14 2-7h2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+        <div className="leading-tight">
+          <p className="text-sm font-semibold text-ink">DocSlot</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-2">{t('app.eyebrow')}</p>
+        </div>
+      </div>
+
+      {/* Org switcher */}
+      <div className="px-3 pb-3">
+        <label htmlFor="org-switcher" className="sr-only">
+          {t('topbar.breadcrumbReception')}
+        </label>
+        <select
+          id="org-switcher"
+          value={orgId}
+          onChange={(e) => setOrg(e.target.value)}
+          className="w-full rounded-[var(--radius-sm)] border border-line bg-surface-sunk px-2.5 py-2 text-[13px] font-medium text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary-soft"
+        >
+          {ORGS.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Workspace nav — data-driven */}
+      <nav aria-label={t('app.workspace')} className="flex-1 overflow-y-auto px-3">
+        <p className="px-1 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-2">{t('app.workspace')}</p>
+        {isLoading ? (
+          <div className="flex flex-col gap-1.5 px-1">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-full" />
+            ))}
+          </div>
+        ) : isError || !menus ? (
+          <p className="px-1 text-[13px] text-muted">{t('error.genericTitle')}</p>
+        ) : (
+          <ul className="flex flex-col gap-0.5">
+            {menus.map((node) => (
+              <NavItem
+                key={node.key}
+                node={node}
+                active={node.route === pathname}
+                isHindi={isHindi}
+                badge={node.badgeSource ? badges?.[node.badgeSource] : undefined}
+                onNavigate={onNavigate}
+              />
+            ))}
+          </ul>
+        )}
+      </nav>
+
+      {/* Bottom block */}
+      <div className="mt-auto border-t border-line px-3 py-3">
+        <div className="flex items-center gap-2 rounded-[var(--radius-sm)] bg-whatsapp-soft px-2.5 py-2">
+          <span className="h-2 w-2 rounded-full bg-whatsapp" aria-hidden="true" />
+          <span className="flex-1 text-[13px] font-medium text-whatsapp-ink">{t('agent.label')}</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-whatsapp-ink">{t('agent.live')}</span>
+        </div>
+
+        <Link
+          to="/settings"
+          onClick={onNavigate}
+          className="mt-1 flex items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-[13px] text-ink transition-colors hover:bg-surface-sunk aria-[current=page]:bg-primary-soft aria-[current=page]:text-primary"
+        >
+          <SettingsIcon size={16} aria-hidden="true" />
+          {t('app.settings')}
+        </Link>
+
+        <div className="mt-1 flex items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2">
+          <Avatar name={user?.fullName ?? 'DocSlot'} size="sm" />
+          <div className="min-w-0 flex-1 leading-tight">
+            <p className="truncate text-[13px] font-medium text-ink">{user?.fullName ?? '—'}</p>
+            <p className="text-[11px] text-muted">{t('app.profileRole')}</p>
+          </div>
+          <button
+            type="button"
+            aria-label={t('auth.signOut')}
+            onClick={() => void onSignOut()}
+            disabled={doLogout.isPending}
+            className="rounded p-1 text-muted transition-colors hover:bg-surface-sunk hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
+          >
+            <LogOut size={15} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function NavItem({
+  node,
+  active,
+  isHindi,
+  badge,
+  onNavigate,
+}: {
+  node: MenuNode;
+  active: boolean;
+  isHindi: boolean;
+  badge: number | undefined;
+  onNavigate?: () => void;
+}) {
+  // icon/labelHi are nullable on the wire; fall back to a default glyph and to
+  // the English label when the Hindi string is absent.
+  const Icon = iconForKey(node.icon ?? '');
+  const label = (isHindi ? node.labelHi : node.label) ?? node.label;
+  // Section headers (server-decided) or routeless nodes render as group labels.
+  if (node.isSectionHeader || !node.route) {
+    return (
+      <li className="px-1 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-2">{label}</li>
+    );
+  }
+  return (
+    <li>
+      <Link
+        to={node.route}
+        onClick={onNavigate}
+        className={[
+          'flex items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-sm transition-colors',
+          active ? 'bg-primary text-bg' : 'text-ink hover:bg-surface-sunk',
+          isHindi ? 'deva' : '',
+        ].join(' ')}
+      >
+        <Icon size={17} aria-hidden="true" />
+        <span className="flex-1 truncate">{label}</span>
+        {badge ? (
+          <span
+            className={[
+              'inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold',
+              active ? 'bg-bg/20 text-bg' : 'bg-accent-soft text-accent',
+            ].join(' ')}
+          >
+            {badge}
+          </span>
+        ) : null}
+      </Link>
+    </li>
+  );
+}

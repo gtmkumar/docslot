@@ -1,0 +1,11 @@
+# React UI Engineer — Memory Index
+
+- [Frontend Contract Surface](project_contract-surface.md) — mock adapter signatures + menu/permission/badge/summary shapes the backend must mirror.
+- [Foundation Patterns](project_foundation-patterns.md) — where the slide-over/permission/i18n/nav seams live and how to extend them in later waves.
+- [Auth & RBAC Admin](project_auth-rbac.md) — Slice 01 frontend: session store, route guard, Team & Roles surface + which permission keys gate which actions.
+- [Developer / API Platform Portal](project_developer-portal.md) — Slice 02 frontend: API clients/scopes/webhooks/logs, secret-shown-once UX, gating + flags.
+- [Security & Compliance Console](project_security-console.md) — Slice 05 frontend: audit chain, DPDP export/erasure, breaches, break-glass, keys; irreversible-erasure UX + no-PHI rules.
+- [Clinical Records UI](project_clinical-records.md) — Slice 03b frontend: prescriptions/reports/history/ABDM under patient detail; purpose-of-use gate + consent + break-glass + no-PHI-leakage rules.
+- [Commission / Care Partners Console](project_commission-console.md) — Slice 07 frontend: Care Partners/attribution/rules/payouts/disputes; Care Partner terminology, PCPNDT-enforced, approve≠execute, PAN/PHI safety.
+- [Live-API Seam](project_live-api-seam.md) — VITE_USE_REAL_API: seam layout, wired reads+writes (booking actions/add-patient w/ Idempotency-Key), enum/shape quirks, open gaps (no POST /doctors, wizard slots, manage-panel BOOKINGS.find).
+- [Commission live wiring (PASS 3)](project_commission_live_wiring.md) — Care Partners + Calendar live quirks: omitted CommissionRuleDto keys, 204 writes, raiseDispute injects raisedBy, payout approve≠execute RBAC gate, calendar client-side slot rollup.
