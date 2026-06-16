@@ -1,1 +1,0 @@
-import"./index-Cp2ZzXS6.js";function i(){return typeof crypto<"u"&&"randomUUID"in crypto?crypto.randomUUID():`idmp-${Date.now()}-${Math.random().toString(16).slice(2)}`}class s extends Error{constructor(r,t,o){super(t),this.status=r,this.body=o,this.name="ApiError"}}export{s as A,i};

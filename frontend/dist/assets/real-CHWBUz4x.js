@@ -1,1 +1,0 @@
-import{A as t}from"./api-client-B-n5HDko.js";import"./index-Cp2ZzXS6.js";function i(s){var e,o;if(s instanceof t){const r=s.body;return((e=r==null?void 0:r.message)==null?void 0:e.responseMessage)??((o=r==null?void 0:r.message)==null?void 0:o.errorMessage)??s.message}return s instanceof Error?s.message:"Request failed"}export{i as t};
