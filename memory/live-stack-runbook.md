@@ -13,7 +13,7 @@ The frontend can run against the LIVE .NET API (not just mock). Verified working
 3. API: `ASPNETCORE_ENVIRONMENT=Development dotnet run --project backend/mediq/mediq.Api --urls http://localhost:5054` (connects as `docslot_app`; health at `/health`, OpenAPI at `/openapi/v1.json`).
 4. Frontend live mode: `VITE_USE_REAL_API=1 npm run dev` (Vite proxies `/api` → :5054, configured in vite.config.ts — no CORS needed). Default `npm run dev` stays on the mock seam.
 
-**Demo login (real + mock both work):** `priyanka@apollocare.in` / `reception` (tenant_owner in Apollo Care).
+**Demo logins (real + mock):** `priyanka@apollocare.in` / `reception` (tenant_owner — reception-desk view; live nav OMITS Developers/Security). `admin@docslot.io` / `admin` (super_admin + tenant_owner@Apollo — platform admin; live nav INCLUDES Developers + Security). Seed: `seed_demo_platform_admin.sql` (admin + 4 api_clients + 2 breaches + 2 DPDP requests).
 
 **Seeds (idempotent, run as superuser, in order):** `seed_demo_login.sql`, `seed_demo_doctors.sql`, `seed_demo_patients.sql`, `seed_demo_bookings.sql`, `seed_demo_schedules_reviews.sql`, `seed_demo_slots.sql` (available bookable slots — wizard + calendar need these), `seed_demo_commission.sql` (4 brokers incl. 1 blacklisted, 3 rules, 4 attributions, 2 payouts). `reset_demo_state.sql` restores the canonical baseline (bookings 4 pending/3 confirmed/2 completed/1 no_show, revenue ₹3,550; only booking-backed slots are 'booked', the rest 'available' — do NOT blanket-mark today's slots booked or the Calendar shows today full).
 
