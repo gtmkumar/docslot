@@ -108,5 +108,30 @@ export const approveRule = USE_REAL_API ? real.approveRule : approveRuleMock;
 // up per day×time row). Mock serves the prototype deterministic grid unchanged.
 export const getCalendarGrid = USE_REAL_API ? real.getCalendarGrid : mock.getCalendarGrid;
 
+// ── DEVELOPERS / API PLATFORM (Slice 02) — READ LISTS only ────────────────────
+// Live: GET /api-clients, /api-scopes, /webhooks/event-types, and /webhooks
+// (fanned out per client — no list-all endpoint). PLATFORM-ADMIN gated; a
+// tenant_owner gets 403 + no nav entry, so these are only reachable by the
+// platform-admin login in live mode. Mock side reuses the existing lib/mock fns
+// unchanged. DANGEROUS WRITES (register/rotate/createWebhook/status/scopes/
+// rate-limits) are NOT wired — they stay on mock/best-effort regardless of flag.
+export const listApiClients = USE_REAL_API ? real.listApiClients : mock.listApiClients;
+export const listScopes = USE_REAL_API ? real.listScopes : mock.listScopes;
+export const listEventTypes = USE_REAL_API ? real.listEventTypes : mock.listEventTypes;
+export const listWebhooks = USE_REAL_API ? real.listWebhooks : mock.listWebhooks;
+
+// ── SECURITY & COMPLIANCE (Slice 05) — READ LISTS only ────────────────────────
+// Live: GET /security/{audit-chain/verify, audit-chain/anchors, dpdp/requests,
+// breaches, review-queue, keys}. PLATFORM-ADMIN gated (distinct platform.* perms).
+// Several lists are legitimately empty → the tab renders its empty state. NO PHI /
+// NO key material. DANGEROUS WRITES (break-glass/breach report/DPDP export+erase/
+// deletion-cert gen/anchor) are NOT wired — they stay on mock/best-effort.
+export const verifyAuditChain = USE_REAL_API ? real.verifyAuditChain : mock.verifyAuditChain;
+export const listAnchors = USE_REAL_API ? real.listAnchors : mock.listAnchors;
+export const listDpdpRequests = USE_REAL_API ? real.listDpdpRequests : mock.listDpdpRequests;
+export const listBreaches = USE_REAL_API ? real.listBreaches : mock.listBreaches;
+export const listReviewQueue = USE_REAL_API ? real.listReviewQueue : mock.listReviewQueue;
+export const listKeyStatus = USE_REAL_API ? real.listKeyStatus : mock.listKeyStatus;
+
 export { USE_REAL_API } from './flag';
 export { toUserError } from './real';

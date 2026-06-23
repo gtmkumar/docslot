@@ -11,9 +11,52 @@
 //    server-side, so the header is always safe to send.
 //  - idempotencyKey() helper that POST callers attach as `Idempotency-Key`.
 
-import { getSessionSnapshot } from '@/stores/session';
+import { getSessionSnapshot, useSession } from '@/stores/session';
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
+
+// Auth endpoints are exempt from the 401→refresh→retry flow: refreshing in
+// response to their own 401 would recurse (login/refresh failures are terminal).
+const AUTH_EXEMPT_PATHS = ['/auth/login', '/auth/refresh', '/auth/logout'];
+
+// Single-flight refresh. The access token is a short-lived (15 min) JWT and the
+// refresh token ROTATES server-side (one-time use), so N concurrent 401s must
+// share ONE /auth/refresh call — otherwise the first rotates the token and the
+// rest fail, killing the session. Concurrent callers await the same promise.
+let refreshInFlight: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const { refreshToken, tenantId, setSession, clear } = useSession.getState();
+    if (!refreshToken) {
+      clear();
+      return null;
+    }
+    try {
+      const res = await fetch(`${BASE_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      });
+      if (!res.ok) {
+        // Refresh token expired/revoked → session is over; the route guard
+        // redirects to /login on the next navigation.
+        clear();
+        return null;
+      }
+      const data = (await res.json()) as { accessToken: string; refreshToken: string };
+      setSession({ accessToken: data.accessToken, refreshToken: data.refreshToken, tenantId });
+      return data.accessToken;
+    } catch {
+      clear();
+      return null;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
+}
 
 /** Bearer token from the live session (falls back to a dev env token if unset). */
 function getAuthToken(): string | null {
@@ -66,25 +109,41 @@ export class ApiError extends Error {
  * Callers in feature `api.ts` files should zod-parse the result before use.
  */
 export async function apiFetch<T = unknown>(path: string, req: ApiRequest = {}): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-
-  const token = getAuthToken();
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  // Explicit tenantId wins; otherwise fall back to the active session tenant.
+  // Tenant + purpose + idempotency are stable across an auth retry; only the
+  // Bearer token is re-read per attempt (it changes after a refresh). The
+  // idempotency key is fixed up-front so a retried POST reuses the same key.
   const tenantId = req.tenantId ?? getActiveTenantId();
-  if (tenantId) headers['X-Tenant-Id'] = tenantId;
-  // Clinical PHI reads carry the declared purpose-of-use (DPDP; logged server-side).
-  if (req.purposeOfUse) headers['X-Purpose-Of-Use'] = req.purposeOfUse;
-  if (req.idempotency) {
-    headers['Idempotency-Key'] = typeof req.idempotency === 'string' ? req.idempotency : idempotencyKey();
-  }
+  const idempotencyHeader = req.idempotency
+    ? typeof req.idempotency === 'string'
+      ? req.idempotency
+      : idempotencyKey()
+    : undefined;
 
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method: req.method ?? 'GET',
-    headers,
-    body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
-    signal: req.signal,
-  });
+  const send = (): Promise<Response> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const token = getAuthToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (tenantId) headers['X-Tenant-Id'] = tenantId;
+    // Clinical PHI reads carry the declared purpose-of-use (DPDP; logged server-side).
+    if (req.purposeOfUse) headers['X-Purpose-Of-Use'] = req.purposeOfUse;
+    if (idempotencyHeader) headers['Idempotency-Key'] = idempotencyHeader;
+
+    return fetch(`${BASE_URL}${path}`, {
+      method: req.method ?? 'GET',
+      headers,
+      body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
+      signal: req.signal,
+    });
+  };
+
+  let res = await send();
+
+  // The access token expired → transparently refresh once and replay. Auth
+  // endpoints are exempt (their 401 is terminal, not a stale-token signal).
+  if (res.status === 401 && !AUTH_EXEMPT_PATHS.some((p) => path.startsWith(p))) {
+    const newToken = await refreshAccessToken();
+    if (newToken) res = await send();
+  }
 
   const text = await res.text();
   const parsed = text ? (JSON.parse(text) as unknown) : undefined;

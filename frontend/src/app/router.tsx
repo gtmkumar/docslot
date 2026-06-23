@@ -167,6 +167,14 @@ const settingsRoute = createRoute({
   path: '/settings',
   component: () => <PlaceholderScreen titleKey="app.settings" />,
 });
+// Lab Tests — backend nav surfaces this for lab/hospital/diagnostic tenants; the
+// full screen lands in a later wave, so the route resolves to a placeholder
+// rather than 404 (same pattern as /settings).
+const labRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/lab',
+  component: () => <PlaceholderScreen titleKey="nav.lab" />,
+});
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -183,6 +191,7 @@ const routeTree = rootRoute.addChildren([
     securityRoute,
     carePartnersRoute,
     settingsRoute,
+    labRoute,
   ]),
 ]);
 

@@ -20,11 +20,15 @@ import { MockApiError } from '@/lib/mock';
 import {
   AnalyticsDtoSchema,
   AnalyticsSchema,
+  ApiClientSchema,
   AttributionSchema,
+  AuditAnchorSchema,
+  AuditChainVerifySchema,
   BadgesResponseSchema,
   BookingActionResultDtoSchema,
   BookingListItemDtoSchema,
   BookingRowSchema,
+  BreachSchema,
   BrokerSchema,
   CalendarGridSchema,
   CommissionCreatedSchema,
@@ -34,6 +38,9 @@ import {
   DashboardSummaryDtoSchema,
   DisputeSchema,
   DoctorDtoSchema,
+  DpdpRequestSchema,
+  EventTypeSchema,
+  KeyStatusSchema,
   MeSchema,
   MenusResponseSchema,
   PatientListItemDtoSchema,
@@ -42,15 +49,22 @@ import {
   PermissionsResponseSchema,
   RegisterBrokerResultSchema,
   RegisterPatientResultDtoSchema,
+  ReviewQueueItemSchema,
+  ScopeSchema,
   SlotDtoSchema,
   SlotSchema,
   TokenResponseSchema,
+  WebhookSubscriptionSchema,
   type Analytics,
   type AnalyticsDto,
+  type ApiClient,
   type Attribution,
+  type AuditAnchor,
+  type AuditChainVerify,
   type BadgesResponse,
   type BookingMutationResult,
   type BookingRow,
+  type Breach,
   type Broker,
   type CalendarGrid,
   type CommissionCreated,
@@ -60,6 +74,9 @@ import {
   type DashboardSummary,
   type Dispute,
   type DoctorCard,
+  type DpdpRequest,
+  type EventType,
+  type KeyStatus,
   type LoginRequest,
   type Me,
   type MenusResponse,
@@ -72,8 +89,11 @@ import {
   type RegisterBrokerRequest,
   type RegisterBrokerResult,
   type ResolveDisputeRequest,
+  type ReviewQueueItem,
+  type Scope,
   type Slot,
   type TokenResponse,
+  type WebhookSubscription,
 } from '@/lib/mock/contracts';
 import type { Booking, BookingSource, BookingStatus, Lang } from '@/lib/types';
 
@@ -1089,4 +1109,116 @@ export async function getCalendarGrid(): Promise<CalendarGrid> {
     rangeLabel: weekRangeLabel(week),
     columns,
   });
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DEVELOPERS / API PLATFORM portal (Slice 02 platform_api) — READ LISTS only.
+// ─────────────────────────────────────────────────────────────────────────────
+// PLATFORM-ADMIN surface (gated `platform.api_clients.manage`; a tenant_owner
+// gets 403 + no nav entry). The frontend zod contracts mirror the .NET DTOs 1:1,
+// so the adapters are thin: apiFetch → zod-parse the RAW (bare-array) DTO →
+// (mostly) return as-is. Two reconciliations:
+//   1. ApiClientDto carries NO `status` field — the UI derives it from the
+//      is_active/is_verified pair (same `statusOf` the mock applies).
+//   2. There is NO "list-all webhooks" endpoint: GET /webhooks REQUIRES a
+//      `clientId`. We fan out one call per client and flatten (tolerant per-call),
+//      so the WebhooksTab sees the union across the tenant's clients.
+// WRITES (register/rotate/createWebhook/status/scopes/rate-limits) stay on the
+// existing mock/best-effort path — NOT wired here (do-no-harm on dangerous
+// platform mutations). SECRETS are never returned by any of these READS.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Derive the UI status from the DB's is_active/is_verified pair (mirrors the
+ *  mock's statusOf — the ApiClientDto omits the computed `status`). */
+function clientStatusOf(isActive: boolean, isVerified: boolean): ApiClient['status'] {
+  if (!isActive) return 'suspended';
+  if (!isVerified) return 'pending';
+  return 'approved';
+}
+
+export async function listApiClients(): Promise<ApiClient[]> {
+  const raw = await apiFetch<unknown[]>('/api-clients?skip=0&take=100');
+  // The DTO has every ApiClient field except the computed `status`; fill it.
+  const rows = (raw as Record<string, unknown>[]).map((r) => ({
+    ...r,
+    status: clientStatusOf(Boolean(r.isActive), Boolean(r.isVerified)),
+  }));
+  return ApiClientSchema.array().parse(rows);
+}
+
+export async function listScopes(): Promise<Scope[]> {
+  const raw = await apiFetch<unknown[]>('/api-scopes');
+  return ScopeSchema.array().parse(raw);
+}
+
+export async function listEventTypes(): Promise<EventType[]> {
+  const raw = await apiFetch<unknown[]>('/webhooks/event-types');
+  return EventTypeSchema.array().parse(raw);
+}
+
+/** No list-all webhooks endpoint exists — GET /webhooks needs a clientId. We
+ *  resolve the tenant's clients first, then fetch each client's webhooks
+ *  concurrently (a per-call failure is tolerated, treated as no webhooks), and
+ *  flatten. An empty result renders the WebhooksTab empty state, never a crash. */
+export async function listWebhooks(): Promise<WebhookSubscription[]> {
+  const clientsRaw = await apiFetch<unknown[]>('/api-clients?skip=0&take=100');
+  const clients = ApiClientSchema.array().parse(
+    (clientsRaw as Record<string, unknown>[]).map((r) => ({
+      ...r,
+      status: clientStatusOf(Boolean(r.isActive), Boolean(r.isVerified)),
+    })),
+  );
+  const lists = await Promise.all(
+    clients.map((c) =>
+      apiFetch<unknown[]>(`/webhooks?clientId=${encodeURIComponent(c.clientId)}`)
+        .then((raw) => WebhookSubscriptionSchema.array().parse(raw))
+        .catch(() => [] as WebhookSubscription[]),
+    ),
+  );
+  return lists.flat();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SECURITY & COMPLIANCE console (Slice 05 security_hardening) — READ LISTS only.
+// ─────────────────────────────────────────────────────────────────────────────
+// PLATFORM-ADMIN surface (each endpoint gated by a distinct platform.* perm). The
+// frontend zod contracts mirror the SecurityController DTOs 1:1, so the adapters
+// are pure pass-throughs: apiFetch → zod-parse → return. Several lists are
+// legitimately EMPTY (deletion-certs / review-queue) → the tab renders its empty
+// state, never an error. NO PHI: subject identity is a MASKED phone only; NO key
+// material; verify/anchors carry hashes/metadata only.
+// WRITES (break-glass / breach report / DPDP export+erase / deletion-cert gen /
+// anchor) stay on the existing mock/best-effort path — NOT wired here (do-no-harm
+// on dangerous platform mutations).
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** GET /security/audit-chain/verify → single object (intact/breaks/lastVerifiedAt). */
+export async function verifyAuditChain(): Promise<AuditChainVerify> {
+  const raw = await apiFetch<unknown>('/security/audit-chain/verify');
+  return AuditChainVerifySchema.parse(raw);
+}
+
+export async function listAnchors(): Promise<AuditAnchor[]> {
+  const raw = await apiFetch<unknown[]>('/security/audit-chain/anchors?take=100');
+  return AuditAnchorSchema.array().parse(raw);
+}
+
+export async function listDpdpRequests(): Promise<DpdpRequest[]> {
+  const raw = await apiFetch<unknown[]>('/security/dpdp/requests?take=100');
+  return DpdpRequestSchema.array().parse(raw);
+}
+
+export async function listBreaches(): Promise<Breach[]> {
+  const raw = await apiFetch<unknown[]>('/security/breaches?take=100');
+  return BreachSchema.array().parse(raw);
+}
+
+export async function listReviewQueue(): Promise<ReviewQueueItem[]> {
+  const raw = await apiFetch<unknown[]>('/security/review-queue?take=100');
+  return ReviewQueueItemSchema.array().parse(raw);
+}
+
+export async function listKeyStatus(): Promise<KeyStatus[]> {
+  const raw = await apiFetch<unknown[]>('/security/keys');
+  return KeyStatusSchema.array().parse(raw);
 }

@@ -8,8 +8,10 @@ import {
   CalendarCheck,
   CalendarDays,
   Code,
+  FlaskConical,
   Handshake,
   LayoutDashboard,
+  Settings as SettingsGear,
   Shield,
   ShieldCheck,
   Stethoscope,
@@ -28,6 +30,8 @@ const ICONS: Record<string, LucideIcon> = {
   'shield-check': ShieldCheck,
   code: Code,
   handshake: Handshake,
+  flask: FlaskConical,
+  gear: SettingsGear,
 };
 
 /** Resolve a backend icon key to a lucide component, falling back to a dashboard glyph. */

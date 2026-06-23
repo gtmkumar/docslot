@@ -1,7 +1,7 @@
 // Session state (Zustand): the signed-in user (MeDto), active tenant, and tokens.
-// Persisted to localStorage so a refresh keeps the session (the access token is a
-// short-lived JWT; a real deployment would refresh it on bootstrap — wired via
-// refresh() in the auth feature).
+// Persisted to localStorage so a reload keeps the session. The access token is a
+// short-lived (15 min) JWT; api-client transparently renews it on a 401 via a
+// single-flight /auth/refresh and replays the request (see lib/api-client.ts).
 //
 // The api-client cannot call React hooks, so it reads the CURRENT token + active
 // tenant through `getSessionSnapshot()` (a plain getter over the store), and the
