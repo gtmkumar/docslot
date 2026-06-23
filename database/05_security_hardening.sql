@@ -605,8 +605,11 @@ CREATE OR REPLACE FUNCTION platform.current_tenant_id() RETURNS UUID AS $$
 $$ LANGUAGE SQL STABLE;
 
 -- Helper: is the current session a super_admin?
+-- NULLIF guards the empty string: a SET LOCAL custom GUC reverts to '' (not unset)
+-- on a pooled connection after the first transaction, and ''::BOOLEAN errors (22P02).
+-- Mirrors current_tenant_id()'s NULLIF pattern above.
 CREATE OR REPLACE FUNCTION platform.current_is_super_admin() RETURNS BOOLEAN AS $$
-    SELECT COALESCE(current_setting('app.is_super_admin', true)::BOOLEAN, false);
+    SELECT COALESCE(NULLIF(current_setting('app.is_super_admin', true), '')::BOOLEAN, false);
 $$ LANGUAGE SQL STABLE;
 
 -- Enable RLS on the most sensitive tables (medical data)

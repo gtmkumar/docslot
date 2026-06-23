@@ -1,10 +1,11 @@
 -- ============================================================================
 -- DocSlot Platform — Complete Schema Bundle (All-in-One)
 -- ============================================================================
--- This is the bundled equivalent of running the 9 canonical files in order:
+-- This is the bundled equivalent of running the 11 canonical files in order:
 --   01_platform_core.sql -> 02_platform_api.sql -> 03_docslot.sql
 --   -> 05_security_hardening.sql -> 06_ai_services.sql -> 07_commission_broker.sql
 --   -> 08_rbac_navigation.sql -> 09_chat_identity.sql -> 04_future_products.sql
+--   -> 10_roles_grants.sql -> 11_rbac_hardening.sql
 --
 -- Source files remain canonical in database/*.sql. This bundle is REGENERATED
 -- from them by database/regenerate_bundle.py — if you change a source file, re-run it.
@@ -2881,8 +2882,11 @@ CREATE OR REPLACE FUNCTION platform.current_tenant_id() RETURNS UUID AS $$
 $$ LANGUAGE SQL STABLE;
 
 -- Helper: is the current session a super_admin?
+-- NULLIF guards the empty string: a SET LOCAL custom GUC reverts to '' (not unset)
+-- on a pooled connection after the first transaction, and ''::BOOLEAN errors (22P02).
+-- Mirrors current_tenant_id()'s NULLIF pattern above.
 CREATE OR REPLACE FUNCTION platform.current_is_super_admin() RETURNS BOOLEAN AS $$
-    SELECT COALESCE(current_setting('app.is_super_admin', true)::BOOLEAN, false);
+    SELECT COALESCE(NULLIF(current_setting('app.is_super_admin', true), '')::BOOLEAN, false);
 $$ LANGUAGE SQL STABLE;
 
 -- Enable RLS on the most sensitive tables (medical data)

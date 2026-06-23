@@ -55,6 +55,11 @@ Production-ready PostgreSQL schema for the DocSlot multi-product healthcare plat
 | `04_future_products.sql` | RuralReach + SafeHer + GenericFirst | 22 | Optional — when those products launch |
 | `05_security_hardening.sql` | Medical-grade security: encryption keys, audit chain, RLS, anomaly detection, DPDP rights | 13 | **Required for production with real patient data** |
 | `06_ai_services.sql` | AI/ML schema: LangGraph workflows, embeddings, agent runs, predictions, OCR extractions | 10 | **Required if using DocSlot.AI Python service** |
+| `07_commission_broker.sql` | Broker referral + commission ledger and payouts | 10 | **Required** for the commission system |
+| `08_rbac_navigation.sql` | Backend-driven menus + per-user permission overrides | 5 | **Required** for backend-driven nav |
+| `09_chat_identity.sql` | WhatsApp identity (`wa_contact_profiles`), behalf-booking, direct-booking discount with DB-enforced broker mutual-exclusivity | 1 | **Required** — depends on 03 + 07 |
+| `10_roles_grants.sql` | Least-privilege `docslot_app` role (NOSUPERUSER/NOBYPASSRLS) + grants; no audit-log UPDATE/DELETE | 0 | **Required for production** — idempotent; runs LAST |
+| `11_rbac_hardening.sql` | RBAC hardening R1–R6: RLS on the RBAC/entitlement tables, tenant-status gating, privilege-escalation guard, SoD, super_admin cross-tenant | 2 | **Required for production** — runs after 10 |
 
 ## Execution Order
 
@@ -70,8 +75,17 @@ psql -d docslot_platform -f 05_security_hardening.sql
 # Required if using DocSlot.AI Python service (LangGraph workflows, RAG, OCR, predictions)
 psql -d docslot_platform -f 06_ai_services.sql
 
+# Required — broker commission, backend-driven nav, WhatsApp identity + discount
+psql -d docslot_platform -f 07_commission_broker.sql
+psql -d docslot_platform -f 08_rbac_navigation.sql
+psql -d docslot_platform -f 09_chat_identity.sql
+
 # Optional — only when adjacent products are being built
 psql -d docslot_platform -f 04_future_products.sql
+
+# Required for production — run LAST, after every schema/table/function exists
+psql -d docslot_platform -f 10_roles_grants.sql    # least-privilege docslot_app role + grants (idempotent)
+psql -d docslot_platform -f 11_rbac_hardening.sql  # RLS on RBAC tables, escalation guard, SoD, super_admin cross-tenant
 ```
 
 **Why 05 is required for production**: DocSlot handles confidential medical history. DPDP Act 2023 Section 8(5) mandates security safeguards proportionate to data sensitivity. Medical data is the highest sensitivity tier. Running 01-04 without 05 gives you a functional system but lacks: field-level encryption metadata, tamper-proof audit chain, row-level security policies, anomaly detection, break-glass access controls, and cryptographic deletion certificates required by DPDP Sections 11-12. Skip 05 only for dev/staging environments with synthetic data.
@@ -81,7 +95,7 @@ psql -d docslot_platform -f 04_future_products.sql
 
 ## All-in-One Bundle: `docslot_complete.sql`
 
-For convenience, all 6 SQL files are bundled into a single executable file: `docslot_complete.sql`. This is equivalent to running the 6 files in order, but in one command:
+For convenience, all 11 SQL files are bundled into a single executable file: `docslot_complete.sql`. This is equivalent to running the 11 files in order, but in one command:
 
 ```bash
 createdb docslot_platform
@@ -95,7 +109,7 @@ psql -d docslot_platform -f database/docslot_complete.sql
 - All RLS policies, triggers, seed data, RBAC permissions
 
 **Bundle properties**:
-- **Order**: 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 04 (preserving all dependencies)
+- **Order**: 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 04 → 10 → 11 (preserving all dependencies)
 - **Progress markers**: prints `RAISE NOTICE` messages showing which part is loading
 - **Verification footer**: counts tables at the end and reports SUCCESS/MISMATCH
 - **Size**: ~225 KB (sum of all 6 source files plus markers)
@@ -473,4 +487,4 @@ Formalizes the Indian healthcare referral economy: registered brokers with PAN/A
 ### `08_rbac_navigation.sql` — RBAC enhancements (5 tables, `platform.*`)
 Backend-driven navigation menus (tenant_type-aware, bilingual), menu-permission gates, per-user permission overrides (deny-wins, time-boxable), resource/action lookup registries. Includes the performant `resolve_user_permissions()` set resolver and the rewritten `user_has_permission()` / `get_user_menus()`. Run after 01 (and 07 if commission menus should resolve their gating permissions). Narrative doc: `../RBAC_NAVIGATION.md`.
 
-**Execution order with all files**: 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 04 (or just run `docslot_complete.sql`).
+**Execution order with all files**: 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 04 → 10 → 11 (or just run `docslot_complete.sql`).
