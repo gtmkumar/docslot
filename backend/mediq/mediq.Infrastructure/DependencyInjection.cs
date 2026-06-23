@@ -81,6 +81,8 @@ public static class InfrastructureRegistration
         services.AddScoped<IBadgeReadService, Docslot.BadgeReadService>();
         services.AddScoped<IPatientReadService, Docslot.PatientReadService>();
         services.AddScoped<IPatientRepository, Docslot.PatientRepository>();
+        services.AddScoped<ISettingsReadService, Docslot.SettingsReadService>();
+        services.AddScoped<ISettingsRepository, Docslot.SettingsRepository>();
         services.AddScoped<ISlotHoldService, Docslot.SlotHoldService>();
         services.AddScoped<IOpdTokenService, Docslot.OpdTokenService>();
         services.AddScoped<IPurposeOfUseWriter, Docslot.PurposeOfUseWriter>();

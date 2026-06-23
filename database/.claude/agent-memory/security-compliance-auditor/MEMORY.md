@@ -1,0 +1,2 @@
+- [RBAC RLS Layout](rbac-rls-layout.md) — where RLS lives across files 05/10/11, the GUC model, and the runtime write-path RLS hazard
+- [Audit Wave 11 RBAC Hardening](audit-11-rbac-hardening.md) — verdict + conditions issued for database/11_rbac_hardening.sql

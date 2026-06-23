@@ -73,11 +73,37 @@ public sealed class DocslotWebAppFactory : WebApplicationFactory<Program>, IAsyn
             """,
             ("uid", AdminUserId), ("tid", TenantId));
 
+        // Facility seeded with the Settings surface fields: business_hours + appointment_settings jsonb,
+        // a verified WhatsApp connection (verified_at set, phone id present), and a verified HFR id.
         await Exec(conn,
             """
-            INSERT INTO docslot.healthcare_facilities (facility_id, tenant_id, facility_type, created_at, updated_at)
-            VALUES (gen_random_uuid(), @tid, 'hospital', NOW(), NOW())
-            ON CONFLICT (tenant_id) DO NOTHING
+            INSERT INTO docslot.healthcare_facilities
+              (facility_id, tenant_id, facility_type, specialty_focus,
+               whatsapp_business_phone_id, whatsapp_access_token, whatsapp_verified_at,
+               hfr_id, hfr_status, business_hours, appointment_settings, created_at, updated_at)
+            VALUES (gen_random_uuid(), @tid, 'hospital', 'multi_specialty',
+               'PNID_SLICE_SETTINGS', 'super-secret-token-never-leak', NOW() - interval '10 days',
+               'HFR-TEST-0001', 'verified',
+               '{"mon":{"open":"09:00","close":"18:00","closed":false},
+                 "tue":{"open":"09:00","close":"18:00","closed":false},
+                 "wed":{"open":"09:00","close":"18:00","closed":false},
+                 "thu":{"open":"09:00","close":"18:00","closed":false},
+                 "fri":{"open":"09:00","close":"18:00","closed":false},
+                 "sat":{"open":"09:00","close":"14:00","closed":false},
+                 "sun":{"open":null,"close":null,"closed":true}}'::jsonb,
+               '{"slotDurationMinutes":15,"bookingCutoffHours":2,"autoConfirm":true,
+                 "maxAdvanceDays":30,"allowOverbooking":false,"reminderHoursBefore":24,
+                 "noShowGraceMinutes":15}'::jsonb,
+               NOW(), NOW())
+            ON CONFLICT (tenant_id) DO UPDATE
+              SET specialty_focus = EXCLUDED.specialty_focus,
+                  whatsapp_business_phone_id = EXCLUDED.whatsapp_business_phone_id,
+                  whatsapp_access_token = EXCLUDED.whatsapp_access_token,
+                  whatsapp_verified_at = EXCLUDED.whatsapp_verified_at,
+                  hfr_id = EXCLUDED.hfr_id,
+                  hfr_status = EXCLUDED.hfr_status,
+                  business_hours = EXCLUDED.business_hours,
+                  appointment_settings = EXCLUDED.appointment_settings
             """,
             ("tid", TenantId));
 

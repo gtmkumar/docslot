@@ -6,8 +6,22 @@ metadata:
 ---
 
 The inbound WhatsApp conversational booking flow lives under `mediq.*/**/Docslot/WhatsApp/`
-(controller `WhatsAppController`, command `ProcessInboundWhatsAppMessageCommand`). Built inbound-only;
-outbound send is stubbed via `docslot.outbox_messages` (status 'pending').
+(controller `WhatsAppController`, command `ProcessInboundWhatsAppMessageCommand`). The inbound handler
+ENQUEUES outbound replies into `docslot.outbox_messages` (status 'pending'); the OUTBOUND side is now built —
+an `OutboxDrainWorker` (`BackgroundService` in `mediq.Api/Workers/`) claims due rows, sends via
+`IWhatsAppSender`, and marks 'sent'/'abandoned'. Sender is selected in `InfrastructureRegistration.AddWhatsAppSender`:
+real `MetaWhatsAppSender` (typed HttpClient) when `WhatsApp:AccessToken`+`WhatsApp:GraphBaseUrl` are set, else
+the dev `StubWhatsAppSender` (logs + synthetic `wamid.stub.<guid>`, never calls Meta). Claim uses a CTE
+`UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING` to flip 'pending'→'processing' atomically
+(scale-out safe). On failure: attempt_count++ then 'abandoned' at max_attempts, else back to 'pending' with
+exponential-backoff `next_retry_at`. The worker is cross-tenant (drains every tenant's outbox); each claimed
+row still carries its `tenant_id`. NOTE: the due check in the claim uses DB `now()` (not a client-passed
+timestamp) to avoid client/DB clock-skew dropping just-enqueued rows.
+
+**To drive a live test:** run the API with `ASPNETCORE_ENVIRONMENT=Development` (else `appsettings.Development.json`
+— which holds the `PNID_APOLLO`→tenant map and dev WhatsApp secrets — is NOT loaded and inbound is rejected
+"unmapped phone_number_id"). A single signed "hi" enqueues a `booking_prompt` greeting; the worker drains it
+to 'sent' within one ~5s poll.
 
 **Why these notes:** several facts here are NOT derivable from reading the code and cost real debugging time.
 

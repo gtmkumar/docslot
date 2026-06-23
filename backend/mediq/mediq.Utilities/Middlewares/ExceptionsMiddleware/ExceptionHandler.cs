@@ -100,6 +100,11 @@ public class ExceptionHandler
                     ErrorMessageEnum.Forbidden, HttpStatusCode.Forbidden,
                     ex.Message, SingleError(ex, ex.Message));
 
+            case ConflictException:
+                return new MappedError(
+                    ErrorMessageEnum.Conflict, HttpStatusCode.Conflict,
+                    ex.Message, SingleError(ex, ex.Message));
+
             // DEF-4c: unknown lookup keys (e.g. POST /garments with an unknown tagCode)
             // surface as KeyNotFoundException → map to a clean 404 instead of a 500.
             case KeyNotFoundException:
