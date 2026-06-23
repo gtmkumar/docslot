@@ -165,3 +165,6 @@ storybook-static/
 tmp/
 temp/
 .docslot-tmp/
+
+# QA screenshot artifacts (regenerable)
+frontend/qa/shots/
