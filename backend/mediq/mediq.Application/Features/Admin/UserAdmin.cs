@@ -81,16 +81,18 @@ public sealed class AssignRoleCommandHandler(
         if (existing is not null && existing.IsActive(clock.UtcNow))
             return new AssignRoleResult(existing.UserTenantRoleId);   // idempotent re-assign
 
-        var assignment = mediq.Domain.Platform.UserTenantRole.Assign(
-            req.UserId, req.TenantId, req.RoleId, ctx.UserId, clock.UtcNow, req.ExpiresAt, req.IsPrimary);
-        await roles.AddAssignmentAsync(assignment, ct);
+        // platform.assign_role_to_user (SECURITY DEFINER) generates the id, enforces the grant-option
+        // escalation guard (→ 403 on SQLSTATE 42501) and the SoD trigger (→ 409 on 23000), and ON CONFLICT
+        // un-revokes — so this is idempotent at the DB too. The actor is the authenticated principal.
+        var userTenantRoleId = await roles.AssignRoleAsync(
+            ctx.UserId!.Value, req.UserId, req.RoleId, req.TenantId, ct);
 
         await audit.RecordAsync(new AuditEntry(
-            "assign_role", "user_tenant_role", assignment.UserTenantRoleId, null, ctx.UserId, req.TenantId,
+            "assign_role", "user_tenant_role", userTenantRoleId, null, ctx.UserId, req.TenantId,
             ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
             ChangeSummary: $"Assigned role {req.RoleId} to user {req.UserId}"), ct);
 
-        return new AssignRoleResult(assignment.UserTenantRoleId);
+        return new AssignRoleResult(userTenantRoleId);
     }
 }
 
@@ -118,16 +120,18 @@ public sealed class SetOverrideCommandHandler(
         var permissionId = await roles.FindPermissionIdAsync(req.PermissionKey, ct)
             ?? throw new KeyNotFoundException($"Unknown permission '{req.PermissionKey}'.");
 
-        var ovr = mediq.Domain.Platform.UserPermissionOverride.Create(
-            req.UserId, permissionId, req.TenantId, req.IsAllowed, req.Reason,
-            ctx.UserId, clock.UtcNow, req.ExpiresAt);
-        await roles.AddOverrideAsync(ovr, ct);
+        // platform.set_user_permission_override (SECURITY DEFINER) generates the override id and enforces the
+        // grant-option guard: granting a permission the actor does NOT themselves hold raises SQLSTATE 42501
+        // (→ 403). effective_from defaults to now in the function when null.
+        var overrideId = await roles.SetPermissionOverrideAsync(
+            ctx.UserId!.Value, req.UserId, permissionId, req.TenantId, req.IsAllowed, req.Reason,
+            effectiveFrom: null, expiresAt: req.ExpiresAt, ct);
 
         await audit.RecordAsync(new AuditEntry(
-            "grant_override", "user_permission_override", ovr.OverrideId, req.PermissionKey,
+            "grant_override", "user_permission_override", overrideId, req.PermissionKey,
             ctx.UserId, req.TenantId, ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
             ChangeSummary: $"{(req.IsAllowed ? "GRANT" : "DENY")} {req.PermissionKey} to user {req.UserId}: {req.Reason}"), ct);
 
-        return new SetOverrideResult(ovr.OverrideId);
+        return new SetOverrideResult(overrideId);
     }
 }

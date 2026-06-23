@@ -30,7 +30,7 @@ public sealed class OutboxDrainStore(PlatformDbContext db) : IOutboxDrainStore
                     SELECT outbox_id
                     FROM docslot.outbox_messages
                     WHERE status = 'pending'
-                      AND (next_retry_at IS NULL OR next_retry_at <= @p0)
+                      AND (next_retry_at IS NULL OR next_retry_at <= now())
                     ORDER BY created_at
                     FOR UPDATE SKIP LOCKED
                     LIMIT @p1
@@ -50,7 +50,6 @@ public sealed class OutboxDrainStore(PlatformDbContext db) : IOutboxDrainStore
                     o.attempt_count  AS "AttemptCount",
                     o.max_attempts   AS "MaxAttempts"
                 """,
-                new NpgsqlParameter("@p0", nowUtc),
                 new NpgsqlParameter("@p1", batchSize))
             .ToListAsync(ct);
 

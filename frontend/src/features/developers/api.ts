@@ -8,14 +8,14 @@
 // store these results in React Query.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+// READ LISTS that have a LIVE endpoint route through the backend seam (real in
+// live mode, mock by default). Everything else (request logs, deliveries, and all
+// mutations) has no wired live endpoint and stays on the mock seam directly.
+import { listApiClients, listEventTypes, listScopes, listWebhooks } from '@/lib/backend';
 import {
   createWebhook,
-  listApiClients,
   listApiRequestLogs,
-  listEventTypes,
-  listScopes,
   listWebhookDeliveries,
-  listWebhooks,
   registerApiClient,
   retryWebhookDelivery,
   rotateClientSecret,

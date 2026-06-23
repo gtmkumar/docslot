@@ -21,6 +21,7 @@ export const en = {
     patients: 'Patients',
     analytics: 'Analytics',
     team: 'Team & roles',
+    lab: 'Lab Tests',
   },
   topbar: {
     searchPlaceholder: 'Search patients, bookings, doctors…',
@@ -1221,6 +1222,7 @@ export const hi: typeof en = {
     patients: 'मरीज़',
     analytics: 'विश्लेषण',
     team: 'टीम और भूमिकाएँ',
+    lab: 'लैब टेस्ट',
   },
   topbar: {
     searchPlaceholder: 'मरीज़, बुकिंग, डॉक्टर खोजें…',

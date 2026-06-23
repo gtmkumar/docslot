@@ -36,16 +36,17 @@ public sealed class CreateRoleCommandHandler(
         if (await roles.RoleKeyExistsAsync(req.RoleKey, req.TenantId, ct))
             throw new BusinessRuleException($"A role with key '{req.RoleKey}' already exists in this scope.");
 
-        var role = mediq.Domain.Platform.Role.CreateCustom(
-            req.RoleKey, req.Name, req.Description, req.TenantId, req.Scope, clock.UtcNow);
-        await roles.AddRoleAsync(role, ct);
+        // platform.create_custom_role (SECURITY DEFINER) generates the id and enforces the manage-roles
+        // privilege guard at the DB (→ 403 on SQLSTATE 42501). The actor is the authenticated principal.
+        var roleId = await roles.CreateCustomRoleAsync(
+            ctx.UserId!.Value, req.RoleKey, req.Name, req.Description, req.TenantId, req.Scope, ct);
 
         await audit.RecordAsync(new AuditEntry(
-            "create", "role", role.RoleId, req.RoleKey, ctx.UserId, req.TenantId,
+            "create", "role", roleId, req.RoleKey, ctx.UserId, req.TenantId,
             ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
             ChangeSummary: $"Created custom role {req.RoleKey} ({req.Scope})"), ct);
 
-        return new CreateRoleResult(role.RoleId);
+        return new CreateRoleResult(roleId);
     }
 }
 
@@ -73,20 +74,21 @@ public sealed class RevokeRoleCommandHandler(
     public async Task<RevokeRoleResult> Handle(RevokeRoleCommand command, CancellationToken ct)
     {
         var req = command.Request;
-        var assignment = await roles.GetAssignmentByIdAsync(req.UserTenantRoleId, ct)
-            ?? throw new KeyNotFoundException("Role assignment not found.");
 
-        if (assignment.RevokedAt is not null)
-            return new RevokeRoleResult(assignment.UserTenantRoleId, AlreadyRevoked: true);
+        // platform.revoke_role_assignment (SECURITY DEFINER) performs the soft-revoke and enforces the
+        // assign-roles privilege guard (→ 403 on SQLSTATE 42501). It returns false when the assignment was
+        // already revoked (idempotent), preserving the AlreadyRevoked semantics without a prior read.
+        var didRevoke = await roles.RevokeAssignmentAsync(
+            ctx.UserId!.Value, req.UserTenantRoleId, req.Reason, ct);
 
-        // Mutating a tracked entity; the UnitOfWork behavior commits the UPDATE.
-        assignment.Revoke(ctx.UserId, req.Reason, clock.UtcNow);
+        if (!didRevoke)
+            return new RevokeRoleResult(req.UserTenantRoleId, AlreadyRevoked: true);
 
         await audit.RecordAsync(new AuditEntry(
-            "revoke_role", "user_tenant_role", assignment.UserTenantRoleId, null,
-            ctx.UserId, assignment.TenantId, ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
-            ChangeSummary: $"Revoked assignment {assignment.UserTenantRoleId}: {req.Reason}"), ct);
+            "revoke_role", "user_tenant_role", req.UserTenantRoleId, null,
+            ctx.UserId, ctx.TenantId, ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Revoked assignment {req.UserTenantRoleId}: {req.Reason}"), ct);
 
-        return new RevokeRoleResult(assignment.UserTenantRoleId, AlreadyRevoked: false);
+        return new RevokeRoleResult(req.UserTenantRoleId, AlreadyRevoked: false);
     }
 }

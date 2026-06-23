@@ -27,18 +27,41 @@ public interface ITenantRepository
 
 public sealed record UserTenantMembership(Guid TenantId, string TenantCode, string DisplayName, string TenantType, bool IsPrimary);
 
-/// <summary>Writes to <c>roles</c>, <c>user_tenant_roles</c> and <c>user_permission_overrides</c> (admin surface).</summary>
+/// <summary>
+/// Reads and writes <c>roles</c>, <c>user_tenant_roles</c> and <c>user_permission_overrides</c> (admin surface).
+/// <para>
+/// WRITES no longer issue direct EF INSERT/UPDATE. database/11_rbac_hardening.sql enables Row-Level Security
+/// on these tables and exposes SECURITY DEFINER functions in schema <c>platform</c> that enforce the
+/// privilege-escalation (grant-option) guard at the database. The four write paths therefore CALL those
+/// functions (passing the authenticated actor) and return the id the function generated; the functions
+/// <c>RAISE EXCEPTION</c> with SQLSTATE 42501 when the actor isn't allowed, which the repository translates
+/// into the house <see cref="mediq.Utilities.Exceptions.ForbiddenException"/> (→ 403), and SQLSTATE 23000
+/// (SoD trigger) into <see cref="mediq.Utilities.Exceptions.ConflictException"/> (→ 409).
+/// </para>
+/// </summary>
 public interface IRoleAssignmentRepository
 {
+    // ---- Reads (unchanged — no RLS write guard applies) ----
     Task<IReadOnlyList<Role>> ListRolesAsync(Guid? tenantId, CancellationToken ct);
-    Task AddRoleAsync(Role role, CancellationToken ct);
     Task<bool> RoleKeyExistsAsync(string roleKey, Guid? tenantId, CancellationToken ct);
-
     Task<UserTenantRole?> FindAssignmentAsync(Guid userId, Guid? tenantId, Guid roleId, CancellationToken ct);
-    Task<UserTenantRole?> GetAssignmentByIdAsync(Guid userTenantRoleId, CancellationToken ct);
-    Task AddAssignmentAsync(UserTenantRole assignment, CancellationToken ct);
-
     Task<Guid?> FindPermissionIdAsync(string permissionKey, CancellationToken ct);
     Task<UserPermissionOverride?> FindOverrideAsync(Guid userId, Guid permissionId, Guid? tenantId, CancellationToken ct);
-    Task AddOverrideAsync(UserPermissionOverride ovr, CancellationToken ct);
+
+    // ---- Writes (via platform.* SECURITY DEFINER functions; actor = authenticated principal) ----
+
+    /// <summary>Calls <c>platform.create_custom_role</c>; returns the new role_id.</summary>
+    Task<Guid> CreateCustomRoleAsync(
+        Guid actorUserId, string roleKey, string name, string? description, Guid? tenantId, string scope, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.assign_role_to_user</c>; returns user_tenant_role_id (idempotent: ON CONFLICT un-revokes).</summary>
+    Task<Guid> AssignRoleAsync(Guid actorUserId, Guid userId, Guid roleId, Guid? tenantId, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.revoke_role_assignment</c>; returns false when the assignment was already revoked.</summary>
+    Task<bool> RevokeAssignmentAsync(Guid actorUserId, Guid userTenantRoleId, string reason, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.set_user_permission_override</c>; returns the override_id.</summary>
+    Task<Guid> SetPermissionOverrideAsync(
+        Guid actorUserId, Guid userId, Guid permissionId, Guid? tenantId, bool isAllowed, string reason,
+        DateTime? effectiveFrom, DateTime? expiresAt, CancellationToken ct);
 }

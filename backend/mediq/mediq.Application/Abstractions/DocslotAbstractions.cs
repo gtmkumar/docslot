@@ -1,7 +1,38 @@
+using mediq.Application.Features.Docslot.Settings;
 using mediq.Domain.Docslot;
 using mediq.SharedDataModel.Docslot.Dashboard.Dtos;
 
 namespace mediq.Application.Abstractions;
+
+/// <summary>
+/// Tenant Settings reads (<c>docslot.healthcare_facilities</c>, one row per tenant). Projects the operational
+/// config + WhatsApp/HFR connection status. The <c>whatsapp_access_token</c> secret is NEVER selected.
+/// </summary>
+public interface ISettingsReadService
+{
+    /// <summary>The tenant's facility settings, or null when no facility row exists (→ 404 upstream).</summary>
+    Task<SettingsDto?> GetAsync(Guid tenantId, CancellationToken ct);
+}
+
+/// <summary>
+/// Write-side facility settings. The PATCH only mutates the two editable jsonb columns
+/// (<c>business_hours</c>, <c>appointment_settings</c>) + <c>updated_at</c>, tenant-scoped, inside the command's
+/// UnitOfWork transaction (RLS-honoured). A thin guarded UPDATE against an existing schema — earns its place
+/// purely to keep raw SQL out of the Application handler; no Repository aggregate is warranted.
+/// </summary>
+public interface ISettingsRepository
+{
+    /// <summary>
+    /// Updates the supplied sections (a null section is left untouched). Returns false when no facility row
+    /// exists for the tenant (nothing updated) → the handler maps that to a 404.
+    /// </summary>
+    Task<bool> UpdateSettingsAsync(
+        Guid tenantId,
+        IReadOnlyDictionary<string, DayHours>? businessHours,
+        AppointmentSettingsDto? appointmentSettings,
+        DateTime nowUtc,
+        CancellationToken ct);
+}
 
 /// <summary>
 /// Write-side access to <c>docslot.bookings</c> — the booking aggregate. Earns the Repository pattern

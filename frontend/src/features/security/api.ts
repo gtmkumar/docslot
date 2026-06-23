@@ -6,18 +6,24 @@
 // straight to a panel; they are NEVER written into any query cache.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+// READ LISTS that have a LIVE endpoint route through the backend seam (real in
+// live mode, mock by default). The dangerous WRITES (anchor / export / erase /
+// break-glass / breach report) have no wired live endpoint and stay on the mock
+// seam directly — do-no-harm on destructive platform mutations.
 import {
-  anchorAuditChain,
-  eraseSubjectData,
-  exportSubjectData,
   listAnchors,
   listBreaches,
   listDpdpRequests,
   listKeyStatus,
   listReviewQueue,
+  verifyAuditChain,
+} from '@/lib/backend';
+import {
+  anchorAuditChain,
+  eraseSubjectData,
+  exportSubjectData,
   recordBreakGlass,
   reportBreach,
-  verifyAuditChain,
 } from '@/lib/mock';
 
 export const auditVerifyQueryKey = ['security', 'auditVerify'] as const;

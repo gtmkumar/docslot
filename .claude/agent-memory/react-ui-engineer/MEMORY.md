@@ -9,3 +9,4 @@
 - [Commission / Care Partners Console](project_commission-console.md) — Slice 07 frontend: Care Partners/attribution/rules/payouts/disputes; Care Partner terminology, PCPNDT-enforced, approve≠execute, PAN/PHI safety.
 - [Live-API Seam](project_live-api-seam.md) — VITE_USE_REAL_API: seam layout, wired reads+writes (booking actions/add-patient w/ Idempotency-Key), enum/shape quirks, open gaps (no POST /doctors, wizard slots, manage-panel BOOKINGS.find).
 - [Commission live wiring (PASS 3)](project_commission_live_wiring.md) — Care Partners + Calendar live quirks: omitted CommissionRuleDto keys, 204 writes, raiseDispute injects raisedBy, payout approve≠execute RBAC gate, calendar client-side slot rollup.
+- [Platform-admin login](feedback_platform-admin-login.md) — verify Developers/Security live with admin@docslot.io/admin, NOT priyanka (tenant_owner gets 403 + no nav; mock fixture differs).

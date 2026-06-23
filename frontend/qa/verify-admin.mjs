@@ -1,0 +1,16 @@
+import { chromium } from 'playwright'; import { mkdirSync } from 'node:fs';
+const BASE='http://localhost:5173', OUT='qa/shots/verify-admin'; mkdirSync(OUT,{recursive:true});
+const errs=[]; const b=await chromium.launch();
+const ctx=await b.newContext({viewport:{width:1440,height:900},deviceScaleFactor:2}); const p=await ctx.newPage();
+p.on('console',m=>{if(m.type()==='error')errs.push(m.text())}); p.on('pageerror',e=>errs.push('PAGEERR '+e.message));
+await p.goto(`${BASE}/login`,{waitUntil:'networkidle'});
+await p.fill('#login-email','admin@docslot.io');await p.fill('#login-password','admin');
+await p.click('button[type=submit]'); await p.waitForURL(u=>!u.pathname.startsWith('/login'));
+await p.goto(`${BASE}/developers`,{waitUntil:'networkidle'}); await p.waitForTimeout(1200);
+await p.screenshot({path:`${OUT}/developers.png`});
+await p.goto(`${BASE}/security`,{waitUntil:'networkidle'}); await p.waitForTimeout(1500);
+await p.screenshot({path:`${OUT}/security.png`});
+const nav=await p.locator('nav, aside').first().innerText();
+console.log('admin sidebar has Developers:', /Developer/i.test(nav), '| Security:', /Security/i.test(nav));
+console.log('errors:', errs.length? errs.slice(0,3).join(' | ') : 'NONE');
+await b.close();

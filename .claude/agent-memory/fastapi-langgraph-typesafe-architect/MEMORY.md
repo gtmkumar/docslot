@@ -1,0 +1,2 @@
+- [AI Service Shape](project_ai_service_shape.md) — DocSlot ai_service: sync FastAPI + psycopg3, no LangGraph yet, dict-everywhere typing
+- [PHI Encryption Gap](project_phi_at_rest_gap.md) — embeddings/chunk_text/raw_ocr_text stored plaintext though schema mandates encryption
