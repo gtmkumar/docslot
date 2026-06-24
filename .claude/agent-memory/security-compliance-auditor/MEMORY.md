@@ -9,3 +9,4 @@
 - [Backend Slice 07 commission_broker](backend-slice07-commission-broker.md) — CLEARED: broker IDOR + pool-safety fixed (SET LOCAL in tx; dedicated conn safe); super_admin RBAC gap → slice 08
 - [Backend Slice 08 rbac_navigation](backend-slice08-rbac-navigation.md) — CLEARED: super_admin 127/127 sweep, clean key inheritance, menu gates enforce; doctor tenant-scope is pre-existing README/seed drift
 - [Backend Slice 09 WhatsApp webhook](backend-slice09-whatsapp-webhook.md) — PASS-WITH-FINDINGS: HMAC verify-before-side-effects, server-only tenant override (JWT wins), 2-layer dedup, audited CreateBookingCommand; only low/medium findings
+- [PR#2 RBAC super_admin GUC](backend-rbac-super-admin-guc.md) — APPROVE-WITH-CONDITIONS: spoof/pool/null safe; HIGH PHI-breadth (GUC=god-mode all-tenant PHI) + HIGH silent-no-audit gap
