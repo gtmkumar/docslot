@@ -149,7 +149,7 @@ Your priority order for sources of truth:
 ## Project status
 
 - ✅ Product specification complete
-- ✅ Database schema complete (113 tables, 9 SQL files)
+- ✅ Database schema complete (113 tables, 11 SQL files)
 - ✅ RBAC model designed and seeded
 - ✅ Platform-as-a-Service API layer designed
 - ✅ Security hardening designed (DPDP Act 2023 compliant)

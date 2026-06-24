@@ -46,10 +46,11 @@ public interface IUnitOfWork
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Opens a database transaction and applies <c>SET LOCAL app.tenant_id</c> within it, so PostgreSQL RLS
-    /// policies scope rows to the active tenant ONLY for the lifetime of that transaction. The returned scope
-    /// MUST be disposed (commit/rollback ends the tx → the GUC auto-clears → no pool bleed). This is the
-    /// pool-safe replacement for the old session-scoped GUC. No tenant context = a tx with no GUC.
+    /// Opens a database transaction and applies <c>SET LOCAL app.tenant_id</c> (plus <c>app.is_super_admin</c>,
+    /// derived from the validated user) within it, so PostgreSQL RLS policies scope rows to the active tenant —
+    /// and admit a platform super_admin cross-tenant/globally — ONLY for the lifetime of that transaction. The
+    /// returned scope MUST be disposed (commit/rollback ends the tx → the GUCs auto-clear → no pool bleed). This
+    /// is the pool-safe replacement for the old session-scoped GUC. No tenant context = a tx with no GUC.
     /// </summary>
     Task<ITenantScope> BeginTenantScopeAsync(Guid? tenantId, CancellationToken ct = default);
 }

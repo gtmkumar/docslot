@@ -1,10 +1,11 @@
 -- ============================================================================
 -- DocSlot Platform — Complete Schema Bundle (All-in-One)
 -- ============================================================================
--- This is the bundled equivalent of running the 9 canonical files in order:
+-- This is the bundled equivalent of running the 11 canonical files in order:
 --   01_platform_core.sql -> 02_platform_api.sql -> 03_docslot.sql
 --   -> 05_security_hardening.sql -> 06_ai_services.sql -> 07_commission_broker.sql
 --   -> 08_rbac_navigation.sql -> 09_chat_identity.sql -> 04_future_products.sql
+--   -> 10_roles_grants.sql -> 11_rbac_hardening.sql
 --
 -- Source files remain canonical in database/*.sql. This bundle is REGENERATED
 -- from them by database/regenerate_bundle.py — if you change a source file, re-run it.
@@ -2881,8 +2882,26 @@ CREATE OR REPLACE FUNCTION platform.current_tenant_id() RETURNS UUID AS $$
 $$ LANGUAGE SQL STABLE;
 
 -- Helper: is the current session a super_admin?
+-- NULLIF guards the empty string: a SET LOCAL custom GUC reverts to '' (not unset)
+-- on a pooled connection after the first transaction, and ''::BOOLEAN errors (22P02).
+-- Mirrors current_tenant_id()'s NULLIF pattern above.
+-- SCOPE: this global flag is honored ONLY by the RBAC/entitlement policies in
+-- 11_rbac_hardening.sql (platform administration of roles/permissions/menus). It is
+-- DELIBERATELY NOT honored by the PHI policies below — cross-tenant access to medical
+-- data must go through a scoped, time-boxed, AUDITED impersonation session
+-- (platform.begin_impersonation → app.impersonated_tenant), never a blanket god-flag.
+-- See audit Finding 1/2 (PR #2): a raw super_admin context must not silently read PHI.
 CREATE OR REPLACE FUNCTION platform.current_is_super_admin() RETURNS BOOLEAN AS $$
-    SELECT COALESCE(current_setting('app.is_super_admin', true)::BOOLEAN, false);
+    SELECT COALESCE(NULLIF(current_setting('app.is_super_admin', true), '')::BOOLEAN, false);
+$$ LANGUAGE SQL STABLE;
+
+-- Helper: the tenant the current session is actively impersonating (R6), if any.
+-- Pure GUC reader (no table dependency) — canonical home is here so the PHI policies
+-- below can consume it; 11_rbac_hardening.sql builds the impersonation_sessions table,
+-- begin_impersonation(), and the append-only/audit machinery that SET this GUC.
+-- NULL when no session is active ⇒ PHI stays confined to the active tenant (fail-closed).
+CREATE OR REPLACE FUNCTION platform.current_impersonated_tenant() RETURNS UUID AS $$
+    SELECT NULLIF(current_setting('app.impersonated_tenant', true), '')::UUID;
 $$ LANGUAGE SQL STABLE;
 
 -- Enable RLS on the most sensitive tables (medical data)
@@ -2892,12 +2911,20 @@ ALTER TABLE docslot.lab_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE docslot.abdm_health_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE docslot.drug_alerts ENABLE ROW LEVEL SECURITY;
 
+-- PHI cross-tenant rule (audit Finding 1/2): a row is visible ONLY for the active
+-- tenant OR the tenant of an ACTIVE scoped impersonation session (app.impersonated_tenant,
+-- set after platform.begin_impersonation audits + time-boxes the access). The raw
+-- platform.current_is_super_admin() god-flag is intentionally absent here — a super_admin
+-- with no open impersonation session can read PHI in their OWN tenant only, exactly like
+-- anyone else. No session ⇒ current_impersonated_tenant() is NULL ⇒ no cross-tenant row
+-- ever matches (NULL = NULL is never true), so this fails closed.
+
 -- Policy: tenant isolation on patient_medical_history
 CREATE POLICY tenant_isolation_medical_history ON docslot.patient_medical_history
     FOR ALL
     USING (
         tenant_id = platform.current_tenant_id()
-        OR platform.current_is_super_admin()
+        OR tenant_id = platform.current_impersonated_tenant()
     );
 
 -- Policy: tenant isolation on prescriptions
@@ -2905,7 +2932,7 @@ CREATE POLICY tenant_isolation_prescriptions ON docslot.prescriptions
     FOR ALL
     USING (
         tenant_id = platform.current_tenant_id()
-        OR platform.current_is_super_admin()
+        OR tenant_id = platform.current_impersonated_tenant()
     );
 
 -- Policy: tenant isolation on lab_reports
@@ -2913,7 +2940,7 @@ CREATE POLICY tenant_isolation_reports ON docslot.lab_reports
     FOR ALL
     USING (
         tenant_id = platform.current_tenant_id()
-        OR platform.current_is_super_admin()
+        OR tenant_id = platform.current_impersonated_tenant()
     );
 
 -- Policy: tenant isolation on abdm_health_records
@@ -2921,7 +2948,7 @@ CREATE POLICY tenant_isolation_abdm ON docslot.abdm_health_records
     FOR ALL
     USING (
         tenant_id = platform.current_tenant_id()
-        OR platform.current_is_super_admin()
+        OR tenant_id = platform.current_impersonated_tenant()
     );
 
 -- Policy: drug_alerts (joined with prescriptions which has tenant_id)
@@ -2931,7 +2958,8 @@ CREATE POLICY tenant_isolation_drug_alerts ON docslot.drug_alerts
         EXISTS (
             SELECT 1 FROM docslot.prescriptions p
             WHERE p.prescription_id = drug_alerts.prescription_id
-              AND (p.tenant_id = platform.current_tenant_id() OR platform.current_is_super_admin())
+              AND (p.tenant_id = platform.current_tenant_id()
+                   OR p.tenant_id = platform.current_impersonated_tenant())
         )
     );
 
@@ -6630,6 +6658,9 @@ CREATE TRIGGER trg_impersonation_append_only
 
 -- Session-scoped accessor used by RLS policies (the app sets this GUC when an
 -- impersonation session is active, via begin_impersonation()).
+-- NOTE: the canonical definition now lives in 05_security_hardening.sql (the PHI
+-- policies there consume it, and 05 runs before this file). Kept here as an
+-- idempotent CREATE OR REPLACE so 11 remains self-consistent if read in isolation.
 CREATE OR REPLACE FUNCTION platform.current_impersonated_tenant()
 RETURNS UUID LANGUAGE SQL STABLE AS $$
     SELECT NULLIF(current_setting('app.impersonated_tenant', true), '')::UUID;
@@ -7061,6 +7092,15 @@ RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
         OR platform.current_is_super_admin();                   -- platform god-context
 $$;
 
+-- These predicates gate the RBAC/ENTITLEMENT tables only (roles, role_permissions,
+-- user_tenant_roles, …) — NOT PHI (the PHI policies in 05 use current_impersonated_tenant()
+-- and never the god-flag). The global super_admin context is intentionally retained here:
+-- platform administration of roles/permissions/menus is a legitimate cross-tenant capability.
+-- NOTE (audit Finding 4): a super_admin context satisfies rls_can_write_tenant for ANY tenant,
+-- which would bypass the R3 grant-option/escalation guard on a DIRECT table write. This is safe
+-- TODAY because the only sanctioned RBAC mutation path is the SECURITY DEFINER functions below
+-- (grant_permission_to_role / assign_role_to_user / …), which enforce R3 regardless of RLS.
+-- Any future convenience path that writes these tables directly MUST route through those functions.
 CREATE OR REPLACE FUNCTION platform.rls_can_write_tenant(p_row_tenant UUID)
 RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
     -- Writes never target a NULL (global/system) row unless super_admin context.

@@ -25,7 +25,7 @@ Nine numbered SQL files run in dependency order; `docslot_complete.sql` is the b
 createdb docslot_platform
 psql -d docslot_platform -f database/docslot_complete.sql
 
-# Or individual files — required order is 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 04
+# Or individual files — required order is 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 04 → 10 → 11
 psql -d docslot_platform -f database/01_platform_core.sql   # tenants, users, RBAC, audit, billing (18)
 psql -d docslot_platform -f database/02_platform_api.sql    # OAuth/webhooks PaaS layer (8)
 psql -d docslot_platform -f database/03_docslot.sql         # DocSlot product schema (26)
@@ -33,7 +33,10 @@ psql -d docslot_platform -f database/05_security_hardening.sql  # encryption, RL
 psql -d docslot_platform -f database/06_ai_services.sql     # LangGraph/RAG/OCR schema (10) — only if running the AI service
 psql -d docslot_platform -f database/07_commission_broker.sql   # broker referral + commission (10)
 psql -d docslot_platform -f database/08_rbac_navigation.sql # backend-driven menus + per-user overrides (5)
+psql -d docslot_platform -f database/09_chat_identity.sql   # WhatsApp identity + direct-booking discount, broker mutual-exclusivity (1)
 psql -d docslot_platform -f database/04_future_products.sql # RuralReach/SafeHer/GenericFirst (22, optional)
+psql -d docslot_platform -f database/10_roles_grants.sql    # least-privilege docslot_app role (NOSUPERUSER/NOBYPASSRLS) + grants (0 tables, idempotent) — runs LAST
+psql -d docslot_platform -f database/11_rbac_hardening.sql  # RBAC hardening R1–R6: RLS on RBAC tables, escalation guard, SoD, super_admin cross-tenant (2)
 ```
 
 The bundle is **NOT idempotent** — designed for fresh databases; drop schemas/DB to re-run. See `database/README.md` for the full architecture narrative.

@@ -364,6 +364,9 @@ CREATE TRIGGER trg_impersonation_append_only
 
 -- Session-scoped accessor used by RLS policies (the app sets this GUC when an
 -- impersonation session is active, via begin_impersonation()).
+-- NOTE: the canonical definition now lives in 05_security_hardening.sql (the PHI
+-- policies there consume it, and 05 runs before this file). Kept here as an
+-- idempotent CREATE OR REPLACE so 11 remains self-consistent if read in isolation.
 CREATE OR REPLACE FUNCTION platform.current_impersonated_tenant()
 RETURNS UUID LANGUAGE SQL STABLE AS $$
     SELECT NULLIF(current_setting('app.impersonated_tenant', true), '')::UUID;
@@ -795,6 +798,15 @@ RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
         OR platform.current_is_super_admin();                   -- platform god-context
 $$;
 
+-- These predicates gate the RBAC/ENTITLEMENT tables only (roles, role_permissions,
+-- user_tenant_roles, …) — NOT PHI (the PHI policies in 05 use current_impersonated_tenant()
+-- and never the god-flag). The global super_admin context is intentionally retained here:
+-- platform administration of roles/permissions/menus is a legitimate cross-tenant capability.
+-- NOTE (audit Finding 4): a super_admin context satisfies rls_can_write_tenant for ANY tenant,
+-- which would bypass the R3 grant-option/escalation guard on a DIRECT table write. This is safe
+-- TODAY because the only sanctioned RBAC mutation path is the SECURITY DEFINER functions below
+-- (grant_permission_to_role / assign_role_to_user / …), which enforce R3 regardless of RLS.
+-- Any future convenience path that writes these tables directly MUST route through those functions.
 CREATE OR REPLACE FUNCTION platform.rls_can_write_tenant(p_row_tenant UUID)
 RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
     -- Writes never target a NULL (global/system) row unless super_admin context.
