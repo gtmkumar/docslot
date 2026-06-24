@@ -66,4 +66,19 @@ FINDINGS (none blocking):
 
 Tests: ImpersonationEndpointTests (2/2): begin mints claim + 1 impersonate audit row; end clears claim + 1 end_impersonation audit row; tenant_owner w/o perm → 403. Full suite 74/74 green. Verdict: PASS — issue #3 fully landed, deferred carry-forward CLOSED.
 
+## Follow-up: oversight read surface — audited 2026-06-24, PASS
+`platform.list_impersonation_sessions(p_limit INT DEFAULT 100)` (`11_rbac_hardening.sql:529-562`; GRANT 11:1055; bundle parity verified). SECURITY DEFINER STABLE, `SET search_path = platform, pg_temp`, single read-only SELECT (LEFT JOIN users/tenants for actor/target labels) with derived status active/expired/ended, ORDER BY started_at DESC, `LIMIT GREATEST(p_limit,0)`. Surfaced via `GET /api/v1/security/impersonation-sessions` (`SecurityController.cs:69-74`, `[RequirePermission("platform.anomalies.review")]`, take clamped 1..500) → `ListImpersonationSessionsQuery` → `SecurityReadService.ListImpersonationSessionsAsync` which masks actor to INITIALS (ActorInitials, same as the review queue). DTO `ImpersonationSessionDto` is metadata-only.
+- DEFINER-bypass-of-super-RLS for a `platform.anomalies.review`-gated read is CORRECT, not a finding: oversight of support actions is a DPO/review function; requiring super_admin would be WORSE least-privilege. Metadata-only, actor masked, same trust model as ListReviewQueueAsync.
+- `target_user_id` is a bare UUID (no name/phone/email resolved); target-tenant display name is org-level non-PHI. No IDOR (fixed list for authorised reviewers, not a caller-keyed fetch). search_path pinned, no writes, no escalation.
+- INFO (not blocking): `reason` is operator free-text returned verbatim — same text already in audit_log; mask/guidance is an input-discipline matter, optional. ActorInitials splits on spaces (consistent with review queue; no full name leaks).
+Test: ImpersonationEndpointTests.Review_Surface_Lists_The_Open_Session_With_Masked_Actor (3/3 green).
+
+## Applied hardenings (the earlier optional findings were taken, not deferred)
+- end_impersonation TOCTOU (LOW): UPDATE WHERE now carries `AND ended_at IS NULL` + `GET DIAGNOSTICS ROW_COUNT` gates the audit INSERT ⇒ a concurrent double-close yields EXACTLY one end audit row.
+- Endpoint confused-deputy seam (INFO #1): the begin handler now asserts `ctx.UserId == session.UserId` (ForbiddenException otherwise) ⇒ gate-subject and operation-subject are provably the same principal.
+- 403 verbosity (INFO #3): left as-is — `ForbiddenException(pg.MessageText)` matches the house pattern (RoleAssignmentRepository) and is self-referential.
+
+## Disposition
+All four slices PASS (guard, end_impersonation, endpoints, oversight read). Shipped on branch `feat/issue-3-impersonation-wiring`, **merged as PR #4** (merge commit `1fb6e31`). Full suite 75/75 green across 3 consecutive runs (WhatsApp E2E flake fixed via idempotent confirm-retry — test-infra only). Frontend impersonation banner added (react-ui-engineer; not a security-gated surface). Issue #3 complete end-to-end.
+
 See [[backend-rbac-super-admin-guc]], [[backend-slice05-security-hardening]], [[backend-slice08-rbac-navigation]], [[backend-slice01-platform-core]].
