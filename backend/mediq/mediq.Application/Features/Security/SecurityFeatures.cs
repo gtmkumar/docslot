@@ -87,6 +87,16 @@ public sealed class ListDeletionCertificatesQueryHandler(ISecurityReadService re
         => reads.ListDeletionCertificatesAsync(Math.Clamp(q.Take, 1, 500), ct);
 }
 
+/// <summary>Impersonation-session oversight list (issue #3). Gated by <c>platform.anomalies.review</c>.</summary>
+public sealed record ListImpersonationSessionsQuery(int Take = 100) : IQuery<IReadOnlyList<ImpersonationSessionDto>>;
+
+public sealed class ListImpersonationSessionsQueryHandler(ISecurityReadService reads)
+    : IQueryHandler<ListImpersonationSessionsQuery, IReadOnlyList<ImpersonationSessionDto>>
+{
+    public Task<IReadOnlyList<ImpersonationSessionDto>> Handle(ListImpersonationSessionsQuery q, CancellationToken ct)
+        => reads.ListImpersonationSessionsAsync(Math.Clamp(q.Take, 1, 500), ct);
+}
+
 public sealed record AnchorAuditChainCommand(string AnchorType, string AnchorReference) : ICommand<AuditAnchorResult>;
 
 public sealed class AnchorAuditChainValidator : AbstractValidator<AnchorAuditChainCommand>

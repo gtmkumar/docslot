@@ -62,6 +62,17 @@ public sealed class SecurityController(
     public async Task<ActionResult<IReadOnlyList<ReviewQueueItemDto>>> ListReviewQueue([FromQuery] int take = 100, CancellationToken ct = default)
         => Ok(await queries.Query(new ListReviewQueueQuery(take), ct));
 
+    /// <summary>
+    /// Impersonation-session oversight (issue #3): active + recently-ended support sessions, newest first.
+    /// Metadata only — masked actor, target tenant label, derived status. Gated by the review permission.
+    /// </summary>
+    [HttpGet("impersonation-sessions")]
+    [RequirePermission("platform.anomalies.review")]
+    [ProducesResponseType<IReadOnlyList<ImpersonationSessionDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<ImpersonationSessionDto>>> ListImpersonationSessions(
+        [FromQuery] int take = 100, CancellationToken ct = default)
+        => Ok(await queries.Query(new ListImpersonationSessionsQuery(take), ct));
+
     /// <summary>Encryption-key rotation status (metadata only — NO key material).</summary>
     [HttpGet("keys")]
     [RequirePermission("platform.encryption_keys.read")]

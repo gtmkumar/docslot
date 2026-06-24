@@ -81,3 +81,23 @@ public sealed record DeletionCertificateDto(
     string DigitalSignature,
     DateTimeOffset CertifiedAt,
     IReadOnlyDictionary<string, int> DeletedRecordCounts);
+
+/// <summary>
+/// An impersonation-session oversight row (maps to <c>platform.list_impersonation_sessions</c>), for the
+/// Security &amp; Compliance console (issue #3). Metadata only — NO PHI. The actor is a MASKED label
+/// (initials), never the full name/email; the target tenant carries a human display name. <see cref="Status"/>
+/// is derived server-side: <c>active</c> (open, not expired), <c>expired</c> (open but past
+/// <see cref="ExpiresAt"/>), or <c>ended</c> (explicitly closed).
+/// </summary>
+public sealed record ImpersonationSessionDto(
+    Guid ImpersonationId,
+    string? ActorLabel,
+    Guid TargetTenantId,
+    string? TargetTenantName,
+    Guid? TargetUserId,
+    string Reason,
+    bool IsBreakGlass,
+    DateTimeOffset StartedAt,
+    DateTimeOffset ExpiresAt,
+    DateTimeOffset? EndedAt,
+    string Status);

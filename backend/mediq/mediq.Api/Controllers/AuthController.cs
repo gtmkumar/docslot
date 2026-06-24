@@ -1,5 +1,7 @@
+using mediq.Api.Authorization;
 using mediq.Application.Abstractions;
 using mediq.Application.Cqrs;
+using mediq.Application.Features.Auth.Impersonation;
 using mediq.Application.Features.Auth.Login;
 using mediq.Application.Features.Auth.Logout;
 using mediq.Application.Features.Auth.Refresh;
@@ -42,6 +44,31 @@ public sealed class AuthController(ICommandDispatcher commands, ITokenService to
     [ProducesResponseType<TokenResponse>(StatusCodes.Status200OK)]
     public async Task<ActionResult<TokenResponse>> SwitchTenant([FromBody] SwitchTenantRequest request, CancellationToken ct)
         => Ok(await commands.Send(new SwitchTenantCommand(request), ct));
+
+    /// <summary>
+    /// POST /api/v1/auth/impersonation/begin — open an AUDITED support impersonation session (issue #3) and
+    /// mint a token carrying the server-signed <c>impersonated_tenant</c> claim. Gated by
+    /// <c>platform.users.impersonate</c>; the actor is the authenticated principal (never the body). The
+    /// audit row is written by <c>platform.begin_impersonation()</c> before the token is minted.
+    /// </summary>
+    [HttpPost("impersonation/begin")]
+    [RequirePermission("platform.users.impersonate")]
+    [ProducesResponseType<ImpersonationResponse>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ImpersonationResponse>> BeginImpersonation(
+        [FromBody] BeginImpersonationRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new BeginImpersonationCommand(request), ct));
+
+    /// <summary>
+    /// POST /api/v1/auth/impersonation/end — close an impersonation session and re-mint a CLEAN token (no
+    /// <c>impersonated_tenant</c> claim). Any authenticated caller may attempt it; <c>end_impersonation()</c>
+    /// enforces self-close-or-<c>platform.users.impersonate</c> at the DB and writes the close audit row.
+    /// </summary>
+    [HttpPost("impersonation/end")]
+    [Authorize]
+    [ProducesResponseType<TokenResponse>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<TokenResponse>> EndImpersonation(
+        [FromBody] EndImpersonationRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new EndImpersonationCommand(request), ct));
 
     /// <summary>POST /api/v1/auth/logout — revoke the current session (and the refresh chain if supplied).</summary>
     [HttpPost("logout")]

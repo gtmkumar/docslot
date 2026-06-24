@@ -140,6 +140,25 @@ public sealed class SecurityReadService(PlatformDbContext db) : ISecurityReadSer
         return result;
     }
 
+    public async Task<IReadOnlyList<ImpersonationSessionDto>> ListImpersonationSessionsAsync(int take, CancellationToken ct)
+    {
+        // platform.list_impersonation_sessions (SECURITY DEFINER) reads past the super-only RLS and derives
+        // the status; metadata only (no PHI). We mask the actor to initials here, mirroring the review queue.
+        var rows = await db.Database.SqlQueryRaw<ImpersonationRow>(
+                """
+                SELECT impersonation_id AS "ImpersonationId", actor_name AS "ActorName",
+                       target_tenant_id AS "TargetTenantId", target_tenant_name AS "TargetTenantName",
+                       target_user_id AS "TargetUserId", reason AS "Reason", is_break_glass AS "IsBreakGlass",
+                       started_at AS "StartedAt", expires_at AS "ExpiresAt", ended_at AS "EndedAt", status AS "Status"
+                FROM platform.list_impersonation_sessions(@p0)
+                """, P(("@p0", take)))
+            .ToListAsync(ct);
+        return rows.Select(r => new ImpersonationSessionDto(
+            r.ImpersonationId, ActorInitials(r.ActorName), r.TargetTenantId, r.TargetTenantName, r.TargetUserId,
+            r.Reason, r.IsBreakGlass, Utc(r.StartedAt), Utc(r.ExpiresAt),
+            r.EndedAt is null ? null : Utc(r.EndedAt.Value), r.Status)).ToList();
+    }
+
     // ---- helpers ---------------------------------------------------------------------------------
 
     private static DateTimeOffset Utc(DateTime dt) => new(DateTime.SpecifyKind(dt, DateTimeKind.Utc));
@@ -161,4 +180,5 @@ public sealed class SecurityReadService(PlatformDbContext db) : ISecurityReadSer
     private sealed record BreachRow(Guid BreachId, string BreachType, string Severity, string Description, int? AffectedRecordCount, DateTime DetectedAt, DateTime? ReportedToDpbAt, DateTime? ResolvedAt);
     private sealed record ReviewRow(string Source, Guid ItemId, string Severity, DateTime OccurredAt, string Description, string? ActorName);
     private sealed record KeyRow(Guid KeyId, string? TenantName, string DataClass, DateTime ActivatedAt, DateTime? NextRotationDueAt, string RotationStatus, int? DaysUntilRotation, long UsageCount);
+    private sealed record ImpersonationRow(Guid ImpersonationId, string? ActorName, Guid TargetTenantId, string? TargetTenantName, Guid? TargetUserId, string Reason, bool IsBreakGlass, DateTime StartedAt, DateTime ExpiresAt, DateTime? EndedAt, string Status);
 }

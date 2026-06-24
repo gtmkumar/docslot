@@ -75,5 +75,6 @@ public interface ISecurityReadService
     Task<IReadOnlyList<SharedDataModel.Docslot.Security.ReviewQueueItemDto>> ListReviewQueueAsync(int take, CancellationToken ct);
     Task<IReadOnlyList<SharedDataModel.Docslot.Security.KeyStatusDto>> ListKeyStatusAsync(CancellationToken ct);
     Task<IReadOnlyList<SharedDataModel.Docslot.Security.DeletionCertificateDto>> ListDeletionCertificatesAsync(int take, CancellationToken ct);
+    Task<IReadOnlyList<SharedDataModel.Docslot.Security.ImpersonationSessionDto>> ListImpersonationSessionsAsync(int take, CancellationToken ct);
     Task<DateTimeOffset?> GetLastAnchorAtAsync(CancellationToken ct);
 }

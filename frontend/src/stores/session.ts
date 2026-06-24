@@ -18,11 +18,24 @@ interface SessionState {
   tenantId: string | null;
   user: Me | null;
 
+  // ── Support impersonation (issue #3) ───────────────────────────────────────
+  // When a support actor is impersonating a tenant, the access token carries an
+  // `impersonated_tenant` JWT claim (the banner reads it directly). We ALSO keep
+  // the server-issued `impersonationId` + target tenant here because the
+  // /impersonation/end call needs the id, and the begin UI (when it ships) is the
+  // only place that learns it. Both are cleared on end + on logout (clear()).
+  impersonationId: string | null;
+  impersonatedTenantId: string | null;
+
   isAuthenticated: () => boolean;
   activeTenant: () => MeTenant | null;
   setSession: (input: { accessToken: string; refreshToken: string; tenantId: string | null }) => void;
   setUser: (user: Me) => void;
   setTenant: (tenantId: string) => void;
+  /** Record an in-progress impersonation (called when a /begin response lands). */
+  setImpersonation: (input: { impersonationId: string; targetTenantId: string }) => void;
+  /** Forget the impersonation linkage (called after /end succeeds). */
+  clearImpersonation: () => void;
   clear: () => void;
 }
 
@@ -33,6 +46,8 @@ export const useSession = create<SessionState>()(
       refreshToken: null,
       tenantId: null,
       user: null,
+      impersonationId: null,
+      impersonatedTenantId: null,
 
       isAuthenticated: () => Boolean(get().accessToken),
       activeTenant: () => {
@@ -44,7 +59,18 @@ export const useSession = create<SessionState>()(
       setUser: (user) =>
         set((s) => ({ user, tenantId: s.tenantId ?? user.activeTenantId })),
       setTenant: (tenantId) => set({ tenantId }),
-      clear: () => set({ accessToken: null, refreshToken: null, tenantId: null, user: null }),
+      setImpersonation: ({ impersonationId, targetTenantId }) =>
+        set({ impersonationId, impersonatedTenantId: targetTenantId }),
+      clearImpersonation: () => set({ impersonationId: null, impersonatedTenantId: null }),
+      clear: () =>
+        set({
+          accessToken: null,
+          refreshToken: null,
+          tenantId: null,
+          user: null,
+          impersonationId: null,
+          impersonatedTenantId: null,
+        }),
     }),
     { name: 'docslot.session' },
   ),
