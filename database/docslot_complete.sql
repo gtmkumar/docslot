@@ -1,11 +1,10 @@
 -- ============================================================================
 -- DocSlot Platform — Complete Schema Bundle (All-in-One)
 -- ============================================================================
--- This is the bundled equivalent of running the 11 canonical files in order:
+-- This is the bundled equivalent of running the 9 canonical files in order:
 --   01_platform_core.sql -> 02_platform_api.sql -> 03_docslot.sql
 --   -> 05_security_hardening.sql -> 06_ai_services.sql -> 07_commission_broker.sql
 --   -> 08_rbac_navigation.sql -> 09_chat_identity.sql -> 04_future_products.sql
---   -> 10_roles_grants.sql -> 11_rbac_hardening.sql
 --
 -- Source files remain canonical in database/*.sql. This bundle is REGENERATED
 -- from them by database/regenerate_bundle.py — if you change a source file, re-run it.
@@ -2896,10 +2895,15 @@ CREATE OR REPLACE FUNCTION platform.current_is_super_admin() RETURNS BOOLEAN AS 
 $$ LANGUAGE SQL STABLE;
 
 -- Helper: the tenant the current session is actively impersonating (R6), if any.
--- Pure GUC reader (no table dependency) — canonical home is here so the PHI policies
--- below can consume it; 11_rbac_hardening.sql builds the impersonation_sessions table,
--- begin_impersonation(), and the append-only/audit machinery that SET this GUC.
--- NULL when no session is active ⇒ PHI stays confined to the active tenant (fail-closed).
+-- BOOTSTRAP DEFINITION ONLY. This pure GUC reader exists so the PHI policies below can
+-- reference the function — but impersonation_sessions does not exist yet at this point
+-- in the run order, so the audited-by-construction validation cannot live here.
+-- 11_rbac_hardening.sql REDEFINES this function (CREATE OR REPLACE, SECURITY DEFINER) to
+-- only honor app.impersonated_tenant when it is backed by a live, non-expired
+-- impersonation_sessions row for app.user_id — see issue #3. 11 is REQUIRED for real
+-- patient data (the standard bundle always runs it last). Even this bootstrap form is
+-- fail-closed: with no GUC set, current_impersonated_tenant() is NULL ⇒ PHI stays
+-- confined to the active tenant.
 CREATE OR REPLACE FUNCTION platform.current_impersonated_tenant() RETURNS UUID AS $$
     SELECT NULLIF(current_setting('app.impersonated_tenant', true), '')::UUID;
 $$ LANGUAGE SQL STABLE;
@@ -6656,15 +6660,38 @@ CREATE TRIGGER trg_impersonation_append_only
     BEFORE UPDATE OR DELETE ON platform.impersonation_sessions
     FOR EACH ROW EXECUTE FUNCTION platform.impersonation_append_only();
 
--- Session-scoped accessor used by RLS policies (the app sets this GUC when an
--- impersonation session is active, via begin_impersonation()).
--- NOTE: the canonical definition now lives in 05_security_hardening.sql (the PHI
--- policies there consume it, and 05 runs before this file). Kept here as an
--- idempotent CREATE OR REPLACE so 11 remains self-consistent if read in isolation.
+-- Session-scoped accessor used by the PHI RLS policies (05_security_hardening.sql).
+-- AUDITED-BY-CONSTRUCTION (issue #3): the raw app.impersonated_tenant GUC is INERT
+-- on its own. This returns a tenant ONLY when it is backed by a live, non-expired
+-- impersonation_sessions row for the ACTING user (app.user_id) — and such rows are
+-- created EXCLUSIVELY by begin_impersonation(), which writes the hash-chained
+-- audit_log entry in the same transaction. Consequences:
+--   * A bare docslot_app session that does set_config('app.impersonated_tenant', <t>)
+--     with no matching session sees NO cross-tenant PHI (and emits no audit) — the
+--     GUC alone cannot unlock medical data.
+--   * Once the session expires (expires_at <= NOW()) or is ended, the GUC stops
+--     resolving — access is time-boxed, not just at open.
+-- SECURITY DEFINER (owner) is REQUIRED: impersonation_sessions is RLS-confined to a
+-- super_admin context, so a plain docslot_app caller could not otherwise read its own
+-- backing row to validate. The function leaks nothing beyond the target_tenant_id it
+-- was already asked about. STABLE: evaluated once per query, consistent within a tx.
+-- This is the canonical (validating) definition; 05 defines a fail-closed bootstrap
+-- reader because impersonation_sessions does not exist yet when 05 runs.
 CREATE OR REPLACE FUNCTION platform.current_impersonated_tenant()
-RETURNS UUID LANGUAGE SQL STABLE AS $$
-    SELECT NULLIF(current_setting('app.impersonated_tenant', true), '')::UUID;
+RETURNS UUID
+LANGUAGE SQL STABLE SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+    SELECT s.target_tenant_id
+    FROM platform.impersonation_sessions s
+    WHERE s.target_tenant_id = NULLIF(current_setting('app.impersonated_tenant', true), '')::UUID
+      AND s.actor_user_id    = NULLIF(current_setting('app.user_id', true), '')::UUID
+      AND s.ended_at IS NULL
+      AND s.expires_at > NOW()
+    LIMIT 1;
 $$;
+COMMENT ON FUNCTION platform.current_impersonated_tenant IS
+    'R6/issue#3: resolves app.impersonated_tenant to a tenant ONLY when a live, non-expired impersonation_sessions row exists for app.user_id. The GUC is inert without an audited begin_impersonation() session. SECURITY DEFINER to read past the session table''s super-only RLS.';
 
 -- Open an impersonation session. Requires platform.users.impersonate. Writes audit.
 CREATE OR REPLACE FUNCTION platform.begin_impersonation(
@@ -6722,6 +6749,75 @@ END;
 $$;
 COMMENT ON FUNCTION platform.begin_impersonation IS
     'R6: opens a tenant-scoped, time-boxed, reason-logged impersonation session. Replaces the global app.is_super_admin bypass for routine support.';
+
+-- Close an impersonation session — the audited OTHER half of the lifecycle. begin_impersonation()
+-- writes an audit row on OPEN; this writes one on CLOSE, so "support ended their session" is just as
+-- accountable as "support started" it (DPDP S.8(7)). Without this, the only way to set ended_at is a raw
+-- docslot_app UPDATE that emits no audit. SECURITY DEFINER (owner) to read/update past the session table's
+-- super-only RLS; public is on the search_path because the audit_log INSERT fires the pgcrypto hash chain.
+-- Idempotent: closing an already-ended session is a no-op (no duplicate audit row). Authorization: the actor
+-- who OPENED the session may always self-close; anyone else must hold platform.users.impersonate (support
+-- lead / break-glass cleanup) — the same permission begin_impersonation() requires.
+CREATE OR REPLACE FUNCTION platform.end_impersonation(
+    p_impersonation_id UUID,
+    p_actor_user_id UUID
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, public, pg_temp
+AS $$
+DECLARE
+    v_session platform.impersonation_sessions%ROWTYPE;
+    v_rows INT;
+BEGIN
+    SELECT * INTO v_session
+    FROM platform.impersonation_sessions
+    WHERE impersonation_id = p_impersonation_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'impersonation session % not found', p_impersonation_id
+            USING ERRCODE = 'no_data_found';
+    END IF;
+
+    IF p_actor_user_id IS DISTINCT FROM v_session.actor_user_id
+       AND NOT platform.user_has_permission(p_actor_user_id, 'platform.users.impersonate', NULL) THEN
+        RAISE EXCEPTION 'actor % may not end impersonation session %', p_actor_user_id, p_impersonation_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    -- Already closed (per our snapshot) ⇒ nothing to do, no second audit row (double-click / retry safe).
+    IF v_session.ended_at IS NOT NULL THEN
+        RETURN false;
+    END IF;
+
+    -- Only ended_at / ended_by_user_id may change here — exactly what the append-only trigger permits. The
+    -- `AND ended_at IS NULL` makes the close ATOMIC: two concurrent closers that both passed the snapshot
+    -- guard above can't both win — only the one whose UPDATE actually flips the row proceeds to audit, so a
+    -- single close yields EXACTLY one end_impersonation row (no TOCTOU duplicate).
+    UPDATE platform.impersonation_sessions
+    SET ended_at = NOW(), ended_by_user_id = p_actor_user_id
+    WHERE impersonation_id = p_impersonation_id
+      AND ended_at IS NULL;
+
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    IF v_rows = 0 THEN
+        RETURN false;          -- lost the race to a concurrent close; it owns the audit row, not us
+    END IF;
+
+    -- Close the accountability loop. The AFTER INSERT trigger hash-chains this row like any other.
+    INSERT INTO platform.audit_log
+        (user_id, impersonator_user_id, tenant_id, action, resource_type, resource_id,
+         resource_label, purpose, legal_basis, success)
+    VALUES
+        (v_session.target_user_id, p_actor_user_id, v_session.target_tenant_id, 'end_impersonation', 'tenant',
+         v_session.target_tenant_id, 'Impersonation session ' || p_impersonation_id::text || ' ended',
+         v_session.reason, CASE WHEN v_session.is_break_glass THEN 'legal_obligation' ELSE 'contract' END, true);
+
+    RETURN true;
+END;
+$$;
+COMMENT ON FUNCTION platform.end_impersonation IS
+    'R6/issue#3: closes an impersonation session (ended_at/ended_by) and writes the symmetric end_impersonation audit row. Self-close by the opening actor, else requires platform.users.impersonate. Idempotent on an already-ended session.';
 
 -- ============================================================================
 -- R5 — SEPARATION OF DUTIES
@@ -7213,6 +7309,7 @@ GRANT EXECUTE ON FUNCTION
     platform.user_memberships(UUID),
     platform.current_impersonated_tenant(),
     platform.begin_impersonation(UUID, UUID, TEXT, UUID, INTERVAL, BOOLEAN),
+    platform.end_impersonation(UUID, UUID),
     platform.is_super_admin(UUID),
     platform.grant_permission_to_role(UUID, UUID, UUID, UUID, BOOLEAN),
     platform.assign_role_to_user(UUID, UUID, UUID, UUID),
@@ -7250,7 +7347,7 @@ END $verify$;
 -- New columns: role_permissions.is_grantable
 -- New/redefined functions: tenant_is_serviceable, resolve_user_permissions*,
 --   user_has_permission*, get_user_menus*, current_impersonated_tenant,
---   begin_impersonation, is_super_admin, grant_permission_to_role,
+--   begin_impersonation, end_impersonation, is_super_admin, grant_permission_to_role,
 --   assign_role_to_user, enforce_role_sod, rls_can_see/write_tenant
 --   (* = redefined to be tenant-gated + SECURITY DEFINER)
 -- RLS enabled: roles, role_permissions, user_tenant_roles,

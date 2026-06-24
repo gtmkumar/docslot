@@ -38,6 +38,16 @@ public interface ICurrentUserContext
     /// broker can only ever reach their own wallet/links (IDOR-safe).
     /// </summary>
     Guid? BrokerId { get; }
+
+    /// <summary>
+    /// The tenant this request is impersonating into, from the server-signed <c>impersonated_tenant</c> JWT
+    /// claim (issue #3). Non-null only while a support actor holds an impersonation token minted after
+    /// <c>platform.begin_impersonation()</c>. <see cref="IUnitOfWork.BeginTenantScopeAsync"/> projects it onto
+    /// <c>app.impersonated_tenant</c>, but the value is AUDITED-BY-CONSTRUCTION at the DB layer: the RLS guard
+    /// <c>platform.current_impersonated_tenant()</c> only honors it when a live, non-expired session backs it
+    /// for <see cref="UserId"/>. A spoofed or expired claim therefore opens no cross-tenant PHI.
+    /// </summary>
+    Guid? ImpersonatedTenantId { get; }
 }
 
 /// <summary>Commit boundary. The UnitOfWork command behavior calls this once per command.</summary>

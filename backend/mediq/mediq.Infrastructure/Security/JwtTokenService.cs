@@ -22,10 +22,16 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options) : ITokenServic
     public const string ScopeClaim = "scope";          // space-delimited (OAuth convention)
     public const string TokenUseClient = "client";
     public const string BrokerClaim = "broker_id";     // server-resolved broker identity for broker-role users
+    // The tenant a support actor is impersonating into (issue #3). Server-signed and minted ONLY after
+    // platform.begin_impersonation() opens an audited, time-boxed session — never client-supplied. The DB
+    // guard (platform.current_impersonated_tenant) treats this as inert unless a live session backs it, so
+    // a forged/stale claim opens no cross-tenant PHI. Switching into impersonation re-mints the token, the
+    // same pattern as tenant_id (switch-tenant) and broker_id.
+    public const string ImpersonatedTenantClaim = "impersonated_tenant";
 
     private readonly JwtOptions _o = options.Value;
 
-    public AccessToken CreateAccessToken(User user, Guid? activeTenantId, Guid? brokerId = null)
+    public AccessToken CreateAccessToken(User user, Guid? activeTenantId, Guid? brokerId = null, Guid? impersonatedTenantId = null)
     {
         var key = new SymmetricSecurityKey(Convert.FromBase64String(_o.SigningKey));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
@@ -41,6 +47,8 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options) : ITokenServic
             claims.Add(new Claim(TenantClaim, tid.ToString()));
         if (brokerId is { } bid)
             claims.Add(new Claim(BrokerClaim, bid.ToString()));   // IDOR-safe: the only trusted broker identity
+        if (impersonatedTenantId is { } iid)
+            claims.Add(new Claim(ImpersonatedTenantClaim, iid.ToString())); // audited session must already exist (issue #3)
 
         var token = new JwtSecurityToken(
             issuer: _o.Issuer,

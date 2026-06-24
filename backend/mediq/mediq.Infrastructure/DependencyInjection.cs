@@ -41,6 +41,7 @@ public static class InfrastructureRegistration
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<ITenantRepository, TenantRepository>();
         services.AddScoped<IRoleAssignmentRepository, RoleAssignmentRepository>();
+        services.AddScoped<IImpersonationRepository, ImpersonationRepository>();
 
         // Read-side projections + provisioning.
         services.AddScoped<IUserDirectory, UserDirectory>();

@@ -25,6 +25,13 @@ namespace mediq.Infrastructure.Persistence;
 /// <c>is_super_admin(NULL)</c> → false (no privilege). The four RBAC admin writes still go through the SECURITY
 /// DEFINER functions (which enforce the escalation guard); this GUC covers the non-definer paths.
 /// </para>
+/// <para>
+/// It also sets <c>app.user_id</c> (the validated acting user) and <c>app.impersonated_tenant</c> (the
+/// server-signed impersonation claim) for the same transaction — the inputs to the issue #3 PHI guard
+/// <c>platform.current_impersonated_tenant()</c>. That guard only opens cross-tenant PHI when a live,
+/// non-expired <c>impersonation_sessions</c> row (created solely by the audited <c>begin_impersonation()</c>)
+/// backs the GUC for this user, so a forged or stale <c>app.impersonated_tenant</c> reaches no medical data.
+/// </para>
 /// </summary>
 public sealed class UnitOfWork(PlatformDbContext db, ICurrentUserContext currentUser) : IUnitOfWork
 {
@@ -39,13 +46,22 @@ public sealed class UnitOfWork(PlatformDbContext db, ICurrentUserContext current
 
         // SET LOCAL (is_local=true) — scoped to THIS transaction; auto-clears on commit/rollback. The
         // super-admin flag is resolved server-side from the validated user id (NULL/anon ⇒ false).
+        // app.user_id is the validated acting user; it is the identity the impersonation guard
+        // (platform.current_impersonated_tenant) matches the session against — without it, app.impersonated_tenant
+        // is inert (issue #3). app.impersonated_tenant carries the server-signed impersonation claim, but remains
+        // AUDITED-BY-CONSTRUCTION: the DB ignores it unless a live begin_impersonation() session backs it for this
+        // user. Empty string (not NULL) for absent values so current_setting()+NULLIF reads back as NULL.
         await db.Database.ExecuteSqlRawAsync(
             "SELECT set_config('app.tenant_id', @p0, true), "
-            + "set_config('app.is_super_admin', platform.is_super_admin(@p1)::text, true)",
+            + "set_config('app.user_id', @p1, true), "
+            + "set_config('app.impersonated_tenant', @p2, true), "
+            + "set_config('app.is_super_admin', platform.is_super_admin(@p3)::text, true)",
             new[]
             {
                 new NpgsqlParameter("@p0", tenantId?.ToString() ?? ""),
-                new NpgsqlParameter("@p1", NpgsqlDbType.Uuid) { Value = (object?)currentUser.UserId ?? DBNull.Value },
+                new NpgsqlParameter("@p1", currentUser.UserId?.ToString() ?? ""),
+                new NpgsqlParameter("@p2", currentUser.ImpersonatedTenantId?.ToString() ?? ""),
+                new NpgsqlParameter("@p3", NpgsqlDbType.Uuid) { Value = (object?)currentUser.UserId ?? DBNull.Value },
             }, ct);
 
         return new TenantScope(tx, ownsTransaction: existing is null);

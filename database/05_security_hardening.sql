@@ -619,10 +619,15 @@ CREATE OR REPLACE FUNCTION platform.current_is_super_admin() RETURNS BOOLEAN AS 
 $$ LANGUAGE SQL STABLE;
 
 -- Helper: the tenant the current session is actively impersonating (R6), if any.
--- Pure GUC reader (no table dependency) — canonical home is here so the PHI policies
--- below can consume it; 11_rbac_hardening.sql builds the impersonation_sessions table,
--- begin_impersonation(), and the append-only/audit machinery that SET this GUC.
--- NULL when no session is active ⇒ PHI stays confined to the active tenant (fail-closed).
+-- BOOTSTRAP DEFINITION ONLY. This pure GUC reader exists so the PHI policies below can
+-- reference the function — but impersonation_sessions does not exist yet at this point
+-- in the run order, so the audited-by-construction validation cannot live here.
+-- 11_rbac_hardening.sql REDEFINES this function (CREATE OR REPLACE, SECURITY DEFINER) to
+-- only honor app.impersonated_tenant when it is backed by a live, non-expired
+-- impersonation_sessions row for app.user_id — see issue #3. 11 is REQUIRED for real
+-- patient data (the standard bundle always runs it last). Even this bootstrap form is
+-- fail-closed: with no GUC set, current_impersonated_tenant() is NULL ⇒ PHI stays
+-- confined to the active tenant.
 CREATE OR REPLACE FUNCTION platform.current_impersonated_tenant() RETURNS UUID AS $$
     SELECT NULLIF(current_setting('app.impersonated_tenant', true), '')::UUID;
 $$ LANGUAGE SQL STABLE;

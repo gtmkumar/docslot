@@ -32,6 +32,40 @@ public sealed record SwitchTenantRequest(Guid TenantId, string RefreshToken);
 public sealed record LogoutRequest(string? RefreshToken = null);
 
 /// <summary>
+/// Begin a support impersonation session (issue #3). Opens an AUDITED, time-boxed
+/// <c>platform.begin_impersonation()</c> session for the authenticated actor and mints a NEW access token
+/// carrying the server-signed <c>impersonated_tenant</c> claim. The actor is ALWAYS the authenticated
+/// principal — never taken from the body. <see cref="RefreshToken"/> binds the operation to the live
+/// session (rotated on success). <see cref="TargetUserId"/> narrows the session to one user (null =
+/// tenant-wide support); <see cref="TtlMinutes"/> defaults server-side (30); <see cref="BreakGlass"/>
+/// raises a critical alert + records a legal-obligation basis.
+/// </summary>
+public sealed record BeginImpersonationRequest(
+    Guid TargetTenantId,
+    string Reason,
+    string RefreshToken,
+    Guid? TargetUserId = null,
+    int? TtlMinutes = null,
+    bool BreakGlass = false);
+
+/// <summary>
+/// Token bundle + impersonation metadata returned by <c>begin</c>. The embedded <see cref="Token"/> carries
+/// the <c>impersonated_tenant</c> claim; cross-tenant PHI still opens only because a live session backs it.
+/// </summary>
+public sealed record ImpersonationResponse(
+    TokenResponse Token,
+    Guid ImpersonationId,
+    Guid TargetTenantId,
+    DateTime ExpiresAtUtc);
+
+/// <summary>
+/// End an active impersonation session (issue #3) and re-mint a CLEAN (non-impersonating) access token so
+/// the cleared scope takes effect immediately. <c>platform.end_impersonation()</c> enforces
+/// self-close-or-<c>platform.users.impersonate</c> at the DB and writes the symmetric audit row.
+/// </summary>
+public sealed record EndImpersonationRequest(Guid ImpersonationId, string RefreshToken);
+
+/// <summary>
 /// Authenticated profile for <c>GET /api/v1/me</c>. <see cref="ActiveTenantId"/> is the tenant the
 /// current token is scoped to; <see cref="Tenants"/> lists every tenant the user may switch into.
 /// </summary>

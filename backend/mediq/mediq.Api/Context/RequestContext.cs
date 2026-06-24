@@ -53,6 +53,14 @@ public sealed class CurrentUserContext(IHttpContextAccessor accessor, ITenantSco
     /// <summary>The caller's own broker id from the signed <c>broker_id</c> claim (broker-role users only).</summary>
     public Guid? BrokerId =>
         Guid.TryParse(User?.FindFirst(JwtTokenService.BrokerClaim)?.Value, out var id) ? id : null;
+
+    /// <summary>
+    /// The tenant being impersonated, from the server-signed <c>impersonated_tenant</c> claim (issue #3). No
+    /// header fallback — like <see cref="TenantId"/>, it must be a minted, signed claim. Inert unless a live
+    /// <c>impersonation_sessions</c> row backs it at the DB layer, so it cannot be used to forge PHI access.
+    /// </summary>
+    public Guid? ImpersonatedTenantId =>
+        Guid.TryParse(User?.FindFirst(JwtTokenService.ImpersonatedTenantClaim)?.Value, out var id) ? id : null;
 }
 
 /// <summary>
