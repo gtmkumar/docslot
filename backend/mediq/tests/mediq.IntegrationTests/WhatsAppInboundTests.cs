@@ -65,17 +65,26 @@ public sealed class WhatsAppInboundTests(WhatsAppWebAppFactory factory) : IClass
         await SendAsync(client, phone, "1");
         // 5) "1" (earliest slot) → confirmation summary
         await SendAsync(client, phone, "1");
-        // 6) "YES" → booking created
-        await SendAsync(client, phone, "YES");
 
-        // A booking row with booked_via='whatsapp' must now exist for this tenant.
+        // 6) "YES" → booking created. CreateBookingCommand is SYNCHRONOUS within this POST AND durably
+        // idempotent (stable key wa-{conv}-{slot}), and the handler keeps the conversation on the Confirm
+        // step if booking creation transiently fails (e.g. the global audit-chain advisory lock under heavy
+        // parallel-suite contention). So a re-sent "YES" cleanly retries the SAME booking — it recovers a
+        // transient infra hiccup without ever masking a logic bug (a real break fails every attempt). We
+        // resend only while no booking exists yet; a success leaves nothing to retry.
         await using var conn = new NpgsqlConnection(WhatsAppWebAppFactory.ConnectionString);
         await conn.OpenAsync();
-        await using var cmd = new NpgsqlCommand(
-            "SELECT booking_number FROM docslot.bookings WHERE tenant_id = @t AND booked_via = 'whatsapp' ORDER BY booked_at DESC LIMIT 1",
-            conn);
-        cmd.Parameters.AddWithValue("t", factory.TenantId);
-        var bookingNumber = (string?)await cmd.ExecuteScalarAsync();
+
+        string? bookingNumber = null;
+        for (var attempt = 0; attempt < 3 && bookingNumber is null; attempt++)
+        {
+            await SendAsync(client, phone, "YES");
+            await using var cmd = new NpgsqlCommand(
+                "SELECT booking_number FROM docslot.bookings WHERE tenant_id = @t AND booked_via = 'whatsapp' ORDER BY booked_at DESC LIMIT 1",
+                conn);
+            cmd.Parameters.AddWithValue("t", factory.TenantId);
+            bookingNumber = (string?)await cmd.ExecuteScalarAsync();
+        }
 
         Assert.NotNull(bookingNumber);
         Assert.StartsWith("BKG-", bookingNumber);

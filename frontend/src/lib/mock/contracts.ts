@@ -251,6 +251,45 @@ export const MeTenantSchema = z.object({
 });
 export type MeTenant = z.infer<typeof MeTenantSchema>;
 
+// ── Support impersonation (issue #3) ─────────────────────────────────────────
+// A support actor begins impersonation; the server mints an access token whose
+// signed `impersonated_tenant` claim scopes every subsequent request to the
+// target tenant. /end mints a CLEAN bundle (no claim). Mirrors the
+// AuthController impersonation records (camelCase wire).
+
+/** `POST /api/v1/auth/impersonation/begin` body. Mirrors BeginImpersonationRequest. */
+export const BeginImpersonationRequestSchema = z.object({
+  targetTenantId: z.string(),
+  reason: z.string(),
+  refreshToken: z.string(),
+  targetUserId: z.string().nullable().optional(),
+  ttlMinutes: z.number().nullable().optional(),
+  breakGlass: z.boolean().nullable().optional(),
+});
+export type BeginImpersonationRequest = z.infer<typeof BeginImpersonationRequestSchema>;
+
+/** `POST /api/v1/auth/impersonation/begin` result. The nested `token` is a full
+ *  TokenResponse whose accessToken carries the `impersonated_tenant` claim. */
+export const BeginImpersonationResultSchema = z.object({
+  token: TokenResponseSchema,
+  impersonationId: z.string(),
+  targetTenantId: z.string(),
+  expiresAtUtc: z.string(),
+});
+export type BeginImpersonationResult = z.infer<typeof BeginImpersonationResultSchema>;
+
+/** `POST /api/v1/auth/impersonation/end` body. Mirrors EndImpersonationRequest. */
+export const EndImpersonationRequestSchema = z.object({
+  impersonationId: z.string(),
+  refreshToken: z.string(),
+});
+export type EndImpersonationRequest = z.infer<typeof EndImpersonationRequestSchema>;
+
+/** `POST /api/v1/auth/impersonation/end` result — a CLEAN TokenResponse bundle
+ *  with NO `impersonated_tenant` claim. */
+export const EndImpersonationResultSchema = TokenResponseSchema;
+export type EndImpersonationResult = z.infer<typeof EndImpersonationResultSchema>;
+
 /** `GET /api/v1/me`. Mirrors MeDto. */
 export const MeSchema = z.object({
   userId: z.string(),

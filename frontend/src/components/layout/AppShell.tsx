@@ -13,6 +13,7 @@ import { RouteFallback } from './RouteFallback';
 import { Sidebar } from './Sidebar';
 import { SlideOverHost } from './SlideOverHost';
 import { Topbar } from './Topbar';
+import { ImpersonationBanner } from '@/features/impersonation/components/ImpersonationBanner';
 import { usePermissions } from '@/lib/permissions';
 import { useShortcuts } from '@/lib/useShortcuts';
 import { useMe } from '@/features/auth/api';
@@ -81,6 +82,10 @@ export function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar onOpenPalette={() => setPaletteOpen(true)} onOpenMenu={() => setDrawerOpen(true)} />
+        {/* Global support-impersonation banner (issue #3) — renders only when the
+            access token carries the `impersonated_tenant` claim. Sticks to the top
+            of the scrolling content so it stays visible while acting as a tenant. */}
+        <ImpersonationBanner />
         <main className="flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
           {/* Suspense boundary for code-split route screens (pattern 13). */}
           <Suspense fallback={<RouteFallback />}>

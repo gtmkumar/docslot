@@ -521,6 +521,46 @@ $$;
 COMMENT ON FUNCTION platform.end_impersonation IS
     'R6/issue#3: closes an impersonation session (ended_at/ended_by) and writes the symmetric end_impersonation audit row. Self-close by the opening actor, else requires platform.users.impersonate. Idempotent on an already-ended session.';
 
+-- Oversight read for the Security & Compliance console (issue #3): list impersonation sessions with a
+-- derived status (active / expired / ended) plus actor + target-tenant labels for display. SECURITY DEFINER
+-- to read past the super-only RLS so the API can gate the surface on a review permission
+-- (platform.anomalies.review) WITHOUT requiring the reader to be a platform super_admin. Returns metadata
+-- only — no PHI; the API seam masks the actor to initials. STABLE, ordered newest-first.
+CREATE OR REPLACE FUNCTION platform.list_impersonation_sessions(p_limit INT DEFAULT 100)
+RETURNS TABLE (
+    impersonation_id   UUID,
+    actor_user_id      UUID,
+    actor_name         TEXT,
+    target_tenant_id   UUID,
+    target_tenant_name TEXT,
+    target_user_id     UUID,
+    reason             TEXT,
+    is_break_glass     BOOLEAN,
+    started_at         TIMESTAMPTZ,
+    expires_at         TIMESTAMPTZ,
+    ended_at           TIMESTAMPTZ,
+    ended_by_user_id   UUID,
+    status             TEXT
+)
+LANGUAGE SQL STABLE SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+    SELECT s.impersonation_id, s.actor_user_id, a.full_name,
+           s.target_tenant_id, t.display_name, s.target_user_id,
+           s.reason, s.is_break_glass, s.started_at, s.expires_at,
+           s.ended_at, s.ended_by_user_id,
+           CASE WHEN s.ended_at IS NOT NULL   THEN 'ended'
+                WHEN s.expires_at <= NOW()    THEN 'expired'
+                ELSE 'active' END AS status
+    FROM platform.impersonation_sessions s
+    LEFT JOIN platform.users   a ON a.user_id   = s.actor_user_id
+    LEFT JOIN platform.tenants t ON t.tenant_id = s.target_tenant_id
+    ORDER BY s.started_at DESC
+    LIMIT GREATEST(p_limit, 0);
+$$;
+COMMENT ON FUNCTION platform.list_impersonation_sessions IS
+    'issue#3: oversight list of impersonation sessions (active/expired/ended) with actor + target labels. SECURITY DEFINER so the review surface need not require super_admin; metadata only, no PHI.';
+
 -- ============================================================================
 -- R5 — SEPARATION OF DUTIES
 -- ============================================================================
@@ -1012,6 +1052,7 @@ GRANT EXECUTE ON FUNCTION
     platform.current_impersonated_tenant(),
     platform.begin_impersonation(UUID, UUID, TEXT, UUID, INTERVAL, BOOLEAN),
     platform.end_impersonation(UUID, UUID),
+    platform.list_impersonation_sessions(INT),
     platform.is_super_admin(UUID),
     platform.grant_permission_to_role(UUID, UUID, UUID, UUID, BOOLEAN),
     platform.assign_role_to_user(UUID, UUID, UUID, UUID),
@@ -1049,7 +1090,8 @@ END $verify$;
 -- New columns: role_permissions.is_grantable
 -- New/redefined functions: tenant_is_serviceable, resolve_user_permissions*,
 --   user_has_permission*, get_user_menus*, current_impersonated_tenant,
---   begin_impersonation, end_impersonation, is_super_admin, grant_permission_to_role,
+--   begin_impersonation, end_impersonation, list_impersonation_sessions,
+--   is_super_admin, grant_permission_to_role,
 --   assign_role_to_user, enforce_role_sod, rls_can_see/write_tenant
 --   (* = redefined to be tenant-gated + SECURITY DEFINER)
 -- RLS enabled: roles, role_permissions, user_tenant_roles,

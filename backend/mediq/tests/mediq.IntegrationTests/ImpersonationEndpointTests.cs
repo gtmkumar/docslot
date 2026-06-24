@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using mediq.SharedDataModel.Docslot.Auth;
+using mediq.SharedDataModel.Docslot.Security;
 using Npgsql;
 using Xunit;
 
@@ -45,8 +46,9 @@ public sealed class ImpersonationEndpointTests(PlatformWebAppFactory factory) : 
         // The new access token carries the server-signed impersonated_tenant claim = the target.
         Assert.Equal(factory.OtherTenantId.ToString(), ClaimValue(begun.Token.AccessToken, ImpersonatedTenantClaim));
 
-        // The open was audited by begin_impersonation() (not by the handler).
-        Assert.Equal(1, await AuditCountAsync("impersonate", factory.OtherTenantId, factory.SuperAdminUserId));
+        // The open was audited by begin_impersonation() (not by the handler). >=1: the fixture's actor/target
+        // are shared across tests in this class, so other begins may have written rows too — we assert presence.
+        Assert.True(await AuditCountAsync("impersonate", factory.OtherTenantId, factory.SuperAdminUserId) >= 1);
 
         // --- end: close the session with the rotated token; the cleared claim must take effect ---
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", begun.Token.AccessToken);
@@ -57,7 +59,36 @@ public sealed class ImpersonationEndpointTests(PlatformWebAppFactory factory) : 
         var ended = await endResp.Content.ReadFromJsonAsync<TokenResponse>();
         Assert.NotNull(ended);
         Assert.Null(ClaimValue(ended!.AccessToken, ImpersonatedTenantClaim));   // clean token — no impersonation
-        Assert.Equal(1, await AuditCountAsync("end_impersonation", factory.OtherTenantId, factory.SuperAdminUserId));
+        Assert.True(await AuditCountAsync("end_impersonation", factory.OtherTenantId, factory.SuperAdminUserId) >= 1);
+    }
+
+    [Fact]
+    public async Task Review_Surface_Lists_The_Open_Session_With_Masked_Actor()
+    {
+        var client = factory.CreateClient();
+        var token = await LoginAsync(client, factory.SuperAdminEmail, PlatformWebAppFactory.SuperAdminPassword, factory.TenantId);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+
+        var beginResp = await client.PostAsJsonAsync("/api/v1/auth/impersonation/begin",
+            new BeginImpersonationRequest(factory.OtherTenantId, "review-surface ticket", token.RefreshToken));
+        Assert.Equal(HttpStatusCode.OK, beginResp.StatusCode);
+        var begun = (await beginResp.Content.ReadFromJsonAsync<ImpersonationResponse>())!;
+
+        // The Security & Compliance console lists it (super_admin holds platform.anomalies.review).
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", begun.Token.AccessToken);
+        var listResp = await client.GetAsync("/api/v1/security/impersonation-sessions?take=200");
+        Assert.Equal(HttpStatusCode.OK, listResp.StatusCode);
+
+        var sessions = await listResp.Content.ReadFromJsonAsync<List<ImpersonationSessionDto>>();
+        Assert.NotNull(sessions);
+        var row = sessions!.SingleOrDefault(s => s.ImpersonationId == begun.ImpersonationId);
+        Assert.NotNull(row);
+        Assert.Equal("active", row!.Status);
+        Assert.Equal(factory.OtherTenantId, row.TargetTenantId);
+        Assert.Equal("review-surface ticket", row.Reason);
+        // Actor is masked to initials — never the seeded full name.
+        Assert.False(string.IsNullOrWhiteSpace(row.ActorLabel));
+        Assert.DoesNotContain("Slice01", row.ActorLabel!);
     }
 
     [Fact]

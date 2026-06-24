@@ -1205,6 +1205,17 @@ export const en = {
     funnelConfirmed: 'Confirmed',
     bookings: '{{count}} bookings',
   },
+  impersonation: {
+    // Support actor is acting as another tenant — a warning, not info.
+    label: 'Impersonating',
+    actingAs: 'You are acting as {{tenant}}',
+    actingAsTenant: 'tenant {{id}}',
+    body: 'Every action is performed as this tenant and is logged.',
+    exit: 'Exit impersonation',
+    exiting: 'Exiting…',
+    exited: 'Impersonation ended',
+    exitError: "Couldn't end impersonation. Please try again.",
+  },
 };
 
 export const hi: typeof en = {
@@ -2405,6 +2416,16 @@ export const hi: typeof en = {
     funnelPickedSlot: 'स्लॉट चुना',
     funnelConfirmed: 'पुष्ट',
     bookings: '{{count}} बुकिंग',
+  },
+  impersonation: {
+    label: 'प्रतिरूपण',
+    actingAs: 'आप {{tenant}} के रूप में कार्य कर रहे हैं',
+    actingAsTenant: 'टेनेंट {{id}}',
+    body: 'हर कार्य इस टेनेंट के रूप में किया जाता है और लॉग किया जाता है।',
+    exit: 'प्रतिरूपण से बाहर निकलें',
+    exiting: 'बाहर निकल रहे हैं…',
+    exited: 'प्रतिरूपण समाप्त हुआ',
+    exitError: 'प्रतिरूपण समाप्त नहीं हो सका। कृपया पुनः प्रयास करें।',
   },
 };
 
