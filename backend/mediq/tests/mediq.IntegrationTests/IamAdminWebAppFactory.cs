@@ -135,6 +135,9 @@ public sealed class IamAdminWebAppFactory : WebApplicationFactory<Program>, IAsy
             "DELETE FROM platform.action_types WHERE action_key LIKE @cat AND NOT EXISTS (SELECT 1 FROM platform.permissions WHERE action = action_types.action_key)",
             ("cat", CatalogPrefix + "%"));
 
+        // Module-license rows the licensing tests set for this tenant.
+        await Exec(conn, "DELETE FROM platform.tenant_module_entitlements WHERE tenant_id = @tid", ("tid", TenantId));
+
         var users = new[] { OwnerUserId, ViewerUserId, TargetUserId, SuperAdminUserId };
         var emails = new[] { OwnerEmail, ViewerEmail, TargetEmail, SuperAdminEmail };
         await Exec(conn, "DELETE FROM platform.user_permission_overrides WHERE user_id = ANY(@u)", ("u", users));
@@ -161,6 +164,17 @@ public sealed class IamAdminWebAppFactory : WebApplicationFactory<Program>, IAsy
         await using var cmd = new NpgsqlCommand(
             "SELECT permission_id FROM platform.permissions WHERE permission_key = @k", conn);
         cmd.Parameters.AddWithValue("k", permissionKey);
+        return (Guid)(await cmd.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>Resolves a resource_type_id (module) by key via the RLS-exempt owner connection.</summary>
+    public static async Task<Guid> ResourceTypeIdAsync(string resourceKey)
+    {
+        await using var conn = new NpgsqlConnection(OwnerConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            "SELECT resource_type_id FROM platform.resource_types WHERE resource_key = @k", conn);
+        cmd.Parameters.AddWithValue("k", resourceKey);
         return (Guid)(await cmd.ExecuteScalarAsync())!;
     }
 

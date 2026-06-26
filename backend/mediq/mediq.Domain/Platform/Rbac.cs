@@ -201,3 +201,20 @@ public sealed class ActionType
 
     private ActionType() { }
 }
+
+/// <summary>
+/// Per-tenant per-module license (maps to <c>platform.tenant_module_entitlements</c>). DENYLIST: a module
+/// is licensed unless a row marks it <c>is_licensed=false</c>. Read-only here — writes go through
+/// <c>set_module_license</c>. A COMMERCIAL DISPLAY GATE ONLY: it greys cells in the matrix and never
+/// affects permission resolution. See [[set_module_license]].
+/// </summary>
+public sealed class TenantModuleEntitlement
+{
+    public Guid EntitlementId { get; private set; }
+    public Guid TenantId { get; private set; }
+    public Guid ResourceTypeId { get; private set; }
+    public bool IsLicensed { get; private set; }
+    public string? Reason { get; private set; }
+
+    private TenantModuleEntitlement() { }
+}

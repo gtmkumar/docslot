@@ -68,3 +68,9 @@ public sealed record CreatePermissionRequest(
     string PermissionKey, string Resource, string Action, string Scope, string Description, bool IsDangerous = false);
 
 public sealed record CreatePermissionResult(Guid PermissionId);
+
+/// <summary>Set a tenant's per-module license (denylist; default-licensed). A COMMERCIAL DISPLAY gate —
+/// it only greys cells in the matrix and never changes access. Gated on <c>platform.settings.update</c>.</summary>
+public sealed record SetModuleLicenseRequest(Guid? TenantId, bool IsLicensed, string? Reason);
+
+public sealed record SetModuleLicenseResult(Guid EntitlementId, Guid ResourceTypeId, bool IsLicensed);

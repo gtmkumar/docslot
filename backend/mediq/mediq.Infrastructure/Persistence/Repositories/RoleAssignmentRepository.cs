@@ -159,6 +159,17 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
             new NpgsqlParameter("@p5", description),
             new NpgsqlParameter("@p6", isDangerous));
 
+    public Task<Guid> SetModuleLicenseAsync(
+        Guid actorUserId, Guid tenantId, Guid resourceTypeId, bool isLicensed, string? reason, CancellationToken ct) =>
+        ScalarAsync<Guid>(
+            "SELECT platform.set_module_license(@p0, @p1, @p2, @p3, @p4) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", tenantId),
+            new NpgsqlParameter("@p2", resourceTypeId),
+            new NpgsqlParameter("@p3", isLicensed),
+            new NpgsqlParameter("@p4", (object?)reason ?? DBNull.Value));
+
     /// <summary>
     /// Runs a SECURITY DEFINER function that returns void (e.g. grant_permission_to_role) on the DbContext
     /// connection (enlisted in the ambient UoW transaction), translating the privilege/SoD SQLSTATEs the

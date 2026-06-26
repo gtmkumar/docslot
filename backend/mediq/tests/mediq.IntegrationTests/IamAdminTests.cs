@@ -237,6 +237,83 @@ public sealed class IamAdminTests(IamAdminWebAppFactory factory) : IClassFixture
         Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
     }
 
+    // ---- Module licensing (commercial DISPLAY gate — must never change access) -------------------
+
+    [Fact]
+    public async Task Super_SetsModuleUnlicensed_MatrixGreysCell_ButGrantUnchanged()
+    {
+        var client = await AuthedClientAsync(factory.SuperAdminEmail);
+        var permId = await IamAdminWebAppFactory.PermissionIdAsync(TenantPermissionKey);   // docslot.booking.read
+        var bookingModuleId = await IamAdminWebAppFactory.ResourceTypeIdAsync("booking");
+
+        // Arrange: grant booking.read on the custom role so we have a granted cell to observe.
+        var grant = await client.PostAsJsonAsync(
+            $"/api/v1/iam/roles/{factory.CustomRoleId}/permissions/{permId}",
+            new SetRolePermissionRequest(factory.TenantId, Grantable: false));
+        Assert.Equal(HttpStatusCode.OK, grant.StatusCode);
+
+        // Default: the booking module is licensed.
+        var before = await GetMatrixAsync(client, factory.CustomRoleId);
+        Assert.True(before.Modules.Single(m => m.ResourceKey == "booking").Licensed);
+
+        // Act: mark the booking module unlicensed for the tenant.
+        var setResp = await client.PutAsJsonAsync($"/api/v1/iam/modules/{bookingModuleId}/license",
+            new SetModuleLicenseRequest(factory.TenantId, IsLicensed: false, Reason: "not on plan"));
+        Assert.Equal(HttpStatusCode.OK, setResp.StatusCode);
+
+        // Assert: the matrix greys the module (licensed=false, cells moduleLicensed=false) — but the GRANT
+        // is untouched. Licensing is a display gate; it never revokes the permission.
+        var after = await GetMatrixAsync(client, factory.CustomRoleId);
+        var module = after.Modules.Single(m => m.ResourceKey == "booking");
+        Assert.False(module.Licensed);
+        var cell = module.Cells.Single(c => c.PermissionKey == TenantPermissionKey);
+        Assert.False(cell.ModuleLicensed);
+        Assert.True(cell.Granted);   // <-- the load-bearing assertion: still granted
+
+        // Restore shared fixture state (tests in a class share the tenant): re-license + drop the grant.
+        await client.PutAsJsonAsync($"/api/v1/iam/modules/{bookingModuleId}/license",
+            new SetModuleLicenseRequest(factory.TenantId, IsLicensed: true, Reason: "test restore"));
+        await client.DeleteAsync(
+            $"/api/v1/iam/roles/{factory.CustomRoleId}/permissions/{permId}?tenantId={factory.TenantId}");
+    }
+
+    [Fact]
+    public async Task UnlicensedModule_DoesNotChange_EffectiveAccess()
+    {
+        var client = await AuthedClientAsync(factory.SuperAdminEmail);
+        var bookingModuleId = await IamAdminWebAppFactory.ResourceTypeIdAsync("booking");
+
+        // Mark booking unlicensed for the tenant…
+        var setResp = await client.PutAsJsonAsync($"/api/v1/iam/modules/{bookingModuleId}/license",
+            new SetModuleLicenseRequest(factory.TenantId, IsLicensed: false, Reason: "display-only proof"));
+        Assert.Equal(HttpStatusCode.OK, setResp.StatusCode);
+
+        // …the owner's RESOLVED permission set is unchanged — booking.read still present. Licensing is a
+        // display gate and resolve_user_permissions never consults it. This is the security invariant.
+        var resp = await client.GetAsync(
+            $"/api/v1/iam/users/{factory.OwnerUserId}/effective-access?tenantId={factory.TenantId}");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var dto = (await resp.Content.ReadFromJsonAsync<EffectiveAccessDto>())!;
+        Assert.Contains(TenantPermissionKey, dto.PermissionKeys);
+
+        // Restore shared fixture state.
+        await client.PutAsJsonAsync($"/api/v1/iam/modules/{bookingModuleId}/license",
+            new SetModuleLicenseRequest(factory.TenantId, IsLicensed: true, Reason: "test restore"));
+    }
+
+    [Fact]
+    public async Task Owner_SetsModuleLicense_Gets403_LacksSettingsUpdate()
+    {
+        var client = await AuthedClientAsync(factory.OwnerEmail);
+        var bookingModuleId = await IamAdminWebAppFactory.ResourceTypeIdAsync("booking");
+
+        // tenant_owner does not hold platform.settings.update → blocked at the RequirePermission gate.
+        var resp = await client.PutAsJsonAsync($"/api/v1/iam/modules/{bookingModuleId}/license",
+            new SetModuleLicenseRequest(factory.TenantId, IsLicensed: false, Reason: "should fail"));
+
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+    }
+
     // ---- helpers ----------------------------------------------------------------------------------
 
     private async Task<HttpClient> AuthedClientAsync(string email)

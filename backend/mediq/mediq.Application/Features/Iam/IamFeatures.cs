@@ -231,3 +231,32 @@ public sealed class CreatePermissionCommandHandler(
         return new CreatePermissionResult(id);
     }
 }
+
+// ---- Module licensing (commercial display gate) --------------------------------------------------
+
+public sealed record SetModuleLicenseCommand(Guid ResourceTypeId, SetModuleLicenseRequest Request)
+    : ICommand<SetModuleLicenseResult>;
+
+public sealed class SetModuleLicenseCommandHandler(
+    IRoleAssignmentRepository roles, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<SetModuleLicenseCommand, SetModuleLicenseResult>
+{
+    public async Task<SetModuleLicenseResult> Handle(SetModuleLicenseCommand command, CancellationToken ct)
+    {
+        var req = command.Request;
+        var tenantId = req.TenantId ?? ctx.TenantId
+            ?? throw new BusinessRuleException("A tenant is required to set a module license.");
+
+        // platform.set_module_license (SECURITY DEFINER) enforces platform.settings.update (→ 403). This is
+        // a display gate only — it never changes permission resolution, just what the matrix greys out.
+        var id = await roles.SetModuleLicenseAsync(
+            ctx.UserId!.Value, tenantId, command.ResourceTypeId, req.IsLicensed, req.Reason, ct);
+
+        await audit.RecordAsync(new AuditEntry(
+            "set_module_license", "resource_type", command.ResourceTypeId, req.IsLicensed ? "licensed" : "unlicensed",
+            ctx.UserId, tenantId, ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Module {command.ResourceTypeId} licensed={req.IsLicensed} for tenant {tenantId}"), ct);
+
+        return new SetModuleLicenseResult(id, command.ResourceTypeId, req.IsLicensed);
+    }
+}

@@ -110,6 +110,16 @@ public sealed class IamController(ICommandDispatcher commands, IQueryDispatcher 
         return CreatedAtAction(nameof(ListPermissions), null, result);
     }
 
+    /// <summary>Set a tenant's per-module license (the matrix "Module not licensed" gate). Commercial/platform
+    /// act, gated on <c>platform.settings.update</c>. Display-only — it greys cells, never changes access.</summary>
+    [HttpPut("modules/{resourceTypeId:guid}/license")]
+    [RequirePermission("platform.settings.update")]
+    [ProducesResponseType<SetModuleLicenseResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<SetModuleLicenseResult>> SetModuleLicense(
+        Guid resourceTypeId, [FromBody] SetModuleLicenseRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new SetModuleLicenseCommand(resourceTypeId, request), ct));
+
     // ---- Effective access ----------------------------------------------------------------------
 
     /// <summary>The effective (resolved) permission set for a user in a tenant — role grants − denies + grants.</summary>

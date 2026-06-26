@@ -7432,11 +7432,119 @@ BEGIN
     LEFT JOIN platform.resource_types rt ON rt.resource_key = p_resource
     LEFT JOIN platform.action_types  at ON at.action_key   = p_action
     RETURNING permission_id INTO v_id;
+
+    -- Maintain the platform invariant: super_admin's role holds EVERY permission in the registry
+    -- (the original seed did super_admin CROSS JOIN all permissions). A newly minted permission must be
+    -- granted to super_admin too, or the "super_admin holds everything" guarantee silently regresses.
+    INSERT INTO platform.role_permissions (role_id, permission_id, granted_by, is_grantable)
+    SELECT r.role_id, v_id, p_actor_user_id, true
+    FROM platform.roles r WHERE r.role_key = 'super_admin' AND r.is_system = true
+    ON CONFLICT (role_id, permission_id) DO NOTHING;
+
     RETURN v_id;
 END;
 $$;
 COMMENT ON FUNCTION platform.create_permission IS
     'Catalog: create a permission (resource.action), is_system=false. Ensures the action_type exists and links resource/action registries. Gated on platform.permissions.manage (or super_admin). A permission is inert until application code checks it.';
+
+-- ============================================================================
+-- MODULE LICENSING — a COMMERCIAL DISPLAY GATE, NOT a security boundary
+-- ============================================================================
+-- Per-tenant per-module entitlement that drives the matrix "Module not licensed"
+-- state. DENYLIST semantics: a module is licensed for a tenant UNLESS an explicit
+-- row says is_licensed=false (so default = all licensed, no backfill needed).
+--
+-- ⚠ Licensing is DISPLAY-ONLY. Permission resolution (resolve_user_permissions /
+-- user_has_permission) NEVER consults this table — the RBAC boundary stays RBAC.
+-- An unlicensed module only greys the cell in the admin matrix; it does not revoke
+-- access. (If commercial enforcement is ever wanted, it belongs at the feature
+-- entry point, explicitly — never silently inside permission resolution.)
+CREATE TABLE IF NOT EXISTS platform.tenant_module_entitlements (
+    entitlement_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id          UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    resource_type_id   UUID NOT NULL REFERENCES platform.resource_types(resource_type_id) ON DELETE CASCADE,
+    is_licensed        BOOLEAN NOT NULL DEFAULT true,
+    reason             TEXT,
+    updated_by_user_id UUID REFERENCES platform.users(user_id),
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (tenant_id, resource_type_id)
+);
+-- Partial index: the matrix only ever queries the (rare) unlicensed rows per tenant.
+CREATE INDEX IF NOT EXISTS idx_tme_tenant_unlicensed
+    ON platform.tenant_module_entitlements(tenant_id) WHERE NOT is_licensed;
+
+DROP TRIGGER IF EXISTS trg_tme_updated_at ON platform.tenant_module_entitlements;
+CREATE TRIGGER trg_tme_updated_at BEFORE UPDATE ON platform.tenant_module_entitlements
+    FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+-- RLS: tenant-scoped (own tenant + global + super/impersonation), like the entitlement tables.
+ALTER TABLE platform.tenant_module_entitlements ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tme_read  ON platform.tenant_module_entitlements;
+DROP POLICY IF EXISTS tme_write ON platform.tenant_module_entitlements;
+CREATE POLICY tme_read  ON platform.tenant_module_entitlements FOR SELECT
+    USING (platform.rls_can_see_tenant(tenant_id));
+CREATE POLICY tme_write ON platform.tenant_module_entitlements FOR ALL
+    USING (platform.rls_can_write_tenant(tenant_id))
+    WITH CHECK (platform.rls_can_write_tenant(tenant_id));
+
+-- docslot_app reads the table (RLS-scoped) for the matrix; writes go through the
+-- definer setter only (sole-writer, same posture as the catalog tables).
+GRANT SELECT ON platform.tenant_module_entitlements TO docslot_app;
+
+-- Helper: is a module licensed for a tenant? Denylist — licensed unless an explicit false row.
+CREATE OR REPLACE FUNCTION platform.module_is_licensed(p_tenant_id UUID, p_resource_key VARCHAR)
+RETURNS BOOLEAN
+LANGUAGE SQL STABLE
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+    SELECT NOT EXISTS (
+        SELECT 1
+        FROM platform.tenant_module_entitlements e
+        JOIN platform.resource_types rt ON rt.resource_type_id = e.resource_type_id
+        WHERE e.tenant_id = p_tenant_id
+          AND rt.resource_key = p_resource_key
+          AND e.is_licensed = false
+    );
+$$;
+COMMENT ON FUNCTION platform.module_is_licensed IS
+    'Display gate: true unless the tenant has an explicit is_licensed=false row for the module. NOT consulted by permission resolution.';
+
+-- Setter (definer): set a tenant's module entitlement. Commercial/platform-admin act,
+-- gated on platform.settings.update (super_admin holds it). Audited by the app layer.
+CREATE OR REPLACE FUNCTION platform.set_module_license(
+    p_actor_user_id UUID,
+    p_tenant_id UUID,
+    p_resource_type_id UUID,
+    p_is_licensed BOOLEAN,
+    p_reason TEXT DEFAULT NULL
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_id UUID;
+BEGIN
+    IF NOT (platform.is_super_admin(p_actor_user_id)
+         OR platform.user_has_permission(p_actor_user_id, 'platform.settings.update', p_tenant_id)) THEN
+        RAISE EXCEPTION 'actor % may not manage module licensing for tenant %', p_actor_user_id, p_tenant_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    INSERT INTO platform.tenant_module_entitlements
+        (tenant_id, resource_type_id, is_licensed, reason, updated_by_user_id)
+    VALUES (p_tenant_id, p_resource_type_id, p_is_licensed, p_reason, p_actor_user_id)
+    ON CONFLICT (tenant_id, resource_type_id) DO UPDATE
+        SET is_licensed = EXCLUDED.is_licensed, reason = EXCLUDED.reason,
+            updated_by_user_id = EXCLUDED.updated_by_user_id, updated_at = NOW()
+    RETURNING entitlement_id INTO v_id;
+    RETURN v_id;
+END;
+$$;
+COMMENT ON FUNCTION platform.set_module_license IS
+    'Set a tenant''s per-module license (denylist). Gated on platform.settings.update (or super_admin). Display-only — does not affect access.';
 
 -- ============================================================================
 -- R1 — ROW-LEVEL SECURITY ON THE RBAC / ENTITLEMENT TABLES
@@ -7598,6 +7706,8 @@ GRANT EXECUTE ON FUNCTION
     platform.duplicate_role(UUID, UUID, VARCHAR, VARCHAR, TEXT, UUID),
     platform.create_resource_type(UUID, VARCHAR, VARCHAR, TEXT, INT),
     platform.create_permission(UUID, VARCHAR, VARCHAR, VARCHAR, VARCHAR, TEXT, BOOLEAN),
+    platform.module_is_licensed(UUID, VARCHAR),
+    platform.set_module_license(UUID, UUID, UUID, BOOLEAN, TEXT),
     platform.assign_role_to_user(UUID, UUID, UUID, UUID),
     platform.revoke_role_assignment(UUID, UUID, TEXT),
     platform.set_user_permission_override(UUID, UUID, UUID, UUID, BOOLEAN, TEXT, TIMESTAMPTZ, TIMESTAMPTZ),

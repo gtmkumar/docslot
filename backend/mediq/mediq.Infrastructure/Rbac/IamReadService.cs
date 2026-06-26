@@ -11,7 +11,7 @@ namespace mediq.Infrastructure.Rbac;
 /// their own custom roles, never another tenant's. Effective-access resolution is delegated to
 /// <see cref="IRbacQueryService"/> so deny-wins / time-boxing logic lives only in the database.
 /// </summary>
-public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac) : IIamReadService
+public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac, ICurrentUserContext ctx) : IIamReadService
 {
     // Canonical column order for the matrix when action_types.display_order is unset (the seed leaves it 0).
     private static readonly Dictionary<string, int> ActionRank = new(StringComparer.Ordinal)
@@ -29,8 +29,13 @@ public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac)
             .OrderBy(r => r.DisplayOrder).ThenBy(r => r.ResourceName)
             .ToListAsync(ct);
 
+        // Licensing is per the caller's tenant (denylist — licensed unless explicitly disabled).
+        var unlicensed = await UnlicensedModuleIdsAsync(ctx.TenantId, ct);
+
         return rows
-            .Select(r => new ModuleDto(r.ResourceKey, r.ResourceName, r.Description, r.DisplayOrder, Licensed: true))
+            .Select(r => new ModuleDto(
+                r.ResourceKey, r.ResourceName, r.Description, r.DisplayOrder,
+                Licensed: !unlicensed.Contains(r.ResourceTypeId)))
             .ToList();
     }
 
@@ -75,11 +80,16 @@ public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac)
         var actionMeta = await db.ActionTypes.AsNoTracking()
             .ToDictionaryAsync(a => a.ActionKey, ct);
 
+        // Licensing follows the role's tenant for a custom role, else the caller's tenant context.
+        // It is a DISPLAY gate only — the Granted flags above are untouched by it.
+        var unlicensed = await UnlicensedModuleIdsAsync(role.TenantId ?? ctx.TenantId, ct);
+
         var modules = perms
             .GroupBy(p => p.Resource)
             .Select(g =>
             {
                 moduleMeta.TryGetValue(g.Key, out var rt);
+                var licensed = rt is null || !unlicensed.Contains(rt.ResourceTypeId);
                 var cells = g
                     .OrderBy(p => actionMeta.TryGetValue(p.Action, out var at) && at.DisplayOrder > 0
                         ? at.DisplayOrder : RankOf(p.Action))
@@ -87,7 +97,7 @@ public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac)
                     .Select(p => new RoleMatrixCellDto(
                         p.PermissionId, p.PermissionKey, p.Action,
                         actionMeta.TryGetValue(p.Action, out var at) ? at.ActionName : Humanize(p.Action),
-                        p.IsDangerous, Granted: grantedIds.Contains(p.PermissionId), ModuleLicensed: true))
+                        p.IsDangerous, Granted: grantedIds.Contains(p.PermissionId), ModuleLicensed: licensed))
                     .ToList();
 
                 return new RoleMatrixModuleDto(
@@ -95,7 +105,7 @@ public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac)
                     rt?.ResourceName ?? Humanize(g.Key),
                     rt?.Description,
                     rt?.DisplayOrder ?? int.MaxValue,
-                    Licensed: true,
+                    Licensed: licensed,
                     GrantedCount: cells.Count(c => c.Granted),
                     TotalCount: cells.Count,
                     Cells: cells);
@@ -115,6 +125,18 @@ public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac)
     {
         var keys = await rbac.ResolvePermissionsAsync(userId, tenantId, ct);
         return new EffectiveAccessDto(userId, tenantId, keys.OrderBy(k => k, StringComparer.Ordinal).ToList());
+    }
+
+    /// <summary>The set of module (resource_type) ids the tenant has explicitly UN-licensed (denylist).
+    /// Empty when there's no tenant context — modules then render as licensed by default.</summary>
+    private async Task<HashSet<Guid>> UnlicensedModuleIdsAsync(Guid? tenantId, CancellationToken ct)
+    {
+        if (tenantId is null) return [];
+        var ids = await db.TenantModuleEntitlements.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsLicensed)
+            .Select(e => e.ResourceTypeId)
+            .ToListAsync(ct);
+        return ids.ToHashSet();
     }
 
     private static string Humanize(string key) =>

@@ -203,6 +203,20 @@ public sealed class ActionTypeConfiguration : IEntityTypeConfiguration<ActionTyp
     }
 }
 
+public sealed class TenantModuleEntitlementConfiguration : IEntityTypeConfiguration<TenantModuleEntitlement>
+{
+    public void Configure(EntityTypeBuilder<TenantModuleEntitlement> b)
+    {
+        b.ToTable("tenant_module_entitlements", "platform");
+        b.HasKey(e => e.EntitlementId);
+        b.Property(e => e.EntitlementId).HasColumnName("entitlement_id");
+        b.Property(e => e.TenantId).HasColumnName("tenant_id");
+        b.Property(e => e.ResourceTypeId).HasColumnName("resource_type_id");
+        b.Property(e => e.IsLicensed).HasColumnName("is_licensed");
+        b.Property(e => e.Reason).HasColumnName("reason");
+    }
+}
+
 public sealed class UserSessionConfiguration : IEntityTypeConfiguration<UserSession>
 {
     public void Configure(EntityTypeBuilder<UserSession> b)

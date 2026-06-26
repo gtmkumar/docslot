@@ -125,6 +125,8 @@ function MatrixBody({ matrix, canToggle }: { matrix: RoleMatrix; canToggle: bool
   };
 
   const grantedNow = [...optimistic.values()].filter(Boolean).length;
+  const licensedModules = matrix.modules.filter((m) => m.licensed).length;
+  const allLicensed = licensedModules === matrix.modules.length;
 
   return (
     <div className="flex flex-col gap-4">
@@ -138,7 +140,16 @@ function MatrixBody({ matrix, canToggle }: { matrix: RoleMatrix; canToggle: bool
         >
           {matrix.isSystem ? t('team.systemRole') : t('team.customRole')}
         </span>
-        <span className="ml-auto text-[12px] text-muted">
+        <span
+          className={[
+            'ml-auto rounded-full px-2 py-0.5 text-[11px]',
+            allLicensed ? 'bg-surface-sunk text-muted' : 'bg-warn-soft text-warn',
+          ].join(' ')}
+          title={t('team.matrix.modulesLicensed', { licensed: licensedModules, total: matrix.modules.length })}
+        >
+          {t('team.matrix.modulesLicensed', { licensed: licensedModules, total: matrix.modules.length })}
+        </span>
+        <span className="text-[12px] text-muted">
           {t('team.matrix.grantedOf', { granted: grantedNow, total: matrix.totalCount })}
         </span>
       </div>

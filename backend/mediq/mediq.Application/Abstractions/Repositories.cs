@@ -85,4 +85,8 @@ public interface IRoleAssignmentRepository
     Task<Guid> CreatePermissionAsync(
         Guid actorUserId, string permissionKey, string resource, string action, string scope, string description,
         bool isDangerous, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.set_module_license</c> (commercial display gate). Returns the entitlement_id.</summary>
+    Task<Guid> SetModuleLicenseAsync(
+        Guid actorUserId, Guid tenantId, Guid resourceTypeId, bool isLicensed, string? reason, CancellationToken ct);
 }
