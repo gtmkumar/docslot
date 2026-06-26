@@ -11,6 +11,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  assignRole,
   createModule,
   createPermission,
   duplicateRole,
@@ -21,11 +22,11 @@ import {
   listModules,
   listRoles,
   listTenantUsers,
+  revokeRoleAssignment,
   revokeRolePermission,
   setOverride,
 } from '@/lib/backend';
 import {
-  assignRole,
   createRole,
   createUser,
   getEffectivePermissions,
@@ -138,6 +139,21 @@ export function useAssignRole() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ idempotencyKey, ...req }: AssignRoleInput) => assignRole(req, idempotencyKey),
+    onSuccess: (_r, vars) => {
+      void qc.invalidateQueries({ queryKey: usersQueryKey });
+      void qc.invalidateQueries({ queryKey: ['team', 'effective', vars.userId] });
+      void qc.invalidateQueries({ queryKey: effectiveAccessQueryKey(vars.userId) });
+    },
+  });
+}
+
+/** Soft-revoke a role assignment. The user's row updates (users query invalidates);
+ *  `userId` is threaded through only to invalidate that user's effective-access. */
+export function useRevokeRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { userTenantRoleId: string; reason: string; userId: string; idempotencyKey: string }) =>
+      revokeRoleAssignment(vars.userTenantRoleId, vars.reason, vars.idempotencyKey),
     onSuccess: (_r, vars) => {
       void qc.invalidateQueries({ queryKey: usersQueryKey });
       void qc.invalidateQueries({ queryKey: ['team', 'effective', vars.userId] });

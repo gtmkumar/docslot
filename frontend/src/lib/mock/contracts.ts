@@ -430,6 +430,13 @@ export type AssignRoleRequest = z.infer<typeof AssignRoleRequestSchema>;
 export const AssignRoleResultSchema = z.object({ userTenantRoleId: z.string() });
 export type AssignRoleResult = z.infer<typeof AssignRoleResultSchema>;
 
+/** `POST /api/v1/role-assignments/revoke` result. Mirrors RevokeRoleResult. */
+export const RevokeRoleResultSchema = z.object({
+  userTenantRoleId: z.string(),
+  alreadyRevoked: z.boolean(),
+});
+export type RevokeRoleResult = z.infer<typeof RevokeRoleResultSchema>;
+
 /** `POST /api/v1/permission-overrides` body. Mirrors SetOverrideRequest.
  *  Reason is MANDATORY; isAllowed=false (deny) wins over any role grant. */
 export const SetOverrideRequestSchema = z.object({

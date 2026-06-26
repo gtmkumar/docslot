@@ -19,6 +19,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { shortDate } from '@/lib/format';
 import { idempotencyKey } from '@/lib/api-client';
+import { toUserError } from '@/lib/backend';
 import { usePermissions } from '@/lib/permissions';
 import { useSession } from '@/stores/session';
 import { useUI } from '@/stores/ui';
@@ -26,6 +27,7 @@ import {
   useAssignRole,
   useEffectivePermissions,
   usePermissionRegistry,
+  useRevokeRole,
   useRoles,
   useSetOverride,
   useTenantUsers,
@@ -79,14 +81,33 @@ function RolesSection({ userId, canAssign }: { userId: string; canAssign: boolea
   const { data: users } = useTenantUsers();
   const { data: roles } = useRoles();
   const assign = useAssignRole();
+  const revoke = useRevokeRole();
   const user = users?.find((u) => u.userId === userId);
   const [roleId, setRoleId] = useState('');
 
   const onAssign = async () => {
     if (!roleId) return;
-    await assign.mutateAsync({ userId, roleId, isPrimary: false, idempotencyKey: idempotencyKey() });
-    toast.success(t('team.manage.assigned'));
-    setRoleId('');
+    try {
+      await assign.mutateAsync({ userId, roleId, isPrimary: false, idempotencyKey: idempotencyKey() });
+      toast.success(t('team.manage.assigned'));
+      setRoleId('');
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
+  };
+
+  const onRevoke = async (userTenantRoleId: string, roleName: string) => {
+    try {
+      await revoke.mutateAsync({
+        userTenantRoleId,
+        reason: `Revoked ${roleName} from Team & roles`,
+        userId,
+        idempotencyKey: idempotencyKey(),
+      });
+      toast.success(t('team.manage.revoked'));
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
   };
 
   // Assignable = tenant-scoped roles the user doesn't already hold. Platform-scoped
@@ -120,8 +141,9 @@ function RolesSection({ userId, canAssign }: { userId: string; canAssign: boolea
               <button
                 type="button"
                 aria-label={t('team.manage.revoke')}
-                onClick={() => toast(t('team.manage.revoked'))}
-                className="rounded p-1 text-muted transition-colors hover:bg-surface-sunk hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                disabled={revoke.isPending}
+                onClick={() => void onRevoke(r.userTenantRoleId, r.name)}
+                className="rounded p-1 text-muted transition-colors hover:bg-surface-sunk hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
               >
                 <Trash2 size={14} aria-hidden="true" />
               </button>

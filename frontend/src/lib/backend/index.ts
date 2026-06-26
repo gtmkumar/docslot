@@ -148,6 +148,10 @@ export const listKeyStatus = USE_REAL_API ? real.listKeyStatus : mock.listKeySta
 // existing RBAC seed so flag-off is unchanged.
 export const listRoles = USE_REAL_API ? real.listRoles : mock.listRoles;
 export const listTenantUsers = USE_REAL_API ? real.listTenantUsers : mock.listTenantUsers;
+// Role assignment writes — live POST /role-assignments (+ /revoke). Assigning or revoking
+// a role updates the user's row (the users query invalidates on success).
+export const assignRole = USE_REAL_API ? real.assignRole : mock.assignRole;
+export const revokeRoleAssignment = USE_REAL_API ? real.revokeRoleAssignment : mock.revokeRoleAssignment;
 export const setOverride = USE_REAL_API ? real.setOverride : mock.setOverride;
 
 export const listModules = USE_REAL_API ? real.listModules : mock.listModules;

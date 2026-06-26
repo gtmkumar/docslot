@@ -23,12 +23,14 @@ import {
   RoleMatrixSchema,
   RolePermissionToggleResultSchema,
   RoleSchema,
+  RevokeRoleResultSchema,
   SetOverrideResultSchema,
   TokenResponseSchema,
   UserListItemSchema,
   UserOverrideSchema,
   type AssignRoleRequest,
   type AssignRoleResult,
+  type RevokeRoleResult,
   type CreateModuleRequest,
   type CreateModuleResult,
   type CreatePermissionRequest,
@@ -356,6 +358,17 @@ export function assignRole(req: AssignRoleRequest, idempotencyKey: string): Prom
   return withIdem(idempotencyKey, () => {
     void req;
     return AssignRoleResultSchema.parse({ userTenantRoleId: crypto.randomUUID() });
+  });
+}
+
+export function revokeRoleAssignment(
+  userTenantRoleId: string,
+  reason: string,
+  idempotencyKey: string,
+): Promise<RevokeRoleResult> {
+  return withIdem(idempotencyKey, () => {
+    void reason;
+    return RevokeRoleResultSchema.parse({ userTenantRoleId, alreadyRevoked: false });
   });
 }
 

@@ -51,6 +51,8 @@ import {
   RoleMatrixSchema,
   RolePermissionToggleResultSchema,
   RoleSchema,
+  AssignRoleResultSchema,
+  RevokeRoleResultSchema,
   SetOverrideResultSchema,
   UserListItemSchema,
   UserListItemDtoSchema,
@@ -70,6 +72,9 @@ import {
   SlotSchema,
   TokenResponseSchema,
   WebhookSubscriptionSchema,
+  type AssignRoleRequest,
+  type AssignRoleResult,
+  type RevokeRoleResult,
   type Analytics,
   type AnalyticsDto,
   type ApiClient,
@@ -1432,6 +1437,43 @@ export async function listTenantUsers(): Promise<UserListItem[]> {
       })),
     }),
   );
+}
+
+/** POST /role-assignments — assign a role to a user in the tenant. The new role then
+ *  shows up in the user's row (the users list invalidates on success). 403 if the
+ *  actor can't confer it / would escalate. */
+export async function assignRole(
+  req: AssignRoleRequest,
+  idempotencyKey: string,
+): Promise<AssignRoleResult> {
+  const tenantId = req.tenantId ?? getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>('/role-assignments', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      userId: req.userId,
+      roleId: req.roleId,
+      tenantId,
+      expiresAt: req.expiresAt ?? null,
+      isPrimary: req.isPrimary ?? false,
+    },
+  });
+  return AssignRoleResultSchema.parse(raw);
+}
+
+/** POST /role-assignments/revoke — soft-revoke an assignment (never deletes). Idempotent
+ *  (alreadyRevoked=true on a second call). A reason is mandatory and logged. */
+export async function revokeRoleAssignment(
+  userTenantRoleId: string,
+  reason: string,
+  idempotencyKey: string,
+): Promise<RevokeRoleResult> {
+  const raw = await apiFetch<unknown>('/role-assignments/revoke', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: { userTenantRoleId, reason },
+  });
+  return RevokeRoleResultSchema.parse(raw);
 }
 
 export async function setOverride(
