@@ -10,7 +10,7 @@
 
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, ShieldAlert, Trash2 } from 'lucide-react';
+import { Info, Plus, ShieldAlert, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
@@ -20,6 +20,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { shortDate } from '@/lib/format';
 import { idempotencyKey } from '@/lib/api-client';
 import { usePermissions } from '@/lib/permissions';
+import { useSession } from '@/stores/session';
 import { useUI } from '@/stores/ui';
 import {
   useAssignRole,
@@ -37,8 +38,15 @@ export function ManageUserPanel({ userId, open, onClose }: { userId: string; ope
   const { data: users } = useTenantUsers();
   const user = users?.find((u) => u.userId === userId);
 
-  const canAssign = can('tenant.roles.assign');
-  const canOverride = can('platform.overrides.grant');
+  // You may never change your OWN access from this panel — it's a self-lockout /
+  // self-escalation hazard (e.g. revoking your own owner role, or granting yourself
+  // a permission). The mutating sections are hidden for self; you keep a read-only
+  // view of your roles + effective access. (The DB also re-checks every write.)
+  const currentUserId = useSession((s) => s.user?.userId);
+  const isSelf = currentUserId === userId;
+
+  const canAssign = can('tenant.roles.assign') && !isSelf;
+  const canOverride = can('platform.overrides.grant') && !isSelf;
 
   return (
     <SlideOver
@@ -49,6 +57,13 @@ export function ManageUserPanel({ userId, open, onClose }: { userId: string; ope
     >
       <div className="flex flex-col gap-6">
         {user ? <p className="-mt-2 text-[12px] text-muted">{user.email}</p> : null}
+
+        {isSelf ? (
+          <p className="flex items-center gap-1.5 rounded-[var(--radius-sm)] bg-surface-sunk px-3 py-2 text-[12px] text-muted">
+            <Info size={13} aria-hidden="true" />
+            {t('team.manage.selfNote')}
+          </p>
+        ) : null}
 
         <RolesSection userId={userId} canAssign={canAssign} />
         {canOverride ? <OverridesSection userId={userId} /> : null}
@@ -74,9 +89,11 @@ function RolesSection({ userId, canAssign }: { userId: string; canAssign: boolea
     setRoleId('');
   };
 
-  // Roles not already held, for the assign picker.
+  // Assignable = tenant-scoped roles the user doesn't already hold. Platform-scoped
+  // roles (super_admin, platform_*) are NOT offered here — they're a cross-tenant,
+  // super-only concern and the DB would reject them anyway.
   const heldIds = new Set(user?.roles.map((r) => r.roleId));
-  const assignable = roles?.filter((r) => !heldIds.has(r.roleId)) ?? [];
+  const assignable = roles?.filter((r) => !heldIds.has(r.roleId) && r.scope === 'tenant') ?? [];
 
   return (
     <section>
@@ -120,7 +137,9 @@ function RolesSection({ userId, canAssign }: { userId: string; canAssign: boolea
               {t('team.manage.addRole')}
             </label>
             <Select id="assign-role" value={roleId} onChange={(e) => setRoleId(e.target.value)}>
-              <option value="">{t('team.manage.assignRole')}</option>
+              <option value="" disabled hidden>
+                {t('team.manage.selectRole')}
+              </option>
               {assignable.map((r) => (
                 <option key={r.roleId} value={r.roleId}>
                   {r.name}
