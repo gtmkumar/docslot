@@ -1409,10 +1409,9 @@ export async function listTenantUsers(): Promise<UserListItem[]> {
   // The tenant comes from the path; the JWT claim re-scopes server-side anyway.
   const raw = await apiFetch<unknown[]>(`/tenants/${tenantId}/users`);
   // The live UserListItemDto is leaner than the app-facing UserListItem: it sends
-  // `phone` (not `maskedPhone`) and doesn't join roles yet. Parse the RAW DTO, then
-  // ADAPT — mask the phone (PHI; matches the mock's masking style) and default
-  // roles: [] — so the strict UserListItemSchema (and the UsersTab) stay unchanged.
-  // A backend roles-join later just populates the array; no UI change needed.
+  // `phone` (not `maskedPhone`). Parse the RAW DTO, then ADAPT — mask the phone (PHI;
+  // matches the mock's masking style) and pass the joined roles through (each carries
+  // its assignment id + isPrimary for the row chips and the manage panel).
   const dtos = UserListItemDtoSchema.array().parse(raw);
   return dtos.map((d) =>
     UserListItemSchema.parse({
@@ -1423,7 +1422,14 @@ export async function listTenantUsers(): Promise<UserListItem[]> {
       isActive: d.isActive,
       mfaEnabled: d.mfaEnabled,
       lastLoginAt: d.lastLoginAt ?? null,
-      roles: [],
+      roles: (d.roles ?? []).map((r) => ({
+        userTenantRoleId: r.userTenantRoleId,
+        roleId: r.roleId,
+        roleKey: r.roleKey,
+        name: r.name,
+        isPrimary: r.isPrimary,
+        expiresAt: r.expiresAt ?? null,
+      })),
     }),
   );
 }

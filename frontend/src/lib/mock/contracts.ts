@@ -349,11 +349,11 @@ export const UserListItemSchema = z.object({
 });
 export type UserListItem = z.infer<typeof UserListItemSchema>;
 
-/** RAW shape the LIVE `GET /tenants/{tenantId}/users` returns today — leaner than
- *  the app-facing UserListItem: it carries `phone` (not `maskedPhone`) and does
- *  NOT join roles yet. lib/backend/real.ts adapts it into UserListItem (masking
- *  phone, defaulting roles: []) before the screen sees it. Tolerant/passthrough so
- *  the eventual roles-join + any additive backend fields don't break parsing. */
+/** RAW shape the LIVE `GET /tenants/{tenantId}/users` returns — leaner than the
+ *  app-facing UserListItem: it carries `phone` (not `maskedPhone`). It now joins
+ *  the user's roles in the tenant. lib/backend/real.ts adapts it into UserListItem
+ *  (masking phone, passing roles through). Tolerant/passthrough so additive backend
+ *  fields don't break parsing; roles defaults to [] for resilience if ever omitted. */
 export const UserListItemDtoSchema = z
   .object({
     userId: z.string(),
@@ -363,6 +363,19 @@ export const UserListItemDtoSchema = z
     isActive: z.boolean(),
     mfaEnabled: z.boolean(),
     lastLoginAt: z.string().nullable().optional(),
+    roles: z
+      .array(
+        z.object({
+          userTenantRoleId: z.string(),
+          roleId: z.string(),
+          roleKey: z.string(),
+          name: z.string(),
+          isPrimary: z.boolean(),
+          expiresAt: z.string().nullable().optional(),
+        }),
+      )
+      .optional()
+      .default([]),
   })
   .passthrough();
 export type UserListItemDto = z.infer<typeof UserListItemDtoSchema>;

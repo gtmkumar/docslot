@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using mediq.SharedDataModel.Docslot.Admin;
 using mediq.SharedDataModel.Docslot.Auth;
 using mediq.SharedDataModel.Docslot.Iam;
 using Xunit;
@@ -235,6 +236,25 @@ public sealed class IamAdminTests(IamAdminWebAppFactory factory) : IClassFixture
             new CreateModuleRequest($"{factory.CatalogPrefix}nope", "Should Fail", null, 0));
 
         Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+    }
+
+    // ---- User list carries each user's roles (the row chips) -------------------------------------
+
+    [Fact]
+    public async Task ListTenantUsers_IncludesEachUsersRoles()
+    {
+        var client = await AuthedClientAsync(factory.OwnerEmail);
+
+        var resp = await client.GetAsync($"/api/v1/tenants/{factory.TenantId}/users");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var users = (await resp.Content.ReadFromJsonAsync<List<UserListItemDto>>())!;
+
+        // The owner row carries its tenant role (the join the Users tab renders as chips), with the
+        // assignment id + primary flag — not an empty array.
+        var owner = users.Single(u => u.UserId == factory.OwnerUserId);
+        Assert.Contains(owner.Roles, r => r.RoleKey == "tenant_owner");
+        Assert.All(owner.Roles, r => Assert.NotEqual(Guid.Empty, r.UserTenantRoleId));
+        Assert.Contains(owner.Roles, r => r.IsPrimary);
     }
 
     // ---- Module licensing (commercial DISPLAY gate — must never change access) -------------------

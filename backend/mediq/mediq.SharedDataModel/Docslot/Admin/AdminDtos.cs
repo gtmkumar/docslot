@@ -5,9 +5,15 @@ public sealed record TenantDto(
     Guid TenantId, string TenantCode, string DisplayName, string TenantType,
     string PrimaryEmail, string Status, string Country, string? City);
 
-/// <summary>User summary within a tenant (maps to <c>platform.users</c>).</summary>
+/// <summary>A role a user holds in the tenant (for the user-row role chips). Carries the assignment id so
+/// the manage panel can revoke without a second lookup.</summary>
+public sealed record UserRoleDto(
+    Guid UserTenantRoleId, Guid RoleId, string RoleKey, string Name, bool IsPrimary, DateTime? ExpiresAt);
+
+/// <summary>User summary within a tenant (maps to <c>platform.users</c>), with the roles they hold here.</summary>
 public sealed record UserListItemDto(
-    Guid UserId, string Email, string FullName, string? Phone, bool IsActive, bool MfaEnabled, DateTime? LastLoginAt);
+    Guid UserId, string Email, string FullName, string? Phone, bool IsActive, bool MfaEnabled, DateTime? LastLoginAt,
+    IReadOnlyList<UserRoleDto> Roles);
 
 /// <summary>Create-user request. Password is optional (SSO-only users supply none).</summary>
 public sealed record CreateUserRequest(
