@@ -161,7 +161,13 @@ function MatrixBody({ matrix, canToggle }: { matrix: RoleMatrix; canToggle: bool
           <Lock size={13} aria-hidden="true" />
           {matrix.isSystem ? t('team.matrix.readOnlySystem') : t('team.matrix.readOnlyPerm')}
         </p>
-      ) : null}
+      ) : (
+        // Editable role: each tick is saved immediately — there is no submit button.
+        <p className="flex items-center gap-1.5 rounded-[var(--radius-sm)] bg-primary-soft px-3 py-2 text-[12px] text-primary">
+          <Check size={13} aria-hidden="true" />
+          {t('team.matrix.autoSaves')}
+        </p>
+      )}
 
       {matrix.modules.length === 0 ? (
         <EmptyState title={t('team.matrix.noModules')} />
@@ -278,7 +284,7 @@ function Cell({
           'flex items-center gap-2 rounded-[var(--radius-sm)] border px-2.5 py-2 text-left transition-colors',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
           granted ? 'border-primary bg-primary-soft' : 'border-line bg-surface',
-          editable ? 'hover:bg-surface-sunk' : 'cursor-default opacity-80',
+          editable ? 'cursor-pointer hover:bg-surface-sunk' : 'cursor-not-allowed opacity-50',
         ].join(' ')}
       >
         <span
