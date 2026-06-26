@@ -55,6 +55,7 @@ public static class InfrastructureRegistration
 
         // RBAC + audit + DURABLE idempotency (slice 03 — table-backed, survives restart/scale-out).
         services.AddScoped<IRbacQueryService, RbacQueryService>();
+        services.AddScoped<IIamReadService, IamReadService>();
         services.AddScoped<IAuditTrailWriter, AuditTrailWriter>();
         services.AddScoped<IIdempotencyStore, Idempotency.DurableIdempotencyStore>();
 

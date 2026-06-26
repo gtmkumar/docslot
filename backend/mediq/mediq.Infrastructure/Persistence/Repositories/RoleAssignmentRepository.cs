@@ -100,6 +100,60 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
             new NpgsqlParameter("@p6", (object?)effectiveFrom ?? DBNull.Value),
             new NpgsqlParameter("@p7", (object?)expiresAt ?? DBNull.Value));
 
+    public Task GrantPermissionToRoleAsync(
+        Guid actorUserId, Guid roleId, Guid permissionId, Guid? tenantId, bool grantable, CancellationToken ct) =>
+        ExecAsync(
+            "SELECT platform.grant_permission_to_role(@p0, @p1, @p2, @p3, @p4)",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", roleId),
+            new NpgsqlParameter("@p2", permissionId),
+            new NpgsqlParameter("@p3", (object?)tenantId ?? DBNull.Value),
+            new NpgsqlParameter("@p4", grantable));
+
+    public Task<bool> RevokePermissionFromRoleAsync(
+        Guid actorUserId, Guid roleId, Guid permissionId, Guid? tenantId, CancellationToken ct) =>
+        ScalarAsync<bool>(
+            "SELECT platform.revoke_permission_from_role(@p0, @p1, @p2, @p3) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", roleId),
+            new NpgsqlParameter("@p2", permissionId),
+            new NpgsqlParameter("@p3", (object?)tenantId ?? DBNull.Value));
+
+    public Task<Guid> DuplicateRoleAsync(
+        Guid actorUserId, Guid sourceRoleId, string newRoleKey, string newName, string? description, Guid? tenantId, CancellationToken ct) =>
+        ScalarAsync<Guid>(
+            "SELECT platform.duplicate_role(@p0, @p1, @p2, @p3, @p4, @p5) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", sourceRoleId),
+            new NpgsqlParameter("@p2", newRoleKey),
+            new NpgsqlParameter("@p3", newName),
+            new NpgsqlParameter("@p4", (object?)description ?? DBNull.Value),
+            new NpgsqlParameter("@p5", (object?)tenantId ?? DBNull.Value));
+
+    /// <summary>
+    /// Runs a SECURITY DEFINER function that returns void (e.g. grant_permission_to_role) on the DbContext
+    /// connection (enlisted in the ambient UoW transaction), translating the privilege/SoD SQLSTATEs the
+    /// same way as <see cref="ScalarAsync{T}"/>.
+    /// </summary>
+    private async Task ExecAsync(string sql, CancellationToken ct, params NpgsqlParameter[] parameters)
+    {
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(sql, parameters, ct);
+        }
+        catch (PostgresException pg) when (pg.SqlState == SqlStateInsufficientPrivilege)
+        {
+            throw new ForbiddenException(pg.MessageText, pg);
+        }
+        catch (PostgresException pg) when (pg.SqlState == SqlStateIntegrityConstraint)
+        {
+            throw new ConflictException(pg.MessageText, pg);
+        }
+    }
+
     /// <summary>
     /// Runs a single-row, single-column function SELECT on the DbContext connection (enlisted in the ambient
     /// UoW transaction) and returns the scalar. Translates the privilege/SoD SQLSTATEs into house exceptions

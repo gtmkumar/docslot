@@ -20,8 +20,11 @@ export function UsersTab() {
   const { data, isLoading, isError, refetch } = useTenantUsers();
   const openPanel = useUI((s) => s.openPanel);
 
-  // Rows are interactive only when the user can manage assignments/overrides.
+  // Managers open the manage-access panel; read-only viewers open the
+  // effective-access viewer. Either way the row is interactive.
   const canManage = can('tenant.roles.assign') || can('platform.overrides.grant');
+  const canViewAccess = can('tenant.users.read');
+  const interactive = canManage || canViewAccess;
 
   if (isError) {
     return (
@@ -70,8 +73,14 @@ export function UsersTab() {
           <UserRow
             key={u.userId}
             user={u}
-            interactive={canManage}
-            onOpen={() => openPanel({ type: 'manageUser', userId: u.userId })}
+            interactive={interactive}
+            onOpen={() =>
+              openPanel(
+                canManage
+                  ? { type: 'manageUser', userId: u.userId }
+                  : { type: 'effectiveAccess', userId: u.userId },
+              )
+            }
           />
         ))}
       </ul>

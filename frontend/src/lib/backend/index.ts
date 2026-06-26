@@ -17,6 +17,7 @@ import {
   approveRuleMock,
   completeBookingMock,
   getBookingMock,
+  listTenantsMock,
   noShowBookingMock,
 } from './mutations-mock';
 import type { Analytics } from '@/lib/mock/contracts';
@@ -29,6 +30,10 @@ export const getMe = USE_REAL_API ? real.getMe : mock.getMe;
 
 // PERMISSIONS
 export const getPermissions = USE_REAL_API ? real.getPermissions : mock.getPermissions;
+
+// TENANTS — begin-impersonation target picker. Live: GET /tenants (super_admin,
+// `platform.tenants.read`). Mock: a small seed list so the selector is usable.
+export const listTenants = USE_REAL_API ? real.listTenants : listTenantsMock;
 
 // MENUS + BADGES (backend-driven nav)
 export const getMenus = USE_REAL_API ? real.getMenus : mock.getMenus;
@@ -132,6 +137,26 @@ export const listDpdpRequests = USE_REAL_API ? real.listDpdpRequests : mock.list
 export const listBreaches = USE_REAL_API ? real.listBreaches : mock.listBreaches;
 export const listReviewQueue = USE_REAL_API ? real.listReviewQueue : mock.listReviewQueue;
 export const listKeyStatus = USE_REAL_API ? real.listKeyStatus : mock.listKeyStatus;
+
+// ── IAM / ROLES & PERMISSIONS (Slice 2) ───────────────────────────────────────
+// Privilege-matrix grid + duplicate + effective-access viewer. READS pass through
+// (zod mirrors the IAM DTOs 1:1); WRITES (cell toggle, duplicate) carry an
+// Idempotency-Key. Mock side derives the matrix from the existing RBAC seed so
+// flag-off renders byte-for-byte. The DB re-checks editability for built-in roles.
+// Roles/Users tabs + overrides via existing live endpoints (GET /roles,
+// GET /tenants/{id}/users, POST /permission-overrides). Mock side keeps the
+// existing RBAC seed so flag-off is unchanged.
+export const listRoles = USE_REAL_API ? real.listRoles : mock.listRoles;
+export const listTenantUsers = USE_REAL_API ? real.listTenantUsers : mock.listTenantUsers;
+export const setOverride = USE_REAL_API ? real.setOverride : mock.setOverride;
+
+export const listModules = USE_REAL_API ? real.listModules : mock.listModules;
+export const listIamPermissions = USE_REAL_API ? real.listIamPermissions : mock.listIamPermissions;
+export const getRoleMatrix = USE_REAL_API ? real.getRoleMatrix : mock.getRoleMatrix;
+export const grantRolePermission = USE_REAL_API ? real.grantRolePermission : mock.grantRolePermission;
+export const revokeRolePermission = USE_REAL_API ? real.revokeRolePermission : mock.revokeRolePermission;
+export const duplicateRole = USE_REAL_API ? real.duplicateRole : mock.duplicateRole;
+export const getEffectiveAccess = USE_REAL_API ? real.getEffectiveAccess : mock.getEffectiveAccess;
 
 export { USE_REAL_API } from './flag';
 export { toUserError } from './real';

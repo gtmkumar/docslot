@@ -7197,6 +7197,147 @@ $$;
 COMMENT ON FUNCTION platform.create_custom_role IS
     'R3: create a non-system role; super_admin for platform scope, else platform.roles.manage/tenant.roles.assign in-tenant.';
 
+-- Revoke a single permission from a role. Mirror of grant_permission_to_role's escalation guard,
+-- plus a system-role guard: a non-super actor may never edit a built-in (is_system) role's matrix.
+-- Idempotent — returns false when the permission was not granted on the role.
+CREATE OR REPLACE FUNCTION platform.revoke_permission_from_role(
+    p_actor_user_id UUID,
+    p_role_id UUID,
+    p_permission_id UUID,
+    p_tenant_id UUID DEFAULT NULL
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_perm_key VARCHAR;
+    v_perm_scope VARCHAR;
+    v_is_system BOOLEAN;
+    v_rows INT;
+BEGIN
+    SELECT permission_key, scope INTO v_perm_key, v_perm_scope
+    FROM platform.permissions WHERE permission_id = p_permission_id;
+    IF v_perm_key IS NULL THEN
+        RAISE EXCEPTION 'unknown permission %', p_permission_id;
+    END IF;
+
+    SELECT is_system INTO v_is_system
+    FROM platform.roles WHERE role_id = p_role_id AND deleted_at IS NULL;
+    IF v_is_system IS NULL THEN
+        RAISE EXCEPTION 'unknown or deleted role %', p_role_id;
+    END IF;
+
+    IF NOT platform.is_super_admin(p_actor_user_id) THEN
+        -- Built-in roles are catalog artifacts; only super_admin may alter them.
+        IF v_is_system THEN
+            RAISE EXCEPTION 'actor % may not edit the matrix of system role %', p_actor_user_id, p_role_id
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        -- Non-super actors may never alter platform-scoped authority...
+        IF v_perm_scope = 'platform' THEN
+            RAISE EXCEPTION 'actor % may not alter platform-scoped permission %', p_actor_user_id, v_perm_key
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        -- ...and may only revoke a permission they themselves hold WITH grant option.
+        IF NOT EXISTS (
+            SELECT 1
+            FROM platform.user_tenant_roles utr
+            JOIN platform.role_permissions rp ON rp.role_id = utr.role_id
+            WHERE utr.user_id = p_actor_user_id
+              AND utr.revoked_at IS NULL
+              AND (utr.expires_at IS NULL OR utr.expires_at > NOW())
+              AND (utr.tenant_id = p_tenant_id OR utr.tenant_id IS NULL)
+              AND rp.permission_id = p_permission_id
+              AND rp.is_grantable = true
+        ) THEN
+            RAISE EXCEPTION 'actor % does not hold permission % with grant option', p_actor_user_id, v_perm_key
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+    END IF;
+
+    DELETE FROM platform.role_permissions
+    WHERE role_id = p_role_id AND permission_id = p_permission_id;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    RETURN v_rows > 0;
+END;
+$$;
+COMMENT ON FUNCTION platform.revoke_permission_from_role IS
+    'R3: revoke a permission from a role only if super_admin OR (role is not system AND actor holds it with grant option AND it is not platform-scoped). Idempotent. Companion to grant_permission_to_role.';
+
+-- Duplicate a role into a new custom (tenant) role, copying its permission grants atomically.
+-- This is the "Duplicate built-in role" admin gesture. The no-escalation rule mirrors
+-- assign_role_to_user: a non-super actor cannot mint a role conferring permissions they lack.
+CREATE OR REPLACE FUNCTION platform.duplicate_role(
+    p_actor_user_id UUID,
+    p_source_role_id UUID,
+    p_new_role_key VARCHAR,
+    p_new_name VARCHAR,
+    p_description TEXT,
+    p_tenant_id UUID
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_source_scope VARCHAR;
+    v_new_scope VARCHAR;
+    v_new_id UUID;
+BEGIN
+    SELECT scope INTO v_source_scope
+    FROM platform.roles WHERE role_id = p_source_role_id AND deleted_at IS NULL;
+    IF v_source_scope IS NULL THEN
+        RAISE EXCEPTION 'unknown or deleted source role %', p_source_role_id;
+    END IF;
+
+    -- A duplicate is always a non-system custom role. Super_admin may keep the source scope
+    -- (e.g. clone a platform role); everyone else produces a tenant-scoped role.
+    IF platform.is_super_admin(p_actor_user_id) THEN
+        v_new_scope := v_source_scope;
+    ELSE
+        v_new_scope := 'tenant';
+        IF v_source_scope = 'platform' OR p_tenant_id IS NULL THEN
+            RAISE EXCEPTION 'actor % may not duplicate a platform-scoped role', p_actor_user_id
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        IF NOT (platform.user_has_permission(p_actor_user_id, 'platform.roles.manage', p_tenant_id)
+             OR platform.user_has_permission(p_actor_user_id, 'tenant.roles.assign', p_tenant_id)) THEN
+            RAISE EXCEPTION 'actor % may not create roles in tenant %', p_actor_user_id, p_tenant_id
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        -- No escalation: every permission the source confers must be held by the actor.
+        IF EXISTS (
+            SELECT 1
+            FROM platform.role_permissions rp
+            JOIN platform.permissions pm ON pm.permission_id = rp.permission_id
+            WHERE rp.role_id = p_source_role_id
+              AND NOT platform.user_has_permission(p_actor_user_id, pm.permission_key, p_tenant_id)
+        ) THEN
+            RAISE EXCEPTION 'actor % cannot duplicate role % — it confers permissions the actor does not hold', p_actor_user_id, p_source_role_id
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+    END IF;
+
+    INSERT INTO platform.roles (role_key, name, description, tenant_id, scope, is_system, is_default)
+    VALUES (p_new_role_key, p_new_name, p_description, p_tenant_id, v_new_scope, false, false)
+    RETURNING role_id INTO v_new_id;
+
+    -- Copy grants, but NEVER let a non-super actor mint a grant-option source: is_grantable is forced
+    -- false for them, so a permission they hold WITHOUT grant option cannot become delegable via a clone.
+    -- Only super_admin (who already holds everything with grant option) preserves the source flag.
+    INSERT INTO platform.role_permissions (role_id, permission_id, granted_by, is_grantable)
+    SELECT v_new_id, rp.permission_id, p_actor_user_id,
+           CASE WHEN platform.is_super_admin(p_actor_user_id) THEN rp.is_grantable ELSE false END
+    FROM platform.role_permissions rp
+    WHERE rp.role_id = p_source_role_id;
+
+    RETURN v_new_id;
+END;
+$$;
+COMMENT ON FUNCTION platform.duplicate_role IS
+    'R3: clone a role into a new custom role and copy its grants. Non-super actors get a tenant-scoped role and must hold every permission the source confers (no escalation).';
+
 -- ============================================================================
 -- R1 — ROW-LEVEL SECURITY ON THE RBAC / ENTITLEMENT TABLES
 -- ============================================================================
@@ -7353,6 +7494,8 @@ GRANT EXECUTE ON FUNCTION
     platform.list_impersonation_sessions(INT),
     platform.is_super_admin(UUID),
     platform.grant_permission_to_role(UUID, UUID, UUID, UUID, BOOLEAN),
+    platform.revoke_permission_from_role(UUID, UUID, UUID, UUID),
+    platform.duplicate_role(UUID, UUID, VARCHAR, VARCHAR, TEXT, UUID),
     platform.assign_role_to_user(UUID, UUID, UUID, UUID),
     platform.revoke_role_assignment(UUID, UUID, TEXT),
     platform.set_user_permission_override(UUID, UUID, UUID, UUID, BOOLEAN, TEXT, TIMESTAMPTZ, TIMESTAMPTZ),

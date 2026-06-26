@@ -31,6 +31,9 @@ const InviteUserPanel = lazy(() => import('@/features/team/components/InviteUser
 const ManageUserPanel = lazy(() => import('@/features/team/components/ManageUserPanel').then((m) => ({ default: m.ManageUserPanel })));
 const RoleViewPanel = lazy(() => import('@/features/team/components/RoleViewPanel').then((m) => ({ default: m.RoleViewPanel })));
 const CreateRolePanel = lazy(() => import('@/features/team/components/CreateRolePanel').then((m) => ({ default: m.CreateRolePanel })));
+const RoleMatrixPanel = lazy(() => import('@/features/team/components/RoleMatrixPanel').then((m) => ({ default: m.RoleMatrixPanel })));
+const DuplicateRolePanel = lazy(() => import('@/features/team/components/DuplicateRolePanel').then((m) => ({ default: m.DuplicateRolePanel })));
+const EffectiveAccessPanel = lazy(() => import('@/features/team/components/EffectiveAccessPanel').then((m) => ({ default: m.EffectiveAccessPanel })));
 const RegisterClientPanel = lazy(() => import('@/features/developers/components/RegisterClientPanel').then((m) => ({ default: m.RegisterClientPanel })));
 const ManageClientPanel = lazy(() => import('@/features/developers/components/ManageClientPanel').then((m) => ({ default: m.ManageClientPanel })));
 const SecretRevealPanel = lazy(() => import('@/features/developers/components/SecretRevealPanel').then((m) => ({ default: m.SecretRevealPanel })));
@@ -51,6 +54,7 @@ const ManageBrokerPanel = lazy(() => import('@/features/commission/components/Ma
 const CommissionRulePanel = lazy(() => import('@/features/commission/components/CommissionRulePanel').then((m) => ({ default: m.CommissionRulePanel })));
 const RaiseDisputePanel = lazy(() => import('@/features/commission/components/RaiseDisputePanel').then((m) => ({ default: m.RaiseDisputePanel })));
 const ResolveDisputePanel = lazy(() => import('@/features/commission/components/ResolveDisputePanel').then((m) => ({ default: m.ResolveDisputePanel })));
+const BeginImpersonationPanel = lazy(() => import('@/features/impersonation/components/BeginImpersonationPanel').then((m) => ({ default: m.BeginImpersonationPanel })));
 import { BOOKINGS } from '@/lib/data';
 import { useUI, type Panel } from '@/stores/ui';
 
@@ -85,6 +89,7 @@ const PAYLOADLESS: PanelType[] = [
   'registerClient', 'createWebhook',
   'exportData', 'reportBreach', 'breakGlass',
   'registerBroker', 'createCommissionRule',
+  'beginImpersonation',
 ];
 
 function panelToSearch(panel: Panel | null): { panel?: UrlPanelType; id?: string } {
@@ -98,6 +103,8 @@ function panelToSearch(panel: Panel | null): { panel?: UrlPanelType; id?: string
   if ('booking' in panel && panel.booking) return { panel: panel.type as UrlPanelType, id: panel.booking.id };
   if (panel.type === 'manageUser') return { panel: panel.type, id: panel.userId };
   if (panel.type === 'roleView') return { panel: panel.type, id: panel.roleId };
+  if (panel.type === 'roleMatrix' || panel.type === 'duplicateRole') return { panel: panel.type, id: panel.roleId };
+  if (panel.type === 'effectiveAccess') return { panel: panel.type, id: panel.userId };
   if (panel.type === 'manageClient') return { panel: panel.type, id: panel.clientId };
   if (panel.type === 'webhookForm' || panel.type === 'webhookDeliveries') return { panel: panel.type, id: panel.webhookId };
   if (panel.type === 'eraseData') return panel.requestId ? { panel: panel.type, id: panel.requestId } : { panel: panel.type };
@@ -123,6 +130,8 @@ function searchToPanel(type: PanelType | undefined, id: string | undefined): Pan
   // Team panels carry only an id (the panel fetches its own data by id).
   if (type === 'manageUser') return id ? { type, userId: id } : null;
   if (type === 'roleView') return id ? { type, roleId: id } : null;
+  if (type === 'roleMatrix' || type === 'duplicateRole') return id ? { type, roleId: id } : null;
+  if (type === 'effectiveAccess') return id ? { type, userId: id } : null;
   // Developer panels that carry an id.
   if (type === 'manageClient') return id ? { type, clientId: id } : null;
   if (type === 'webhookForm') return id ? { type, webhookId: id } : null;
@@ -221,6 +230,12 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <RoleViewPanel roleId={panel.roleId} open onClose={closePanel} />;
     case 'createRole':
       return <CreateRolePanel open onClose={closePanel} />;
+    case 'roleMatrix':
+      return <RoleMatrixPanel roleId={panel.roleId} open onClose={closePanel} />;
+    case 'duplicateRole':
+      return <DuplicateRolePanel roleId={panel.roleId} open onClose={closePanel} />;
+    case 'effectiveAccess':
+      return <EffectiveAccessPanel userId={panel.userId} open onClose={closePanel} />;
     case 'registerClient':
       return <RegisterClientPanel open onClose={closePanel} />;
     case 'manageClient':
@@ -263,6 +278,8 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <RaiseDisputePanel attributionId={panel.attributionId} open onClose={closePanel} />;
     case 'resolveDispute':
       return <ResolveDisputePanel disputeId={panel.disputeId} open onClose={closePanel} />;
+    case 'beginImpersonation':
+      return <BeginImpersonationPanel open onClose={closePanel} />;
     default:
       return null;
   }

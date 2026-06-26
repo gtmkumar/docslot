@@ -11,9 +11,15 @@ import { maskPhone } from '@/lib/format';
 import {
   AssignRoleResultSchema,
   CreateUserResultSchema,
+  DuplicateRoleResultSchema,
+  EffectiveAccessSchema,
   EffectivePermissionSchema,
+  IamPermissionDtoSchema,
   MeSchema,
+  ModuleDtoSchema,
   PermissionDefSchema,
+  RoleMatrixSchema,
+  RolePermissionToggleResultSchema,
   RoleSchema,
   SetOverrideResultSchema,
   TokenResponseSchema,
@@ -23,11 +29,18 @@ import {
   type AssignRoleResult,
   type CreateUserRequest,
   type CreateUserResult,
+  type DuplicateRoleRequest,
+  type DuplicateRoleResult,
+  type EffectiveAccess,
   type EffectivePermission,
+  type IamPermissionDto,
   type LoginRequest,
   type Me,
+  type ModuleDto,
   type PermissionDef,
   type Role,
+  type RoleMatrix,
+  type RolePermissionToggleResult,
   type SetOverrideRequest,
   type SetOverrideResult,
   type TokenResponse,
@@ -362,6 +375,243 @@ export function createRole(req: CreateRoleRequest, idempotencyKey: string): Prom
       scope: 'tenant',
       isSystem: false,
       tenantId: TENANT_ID,
+    }),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IAM — privilege matrix (Slice 2). The mock derives modules + cells from the
+// existing PERMISSION_REGISTRY / ROLE_GRANTS seed so the flag-off grid stays
+// internally consistent with the (already-seeded) role list. Grants made through
+// the mock toggle endpoints mutate an in-memory overlay (MOCK_ROLE_GRANTS) so
+// the optimistic UI reconciles against a real change without a backend.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Module metadata: resource → display name + bilingual-neutral description +
+// order. Resources without an entry fall back to a title-cased resource name.
+const MODULE_META: Record<string, { name: string; description: string; order: number }> = {
+  booking: { name: 'Bookings', description: 'Appointment booking and lifecycle', order: 10 },
+  patient: { name: 'Patients', description: 'Patient directory and registration', order: 20 },
+  doctor: { name: 'Doctors', description: 'Practitioner directory', order: 30 },
+  analytics: { name: 'Analytics', description: 'Dashboards and reports', order: 40 },
+  users: { name: 'Users', description: 'Team members in this tenant', order: 50 },
+  roles: { name: 'Roles', description: 'Role assignment', order: 60 },
+  overrides: { name: 'Overrides', description: 'Per-user permission overrides', order: 70 },
+  settings: { name: 'Settings', description: 'Tenant configuration', order: 80 },
+  billing: { name: 'Billing', description: 'Invoices and subscription', order: 90 },
+  audit: { name: 'Audit', description: 'Audit trail access', order: 100 },
+};
+
+// Human action labels for cells.
+const ACTION_NAME: Record<string, string> = {
+  read: 'View',
+  create: 'Create',
+  update: 'Edit',
+  remove: 'Delete',
+  delete: 'Delete',
+  approve: 'Approve',
+  cancel: 'Cancel',
+  assign: 'Assign',
+  grant: 'Grant',
+  export: 'Export',
+};
+
+// Stable synthetic permissionId per key (the registry has no ids; the matrix
+// toggle endpoints address cells by id, so we need a deterministic one).
+function permIdFor(key: string): string {
+  return `perm-${key}`;
+}
+
+function moduleMetaFor(resource: string): { name: string; description: string; order: number } {
+  return (
+    MODULE_META[resource] ?? {
+      name: resource.charAt(0).toUpperCase() + resource.slice(1),
+      description: `${resource} permissions`,
+      order: 999,
+    }
+  );
+}
+
+const RESOURCES_IN_ORDER: string[] = (() => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of PERMISSION_REGISTRY) {
+    if (!seen.has(p.resource)) {
+      seen.add(p.resource);
+      out.push(p.resource);
+    }
+  }
+  return out.sort((a, b) => moduleMetaFor(a).order - moduleMetaFor(b).order);
+})();
+
+// Mutable grant overlay so mock toggles take effect (seeded from ROLE_GRANTS).
+const MOCK_ROLE_GRANTS: Record<string, Set<string>> = (() => {
+  const out: Record<string, Set<string>> = {};
+  for (const [roleId, keys] of Object.entries(ROLE_GRANTS)) out[roleId] = new Set(keys);
+  return out;
+})();
+
+export function listModules(): Promise<ModuleDto[]> {
+  const mods = RESOURCES_IN_ORDER.map((resource) => {
+    const meta = moduleMetaFor(resource);
+    return ModuleDtoSchema.parse({
+      resourceKey: resource,
+      name: meta.name,
+      description: meta.description,
+      displayOrder: meta.order,
+      licensed: true,
+    });
+  });
+  return delay(mods);
+}
+
+export function listIamPermissions(module?: string): Promise<IamPermissionDto[]> {
+  const defs = module ? PERMISSION_REGISTRY.filter((p) => p.resource === module) : PERMISSION_REGISTRY;
+  return delay(
+    defs.map((p) =>
+      IamPermissionDtoSchema.parse({
+        permissionId: permIdFor(p.permissionKey),
+        permissionKey: p.permissionKey,
+        resource: p.resource,
+        action: p.action,
+        scope: p.scope,
+        isDangerous: p.isDangerous,
+        description: p.description,
+      }),
+    ),
+  );
+}
+
+export function getRoleMatrix(roleId: string): Promise<RoleMatrix> {
+  const role = roleById(roleId);
+  // 404 parity with the live API. The messageKey is never shown (the panel renders
+  // its generic error state on isError); it just mirrors the not-found status.
+  if (!role) return Promise.reject(new MockApiError(404, 'error.genericTitle'));
+
+  const granted = MOCK_ROLE_GRANTS[roleId] ?? new Set<string>();
+  let grantedTotal = 0;
+  let total = 0;
+
+  const modules = RESOURCES_IN_ORDER.map((resource) => {
+    const meta = moduleMetaFor(resource);
+    const defs = PERMISSION_REGISTRY.filter((p) => p.resource === resource);
+    let modGranted = 0;
+    const cells = defs.map((p) => {
+      const isGranted = granted.has(p.permissionKey);
+      if (isGranted) modGranted += 1;
+      return {
+        permissionId: permIdFor(p.permissionKey),
+        permissionKey: p.permissionKey,
+        action: p.action,
+        actionName: ACTION_NAME[p.action] ?? p.action,
+        isDangerous: p.isDangerous,
+        granted: isGranted,
+        moduleLicensed: true,
+      };
+    });
+    grantedTotal += modGranted;
+    total += defs.length;
+    return {
+      resourceKey: resource,
+      name: meta.name,
+      description: meta.description,
+      displayOrder: meta.order,
+      licensed: true,
+      grantedCount: modGranted,
+      totalCount: defs.length,
+      cells,
+    };
+  });
+
+  return delay(
+    RoleMatrixSchema.parse({
+      roleId: role.roleId,
+      roleKey: role.roleKey,
+      name: role.name,
+      description: null,
+      scope: role.scope,
+      isSystem: role.isSystem,
+      // System roles are read-only; custom (tenant-scoped) roles are editable.
+      editable: !role.isSystem,
+      grantedCount: grantedTotal,
+      totalCount: total,
+      modules,
+    }),
+  );
+}
+
+// permissionId is `perm-<key>` in the mock — recover the key to mutate the overlay.
+function keyForPermId(permissionId: string): string | undefined {
+  return PERMISSION_REGISTRY.find((p) => permIdFor(p.permissionKey) === permissionId)?.permissionKey;
+}
+
+export function grantRolePermission(
+  roleId: string,
+  permissionId: string,
+  idempotencyKey: string,
+): Promise<RolePermissionToggleResult> {
+  return withIdem(idempotencyKey, () => {
+    const role = roleById(roleId);
+    if (role && !role.isSystem) {
+      const key = keyForPermId(permissionId);
+      if (key) (MOCK_ROLE_GRANTS[roleId] ??= new Set<string>()).add(key);
+    }
+    return RolePermissionToggleResultSchema.parse({ roleId, permissionId, granted: true });
+  });
+}
+
+export function revokeRolePermission(
+  roleId: string,
+  permissionId: string,
+  idempotencyKey: string,
+): Promise<RolePermissionToggleResult> {
+  return withIdem(idempotencyKey, () => {
+    const role = roleById(roleId);
+    if (role && !role.isSystem) {
+      const key = keyForPermId(permissionId);
+      if (key) MOCK_ROLE_GRANTS[roleId]?.delete(key);
+    }
+    return RolePermissionToggleResultSchema.parse({ roleId, permissionId, granted: false });
+  });
+}
+
+export function duplicateRole(req: DuplicateRoleRequest, idempotencyKey: string): Promise<DuplicateRoleResult> {
+  return withIdem(idempotencyKey, () => {
+    const newId = `r-${crypto.randomUUID().slice(0, 8)}`;
+    // Append a new editable role cloning the source's grants so a subsequent
+    // getRoleMatrix(newId) renders the cloned, now-editable matrix.
+    const source = roleById(req.sourceRoleId);
+    ROLES.push({
+      roleId: newId,
+      roleKey: req.newRoleKey,
+      name: req.newName,
+      scope: source?.scope ?? 'tenant',
+      isSystem: false,
+      tenantId: TENANT_ID,
+    });
+    MOCK_ROLE_GRANTS[newId] = new Set(MOCK_ROLE_GRANTS[req.sourceRoleId] ?? []);
+    return DuplicateRoleResultSchema.parse({ roleId: newId });
+  });
+}
+
+export function getEffectiveAccess(userId: string, _tenantId?: string | null): Promise<EffectiveAccess> {
+  void _tenantId;
+  const u = USERS.find((x) => x.userId === userId);
+  const denied = new Set((u?.overrides ?? []).filter((o) => !o.isAllowed).map((o) => o.permissionKey));
+  const keys = new Set<string>();
+  for (const assignment of u?.roleIds ?? []) {
+    for (const key of MOCK_ROLE_GRANTS[assignment.roleId] ?? []) {
+      if (!denied.has(key)) keys.add(key);
+    }
+  }
+  for (const o of u?.overrides ?? []) {
+    if (o.isAllowed && !denied.has(o.permissionKey)) keys.add(o.permissionKey);
+  }
+  return delay(
+    EffectiveAccessSchema.parse({
+      userId,
+      tenantId: TENANT_ID,
+      permissionKeys: [...keys].sort(),
     }),
   );
 }

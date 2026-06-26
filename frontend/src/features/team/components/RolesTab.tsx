@@ -60,7 +60,7 @@ export function RolesTab() {
           <li key={role.roleId}>
             <button
               type="button"
-              onClick={() => openPanel({ type: 'roleView', roleId: role.roleId })}
+              onClick={() => openPanel({ type: 'roleMatrix', roleId: role.roleId })}
               className="flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left transition-colors last:border-0 hover:bg-surface-sunk focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               <span

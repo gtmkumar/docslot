@@ -27,6 +27,11 @@ export type Panel =
   | { type: 'manageUser'; userId: string }
   | { type: 'roleView'; roleId: string }
   | { type: 'createRole' }
+  // Roles & permissions privilege matrix (Slice 2). roleMatrix/duplicateRole carry
+  // a roleId; effectiveAccess carries a userId — all URL-restorable via ?panel=&id=.
+  | { type: 'roleMatrix'; roleId: string }
+  | { type: 'duplicateRole'; roleId: string }
+  | { type: 'effectiveAccess'; userId: string }
   // Developer / API platform portal (Slice 02). registerClient/createWebhook are
   // payloadless; manageClient/webhookForm(edit)/webhookDeliveries carry an id
   // (URL-restorable). `clientSecret` carries the one-time plaintext secret and is
@@ -60,7 +65,11 @@ export type Panel =
   | { type: 'manageBroker'; brokerId: string }
   | { type: 'createCommissionRule' }
   | { type: 'raiseDispute'; attributionId: string }
-  | { type: 'resolveDispute'; disputeId: string };
+  | { type: 'resolveDispute'; disputeId: string }
+  // Support impersonation (issue #3). Payloadless + URL-addressable: a super_admin
+  // opens it to begin acting as a tenant. No PHI/secret payload — the target
+  // tenant id is picked inside the panel, never URL-encoded.
+  | { type: 'beginImpersonation' };
 
 interface UIState {
   orgId: string;

@@ -24,6 +24,9 @@ public sealed class PlatformDbContext(DbContextOptions<PlatformDbContext> option
     public DbSet<UserTenantRole> UserTenantRoles => Set<UserTenantRole>();
     public DbSet<UserPermissionOverride> UserPermissionOverrides => Set<UserPermissionOverride>();
     public DbSet<Permission> Permissions => Set<Permission>();
+    public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
+    public DbSet<ResourceType> ResourceTypes => Set<ResourceType>();
+    public DbSet<ActionType> ActionTypes => Set<ActionType>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
     public DbSet<LoginAttempt> LoginAttempts => Set<LoginAttempt>();
 

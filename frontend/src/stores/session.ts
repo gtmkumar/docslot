@@ -9,6 +9,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { isJwtExpired } from '@/lib/jwt';
 import type { Me, MeTenant } from '@/lib/mock/contracts';
 
 interface SessionState {
@@ -49,7 +50,19 @@ export const useSession = create<SessionState>()(
       impersonationId: null,
       impersonatedTenantId: null,
 
-      isAuthenticated: () => Boolean(get().accessToken),
+      // Presence is NOT validity. A persisted (localStorage) session restores
+      // whatever access token was saved — including an EXPIRED 15-min JWT. Such a
+      // token only counts as authenticated if a refresh token can still renew it
+      // (api-client refreshes transparently on the first 401); with the access
+      // token expired AND no refresh token, the session is dead → treat as logged
+      // out so the route guard sends the user to /login instead of mounting a
+      // doomed shell that 401-storms /me, /me/permissions, and /me/badges.
+      isAuthenticated: () => {
+        const { accessToken, refreshToken } = get();
+        if (!accessToken) return false;
+        if (isJwtExpired(accessToken)) return Boolean(refreshToken);
+        return true;
+      },
       activeTenant: () => {
         const { user, tenantId } = get();
         return user?.tenants.find((t) => t.tenantId === tenantId) ?? null;

@@ -15,6 +15,7 @@
 // bilingual i18n keys so LoginScreen stays unchanged.
 
 import { ApiError, apiFetch } from '@/lib/api-client';
+import { getSessionSnapshot } from '@/stores/session';
 import { inr, maskPhone } from '@/lib/format';
 import { MockApiError } from '@/lib/mock';
 import {
@@ -39,8 +40,18 @@ import {
   DisputeSchema,
   DoctorDtoSchema,
   DpdpRequestSchema,
+  DuplicateRoleResultSchema,
+  EffectiveAccessSchema,
   EventTypeSchema,
+  IamPermissionDtoSchema,
   KeyStatusSchema,
+  ModuleDtoSchema,
+  RoleMatrixSchema,
+  RolePermissionToggleResultSchema,
+  RoleSchema,
+  SetOverrideResultSchema,
+  UserListItemSchema,
+  UserListItemDtoSchema,
   MeSchema,
   MenusResponseSchema,
   PatientListItemDtoSchema,
@@ -49,6 +60,8 @@ import {
   PermissionsResponseSchema,
   RegisterBrokerResultSchema,
   RegisterPatientResultDtoSchema,
+  TenantListItemSchema,
+  type TenantListItem,
   ReviewQueueItemSchema,
   ScopeSchema,
   SlotDtoSchema,
@@ -75,8 +88,19 @@ import {
   type Dispute,
   type DoctorCard,
   type DpdpRequest,
+  type DuplicateRoleRequest,
+  type DuplicateRoleResult,
+  type EffectiveAccess,
   type EventType,
+  type IamPermissionDto,
   type KeyStatus,
+  type ModuleDto,
+  type Role,
+  type RoleMatrix,
+  type RolePermissionToggleResult,
+  type SetOverrideRequest,
+  type SetOverrideResult,
+  type UserListItem,
   type LoginRequest,
   type Me,
   type MenusResponse,
@@ -379,6 +403,15 @@ export async function listPatients(): Promise<PatientRow[]> {
     gender: d.gender,
     preferredLanguage: d.preferredLanguage,
   }));
+}
+
+// ── TENANTS LIST (begin-impersonation target picker) ──────────────────────────
+// GET /api/v1/tenants → TenantDto[] (RAW), gated by `platform.tenants.read`
+// (super_admin). Pure pass-through: TenantListItemSchema mirrors the DTO 1:1.
+
+export async function listTenants(): Promise<TenantListItem[]> {
+  const raw = await apiFetch<unknown[]>('/tenants?skip=0&take=200');
+  return TenantListItemSchema.array().parse(raw);
 }
 
 // ── DOCTORS DIRECTORY ──────────────────────────────────────────────────────────
@@ -1221,4 +1254,141 @@ export async function listReviewQueue(): Promise<ReviewQueueItem[]> {
 export async function listKeyStatus(): Promise<KeyStatus[]> {
   const raw = await apiFetch<unknown[]>('/security/keys');
   return KeyStatusSchema.array().parse(raw);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// IAM — Roles & permissions privilege matrix (Slice 2). Base path /iam.
+// READS are pure pass-throughs (the zod contracts mirror the IAM DTOs 1:1).
+// WRITES (cell toggle, duplicate) carry an Idempotency-Key. The matrix toggle
+// endpoints are idempotent: POST grants (checkbox ON), DELETE revokes (OFF).
+// The DB re-checks editability (built-in roles 403 for non-super); toUserError
+// surfaces that as a toast. PHI: none — these are role/permission metadata only.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export async function listModules(): Promise<ModuleDto[]> {
+  const raw = await apiFetch<unknown[]>('/iam/modules');
+  return ModuleDtoSchema.array().parse(raw);
+}
+
+export async function listIamPermissions(module?: string): Promise<IamPermissionDto[]> {
+  const qs = module ? `?module=${encodeURIComponent(module)}` : '';
+  const raw = await apiFetch<unknown[]>(`/iam/permissions${qs}`);
+  return IamPermissionDtoSchema.array().parse(raw);
+}
+
+/** GET /iam/roles/{roleId}/matrix — the heart of the screen. 404 → role unknown. */
+export async function getRoleMatrix(roleId: string): Promise<RoleMatrix> {
+  const raw = await apiFetch<unknown>(`/iam/roles/${roleId}/matrix`);
+  return RoleMatrixSchema.parse(raw);
+}
+
+/** POST a grant (checkbox ON). Idempotent; 403 if the caller can't edit the role. */
+export async function grantRolePermission(
+  roleId: string,
+  permissionId: string,
+  idempotencyKey: string,
+): Promise<RolePermissionToggleResult> {
+  const raw = await apiFetch<unknown>(`/iam/roles/${roleId}/permissions/${permissionId}`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    // tenantId is resolved server-side from the JWT; grantable defaults true.
+    body: { tenantId: null, grantable: true },
+  });
+  return RolePermissionToggleResultSchema.parse(raw);
+}
+
+/** DELETE a grant (checkbox OFF). Idempotent; 403 if the caller can't edit the role. */
+export async function revokeRolePermission(
+  roleId: string,
+  permissionId: string,
+  idempotencyKey: string,
+): Promise<RolePermissionToggleResult> {
+  const raw = await apiFetch<unknown>(`/iam/roles/${roleId}/permissions/${permissionId}`, {
+    method: 'DELETE',
+    idempotency: idempotencyKey,
+  });
+  return RolePermissionToggleResultSchema.parse(raw);
+}
+
+/** POST /iam/roles/duplicate — clone a role + its grants. 201 → { roleId }. */
+export async function duplicateRole(
+  req: DuplicateRoleRequest,
+  idempotencyKey: string,
+): Promise<DuplicateRoleResult> {
+  const raw = await apiFetch<unknown>('/iam/roles/duplicate', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      sourceRoleId: req.sourceRoleId,
+      newRoleKey: req.newRoleKey,
+      newName: req.newName,
+      description: req.description ?? null,
+      tenantId: req.tenantId ?? null,
+    },
+  });
+  return DuplicateRoleResultSchema.parse(raw);
+}
+
+/** GET /iam/users/{userId}/effective-access — resolved permission-key set.
+ *  Omitting tenantId defaults to the caller's tenant server-side. */
+export async function getEffectiveAccess(
+  userId: string,
+  tenantId?: string | null,
+): Promise<EffectiveAccess> {
+  const qs = tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : '';
+  const raw = await apiFetch<unknown>(`/iam/users/${userId}/effective-access${qs}`);
+  return EffectiveAccessSchema.parse(raw);
+}
+
+// ── ROLES + USERS + OVERRIDES (existing live endpoints used by Team & Roles) ──
+// GET /roles (RoleDto[] mirrors RoleSchema 1:1) and GET /tenants/{id}/users
+// (UserListItemDto[]) feed the Roles/Users tabs; POST /permission-overrides
+// records a per-user override (deny-wins, reason mandatory, Idempotency-Key).
+
+export async function listRoles(): Promise<Role[]> {
+  const raw = await apiFetch<unknown[]>('/roles');
+  return RoleSchema.array().parse(raw);
+}
+
+export async function listTenantUsers(): Promise<UserListItem[]> {
+  const tenantId = getSessionSnapshot().tenantId;
+  // The tenant comes from the path; the JWT claim re-scopes server-side anyway.
+  const raw = await apiFetch<unknown[]>(`/tenants/${tenantId}/users`);
+  // The live UserListItemDto is leaner than the app-facing UserListItem: it sends
+  // `phone` (not `maskedPhone`) and doesn't join roles yet. Parse the RAW DTO, then
+  // ADAPT — mask the phone (PHI; matches the mock's masking style) and default
+  // roles: [] — so the strict UserListItemSchema (and the UsersTab) stay unchanged.
+  // A backend roles-join later just populates the array; no UI change needed.
+  const dtos = UserListItemDtoSchema.array().parse(raw);
+  return dtos.map((d) =>
+    UserListItemSchema.parse({
+      userId: d.userId,
+      email: d.email,
+      fullName: d.fullName,
+      maskedPhone: d.phone ? maskPhone(d.phone) : null,
+      isActive: d.isActive,
+      mfaEnabled: d.mfaEnabled,
+      lastLoginAt: d.lastLoginAt ?? null,
+      roles: [],
+    }),
+  );
+}
+
+export async function setOverride(
+  req: SetOverrideRequest,
+  idempotencyKey: string,
+): Promise<SetOverrideResult> {
+  const raw = await apiFetch<unknown>('/permission-overrides', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      userId: req.userId,
+      permissionKey: req.permissionKey,
+      isAllowed: req.isAllowed,
+      reason: req.reason,
+      tenantId: req.tenantId ?? null,
+      expiresAt: req.expiresAt ?? null,
+    },
+  });
+  return SetOverrideResultSchema.parse(raw);
 }

@@ -257,6 +257,22 @@ export type MeTenant = z.infer<typeof MeTenantSchema>;
 // target tenant. /end mints a CLEAN bundle (no claim). Mirrors the
 // AuthController impersonation records (camelCase wire).
 
+/** `GET /api/v1/tenants?skip&take` row. Mirrors TenantDto (platform.tenants),
+ *  gated by `platform.tenants.read` (super_admin). Used by the begin-impersonation
+ *  target selector. Trailing fields are additive context; the picker only needs
+ *  tenantId + displayName + tenantCode. */
+export const TenantListItemSchema = z.object({
+  tenantId: z.string(),
+  tenantCode: z.string(),
+  displayName: z.string(),
+  tenantType: z.string(),
+  primaryEmail: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  country: z.string().nullable().optional(),
+  city: z.string().nullable().optional(),
+});
+export type TenantListItem = z.infer<typeof TenantListItemSchema>;
+
 /** `POST /api/v1/auth/impersonation/begin` body. Mirrors BeginImpersonationRequest. */
 export const BeginImpersonationRequestSchema = z.object({
   targetTenantId: z.string(),
@@ -332,6 +348,24 @@ export const UserListItemSchema = z.object({
   ),
 });
 export type UserListItem = z.infer<typeof UserListItemSchema>;
+
+/** RAW shape the LIVE `GET /tenants/{tenantId}/users` returns today — leaner than
+ *  the app-facing UserListItem: it carries `phone` (not `maskedPhone`) and does
+ *  NOT join roles yet. lib/backend/real.ts adapts it into UserListItem (masking
+ *  phone, defaulting roles: []) before the screen sees it. Tolerant/passthrough so
+ *  the eventual roles-join + any additive backend fields don't break parsing. */
+export const UserListItemDtoSchema = z
+  .object({
+    userId: z.string(),
+    email: z.string(),
+    fullName: z.string(),
+    phone: z.string().nullable().optional(),
+    isActive: z.boolean(),
+    mfaEnabled: z.boolean(),
+    lastLoginAt: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type UserListItemDto = z.infer<typeof UserListItemDtoSchema>;
 
 /** `POST /tenants/{id}/users` body. Mirrors CreateUserRequest. */
 export const CreateUserRequestSchema = z.object({
@@ -1482,3 +1516,107 @@ export const DashboardSummaryDtoSchema = z
   })
   .passthrough();
 export type DashboardSummaryDto = z.infer<typeof DashboardSummaryDtoSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IAM — Roles & permissions privilege matrix (Team & Roles, Slice 2).
+// Mirrors the live .NET IAM API under /api/v1/iam (ModuleDto / PermissionDto /
+// RoleMatrixDto + nested module/cell, DuplicateRole, EffectiveAccess). camelCase
+// over the wire. The mock seam returns the same shapes so the flag-off app and
+// the flag-on app render byte-for-byte the same grid.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `GET /iam/modules` → a licensable resource group (a matrix section header). */
+export const ModuleDtoSchema = z.object({
+  resourceKey: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  displayOrder: z.number(),
+  licensed: z.boolean(),
+});
+export type ModuleDto = z.infer<typeof ModuleDtoSchema>;
+
+/** `GET /iam/permissions?module=` → one permission in the registry. */
+export const IamPermissionDtoSchema = z.object({
+  permissionId: z.string(),
+  permissionKey: z.string(),
+  resource: z.string(),
+  action: z.string(),
+  scope: z.string(),
+  isDangerous: z.boolean(),
+  description: z.string().nullable(),
+});
+export type IamPermissionDto = z.infer<typeof IamPermissionDtoSchema>;
+
+/** One action cell in a role's matrix (a checkbox in a module row). */
+export const RoleMatrixCellSchema = z.object({
+  permissionId: z.string(),
+  permissionKey: z.string(),
+  action: z.string(),
+  actionName: z.string(),
+  isDangerous: z.boolean(),
+  granted: z.boolean(),
+  moduleLicensed: z.boolean(),
+});
+export type RoleMatrixCell = z.infer<typeof RoleMatrixCellSchema>;
+
+/** One module section of a role's matrix (grouped action cells + a granted tally). */
+export const RoleMatrixModuleSchema = z.object({
+  resourceKey: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  displayOrder: z.number(),
+  licensed: z.boolean(),
+  grantedCount: z.number(),
+  totalCount: z.number(),
+  cells: z.array(RoleMatrixCellSchema),
+});
+export type RoleMatrixModule = z.infer<typeof RoleMatrixModuleSchema>;
+
+/** `GET /iam/roles/{roleId}/matrix` — the heart of the Roles screen.
+ *  `editable===false` (or `isSystem===true`) → the grid renders read-only and the
+ *  panel surfaces a Duplicate CTA instead of live checkboxes. */
+export const RoleMatrixSchema = z.object({
+  roleId: z.string(),
+  roleKey: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  scope: z.string(),
+  isSystem: z.boolean(),
+  editable: z.boolean(),
+  grantedCount: z.number(),
+  totalCount: z.number(),
+  modules: z.array(RoleMatrixModuleSchema),
+});
+export type RoleMatrix = z.infer<typeof RoleMatrixSchema>;
+
+/** `POST|DELETE /iam/roles/{roleId}/permissions/{permissionId}` → the new cell state. */
+export const RolePermissionToggleResultSchema = z.object({
+  roleId: z.string(),
+  permissionId: z.string(),
+  granted: z.boolean(),
+});
+export type RolePermissionToggleResult = z.infer<typeof RolePermissionToggleResultSchema>;
+
+/** `POST /iam/roles/duplicate` body. Clones a role + its grants into a new
+ *  tenant-scoped (editable) role. `newRoleKey` is lower_snake_case. */
+export const DuplicateRoleRequestSchema = z.object({
+  sourceRoleId: z.string(),
+  newRoleKey: z.string(),
+  newName: z.string(),
+  description: z.string().nullable().optional(),
+  tenantId: z.string().nullable().optional(),
+});
+export type DuplicateRoleRequest = z.infer<typeof DuplicateRoleRequestSchema>;
+
+/** `POST /iam/roles/duplicate` result — the new role's id (navigate to its matrix). */
+export const DuplicateRoleResultSchema = z.object({ roleId: z.string() });
+export type DuplicateRoleResult = z.infer<typeof DuplicateRoleResultSchema>;
+
+/** `GET /iam/users/{userId}/effective-access?tenantId=` — the resolved permission
+ *  key set for a user (role grants − denies + grants), tenant-scoped. */
+export const EffectiveAccessSchema = z.object({
+  userId: z.string(),
+  tenantId: z.string(),
+  permissionKeys: z.array(z.string()),
+});
+export type EffectiveAccess = z.infer<typeof EffectiveAccessSchema>;

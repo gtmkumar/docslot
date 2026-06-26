@@ -152,3 +152,52 @@ public sealed class Permission
 
     private Permission() { }
 }
+
+/// <summary>
+/// Role↔permission grant (maps to <c>platform.role_permissions</c>). Read-only here — every write goes
+/// through the SECURITY DEFINER functions (grant/revoke_permission_from_role), never EF, because RLS on
+/// the table blocks the app role from direct INSERT/DELETE.
+/// </summary>
+public sealed class RolePermission
+{
+    public Guid RoleId { get; private set; }
+    public Guid PermissionId { get; private set; }
+    public bool IsGrantable { get; private set; }
+    public DateTime GrantedAt { get; private set; }
+
+    private RolePermission() { }
+}
+
+/// <summary>
+/// Module registry — the "what" a permission acts on (maps to <c>platform.resource_types</c>). Used to
+/// label and order the privilege-matrix groups. A catalog artifact: read-only in the app.
+/// </summary>
+public sealed class ResourceType
+{
+    public Guid ResourceTypeId { get; private set; }
+    public string ResourceKey { get; private set; } = default!;   // 'booking','patient','doctor',...
+    public string ResourceName { get; private set; } = default!;  // 'Booking','Patient'
+    public Guid? ProductId { get; private set; }
+    public string? Description { get; private set; }
+    public int DisplayOrder { get; private set; }
+    public bool IsActive { get; private set; }
+
+    private ResourceType() { }
+}
+
+/// <summary>
+/// Action registry — the "what can be done" (maps to <c>platform.action_types</c>). Provides the matrix
+/// column labels and the inherited dangerous flag. Catalog artifact: read-only in the app.
+/// </summary>
+public sealed class ActionType
+{
+    public Guid ActionTypeId { get; private set; }
+    public string ActionKey { get; private set; } = default!;     // 'create','read','update','delete','approve','export'
+    public string ActionName { get; private set; } = default!;
+    public string? Description { get; private set; }
+    public bool IsDangerous { get; private set; }
+    public int DisplayOrder { get; private set; }
+    public bool IsActive { get; private set; }
+
+    private ActionType() { }
+}

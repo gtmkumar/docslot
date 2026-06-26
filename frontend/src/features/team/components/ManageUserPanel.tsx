@@ -20,6 +20,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { shortDate } from '@/lib/format';
 import { idempotencyKey } from '@/lib/api-client';
 import { usePermissions } from '@/lib/permissions';
+import { useUI } from '@/stores/ui';
 import {
   useAssignRole,
   useEffectivePermissions,
@@ -353,13 +354,23 @@ function ExpiryToggle({ active, onClick, label }: { active: boolean; onClick: ()
 // ── 3. Effective permissions explainer ───────────────────────────────────────
 function EffectiveSection({ userId }: { userId: string }) {
   const { t } = useTranslation();
+  const openPanel = useUI((s) => s.openPanel);
   const { data, isLoading, isError, refetch } = useEffectivePermissions(userId);
 
   return (
     <section>
-      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-2">
-        {t('team.manage.effectiveHeading')}
-      </h3>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-2">
+          {t('team.manage.effectiveHeading')}
+        </h3>
+        <button
+          type="button"
+          onClick={() => openPanel({ type: 'effectiveAccess', userId })}
+          className="text-[11px] font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          {t('team.manage.viewAllAccess')}
+        </button>
+      </div>
       <p className="mb-2 text-[12px] text-muted">{t('team.manage.effectiveSub')}</p>
 
       {isError ? (
