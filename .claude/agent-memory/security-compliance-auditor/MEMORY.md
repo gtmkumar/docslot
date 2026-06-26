@@ -12,3 +12,4 @@
 - [PR#2 RBAC super_admin GUC](backend-rbac-super-admin-guc.md) — APPROVE-WITH-CONDITIONS: spoof/pool/null safe; HIGH PHI-breadth (GUC=god-mode all-tenant PHI) + HIGH silent-no-audit gap
 - [Issue#3 impersonation wiring](backend-issue3-impersonation-wiring.md) — PASS: PR#2 carry-forward closed; app.impersonated_tenant now session-validated (audited-by-construction); begin-impersonation endpoint deferred
 - [IAM Roles&Permissions admin](backend-iam-roles-admin.md) — CLEARED PASS: duplicate_role grant-option escalation (HIGH) fixed (non-super forces is_grantable=false) & verified; 2 low-sev follow-ups open
+- [IAM Catalog plane (create module/perm)](rbac-catalog-plane.md) — CLEARED PASS: authz gate sound, actor=principal, create≠grant; condition (revoke app-role INSERT/UPDATE on catalog tables) applied & verified live SELECT-only; 409 broadening benign

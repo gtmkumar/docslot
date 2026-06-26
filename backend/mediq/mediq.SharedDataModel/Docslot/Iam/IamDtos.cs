@@ -52,3 +52,19 @@ public sealed record SetRolePermissionResult(Guid RoleId, Guid PermissionId, boo
 /// deny-overrides plus grant-overrides, exactly as <c>platform.resolve_user_permissions</c> computes it.</summary>
 public sealed record EffectiveAccessDto(
     Guid UserId, Guid? TenantId, IReadOnlyList<string> PermissionKeys);
+
+// ---- Catalog plane (platform-governed): create modules + permissions ----------------------------
+// The "vocabulary" of authority. Creating these is a platform-admin act gated on
+// platform.permissions.manage. A permission is inert until application code checks it.
+
+/// <summary>Create a module (resource_type) — a new privilege group in the matrix.</summary>
+public sealed record CreateModuleRequest(string ResourceKey, string Name, string? Description, int DisplayOrder = 0);
+
+public sealed record CreateModuleResult(Guid ResourceTypeId);
+
+/// <summary>Create a permission (<c>resource.action</c>). It becomes grantable + visible in the matrix
+/// immediately; enforcement (a <c>[RequirePermission]</c> check) ships with the feature that needs it.</summary>
+public sealed record CreatePermissionRequest(
+    string PermissionKey, string Resource, string Action, string Scope, string Description, bool IsDangerous = false);
+
+public sealed record CreatePermissionResult(Guid PermissionId);

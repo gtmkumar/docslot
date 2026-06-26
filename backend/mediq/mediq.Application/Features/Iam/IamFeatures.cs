@@ -154,3 +154,80 @@ public sealed class DuplicateRoleCommandHandler(
         return new DuplicateRoleResult(newRoleId);
     }
 }
+
+// ---- Catalog plane: create a module (resource_type) ----------------------------------------------
+
+public sealed record CreateModuleCommand(CreateModuleRequest Request) : ICommand<CreateModuleResult>;
+
+public sealed class CreateModuleValidator : AbstractValidator<CreateModuleCommand>
+{
+    public CreateModuleValidator()
+    {
+        RuleFor(x => x.Request.ResourceKey).NotEmpty().MaximumLength(50)
+            .Matches("^[a-z0-9_]+$").WithMessage("ResourceKey must be lower_snake_case.");
+        RuleFor(x => x.Request.Name).NotEmpty().MaximumLength(100);
+    }
+}
+
+public sealed class CreateModuleCommandHandler(
+    IRoleAssignmentRepository roles, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<CreateModuleCommand, CreateModuleResult>
+{
+    public async Task<CreateModuleResult> Handle(CreateModuleCommand command, CancellationToken ct)
+    {
+        var req = command.Request;
+        // platform.create_resource_type (SECURITY DEFINER) enforces platform.permissions.manage at the DB
+        // (→ 403 on 42501) and rejects a duplicate key (→ 409 on 23505).
+        var id = await roles.CreateResourceTypeAsync(
+            ctx.UserId!.Value, req.ResourceKey, req.Name, req.Description, req.DisplayOrder, ct);
+
+        await audit.RecordAsync(new AuditEntry(
+            "create", "resource_type", id, req.ResourceKey, ctx.UserId, ctx.TenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Created module {req.ResourceKey}"), ct);
+
+        return new CreateModuleResult(id);
+    }
+}
+
+// ---- Catalog plane: create a permission ----------------------------------------------------------
+
+public sealed record CreatePermissionCommand(CreatePermissionRequest Request) : ICommand<CreatePermissionResult>;
+
+public sealed class CreatePermissionValidator : AbstractValidator<CreatePermissionCommand>
+{
+    public CreatePermissionValidator()
+    {
+        RuleFor(x => x.Request.PermissionKey).NotEmpty().MaximumLength(150)
+            .Matches("^[a-z0-9_]+(\\.[a-z0-9_]+)+$")
+            .WithMessage("PermissionKey must be dotted lower_snake_case, e.g. 'docslot.report.sign'.");
+        RuleFor(x => x.Request.Resource).NotEmpty().Matches("^[a-z0-9_]+$");
+        RuleFor(x => x.Request.Action).NotEmpty().Matches("^[a-z0-9_]+$");
+        RuleFor(x => x.Request.Scope).Must(s => s is "platform" or "tenant" or "self")
+            .WithMessage("Scope must be 'platform', 'tenant', or 'self'.");
+        RuleFor(x => x.Request.Description).NotEmpty().MaximumLength(500);
+    }
+}
+
+public sealed class CreatePermissionCommandHandler(
+    IRoleAssignmentRepository roles, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<CreatePermissionCommand, CreatePermissionResult>
+{
+    public async Task<CreatePermissionResult> Handle(CreatePermissionCommand command, CancellationToken ct)
+    {
+        var req = command.Request;
+        // platform.create_permission (SECURITY DEFINER) enforces platform.permissions.manage (→ 403),
+        // validates scope, ensures the action_type exists, and links the registries. A permission is inert
+        // until application code checks it — this only adds the catalog row.
+        var id = await roles.CreatePermissionAsync(
+            ctx.UserId!.Value, req.PermissionKey, req.Resource, req.Action, req.Scope, req.Description,
+            req.IsDangerous, ct);
+
+        await audit.RecordAsync(new AuditEntry(
+            "create", "permission", id, req.PermissionKey, ctx.UserId, ctx.TenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Created permission {req.PermissionKey} ({req.Scope})"), ct);
+
+        return new CreatePermissionResult(id);
+    }
+}

@@ -35,6 +35,8 @@ import {
   CommissionCreatedSchema,
   CommissionRuleSchema,
   CreateBookingResultDtoSchema,
+  CreateModuleResultSchema,
+  CreatePermissionResultSchema,
   CreateDoctorResultDtoSchema,
   DashboardSummaryDtoSchema,
   DisputeSchema,
@@ -84,6 +86,10 @@ import {
   type CommissionRule,
   type CreateBookingResult,
   type CreateCommissionRuleRequest,
+  type CreateModuleRequest,
+  type CreateModuleResult,
+  type CreatePermissionRequest,
+  type CreatePermissionResult,
   type DashboardSummary,
   type Dispute,
   type DoctorCard,
@@ -1268,6 +1274,54 @@ export async function listKeyStatus(): Promise<KeyStatus[]> {
 export async function listModules(): Promise<ModuleDto[]> {
   const raw = await apiFetch<unknown[]>('/iam/modules');
   return ModuleDtoSchema.array().parse(raw);
+}
+
+// ── CATALOG-PLANE CREATES (platform-governed, gated platform.permissions.manage) ──
+// POST /iam/modules + POST /iam/permissions define NEW catalog entries (a module /
+// a permission), distinct from the assignment plane (granting an existing
+// permission to a role). Both carry an Idempotency-Key (de-duped on the server);
+// 403 if the caller lacks platform.permissions.manage, 409 on a duplicate key —
+// both surface via toUserError as a toast. PHI: none — catalog metadata only.
+
+/** POST /iam/modules → 201 { resourceTypeId }. */
+export async function createModule(
+  req: CreateModuleRequest,
+  idempotencyKey: string,
+): Promise<CreateModuleResult> {
+  const raw = await apiFetch<unknown>('/iam/modules', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      resourceKey: req.resourceKey,
+      name: req.name,
+      description: req.description?.trim() ? req.description.trim() : null,
+      // Omit when unset → the server assigns a default order.
+      displayOrder: req.displayOrder ?? null,
+    },
+  });
+  return CreateModuleResultSchema.parse(raw);
+}
+
+/** POST /iam/permissions → 201 { permissionId }. A new permission is INERT until
+ *  application code checks it — it becomes grantable in the matrix but enforces
+ *  nothing on its own. */
+export async function createPermission(
+  req: CreatePermissionRequest,
+  idempotencyKey: string,
+): Promise<CreatePermissionResult> {
+  const raw = await apiFetch<unknown>('/iam/permissions', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      permissionKey: req.permissionKey,
+      resource: req.resource,
+      action: req.action,
+      scope: req.scope,
+      description: req.description,
+      isDangerous: req.isDangerous ?? false,
+    },
+  });
+  return CreatePermissionResultSchema.parse(raw);
 }
 
 export async function listIamPermissions(module?: string): Promise<IamPermissionDto[]> {

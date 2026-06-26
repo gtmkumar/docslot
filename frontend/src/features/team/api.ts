@@ -11,6 +11,8 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  createModule,
+  createPermission,
   duplicateRole,
   getEffectiveAccess,
   getRoleMatrix,
@@ -34,6 +36,8 @@ import {
 } from '@/lib/mock';
 import type {
   AssignRoleRequest,
+  CreateModuleRequest,
+  CreatePermissionRequest,
   CreateUserRequest,
   DuplicateRoleRequest,
   RoleMatrix,
@@ -193,6 +197,44 @@ export function useToggleRolePermission() {
     onSettled: (_r, _e, vars) => {
       void qc.invalidateQueries({ queryKey: roleMatrixQueryKey(vars.roleId) });
     },
+  });
+}
+
+// ── Catalog-plane creates (platform.permissions.manage) ──────────────────────
+// "+ Module" / "+ Permission" define NEW catalog entries (platform-governed),
+// distinct from the assignment-plane grants above. On success both invalidate the
+// modules list and every role matrix (a new permission surfaces as a matrix cell
+// under its module; a new module appears as a section), plus the permission
+// registry / iam-permission reads.
+
+/** Invalidate every catalog-derived query so a freshly-created module/permission
+ *  shows up immediately (the role matrix is keyed per-role → invalidate by prefix). */
+function invalidateCatalog(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: modulesQueryKey });
+  void qc.invalidateQueries({ queryKey: permissionRegistryQueryKey });
+  void qc.invalidateQueries({ queryKey: ['team', 'iamPermissions'] });
+  void qc.invalidateQueries({ queryKey: ['team', 'roleMatrix'] });
+}
+
+export interface CreateModuleInput extends CreateModuleRequest {
+  idempotencyKey: string;
+}
+export function useCreateModule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ idempotencyKey, ...req }: CreateModuleInput) => createModule(req, idempotencyKey),
+    onSuccess: () => invalidateCatalog(qc),
+  });
+}
+
+export interface CreatePermissionInput extends CreatePermissionRequest {
+  idempotencyKey: string;
+}
+export function useCreatePermission() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ idempotencyKey, ...req }: CreatePermissionInput) => createPermission(req, idempotencyKey),
+    onSuccess: () => invalidateCatalog(qc),
   });
 }
 

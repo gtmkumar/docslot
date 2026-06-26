@@ -152,6 +152,12 @@ export const setOverride = USE_REAL_API ? real.setOverride : mock.setOverride;
 
 export const listModules = USE_REAL_API ? real.listModules : mock.listModules;
 export const listIamPermissions = USE_REAL_API ? real.listIamPermissions : mock.listIamPermissions;
+// CATALOG-PLANE CREATES (platform.permissions.manage) — real POSTs to /iam/modules
+// + /iam/permissions (Idempotency-Key); mock mutates the in-memory RBAC catalog so
+// flag-off reflects the new module/permission (a new permission appears as a matrix
+// cell under its module).
+export const createModule = USE_REAL_API ? real.createModule : mock.createModule;
+export const createPermission = USE_REAL_API ? real.createPermission : mock.createPermission;
 export const getRoleMatrix = USE_REAL_API ? real.getRoleMatrix : mock.getRoleMatrix;
 export const grantRolePermission = USE_REAL_API ? real.grantRolePermission : mock.grantRolePermission;
 export const revokeRolePermission = USE_REAL_API ? real.revokeRolePermission : mock.revokeRolePermission;

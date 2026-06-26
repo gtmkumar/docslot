@@ -32,6 +32,10 @@ export type Panel =
   | { type: 'roleMatrix'; roleId: string }
   | { type: 'duplicateRole'; roleId: string }
   | { type: 'effectiveAccess'; userId: string }
+  // Catalog plane (platform-governed, gated platform.permissions.manage). Both are
+  // payloadless + URL-addressable (?panel=createModule / ?panel=createPermission).
+  | { type: 'createModule' }
+  | { type: 'createPermission' }
   // Developer / API platform portal (Slice 02). registerClient/createWebhook are
   // payloadless; manageClient/webhookForm(edit)/webhookDeliveries carry an id
   // (URL-restorable). `clientSecret` carries the one-time plaintext secret and is

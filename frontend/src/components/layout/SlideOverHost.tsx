@@ -34,6 +34,8 @@ const CreateRolePanel = lazy(() => import('@/features/team/components/CreateRole
 const RoleMatrixPanel = lazy(() => import('@/features/team/components/RoleMatrixPanel').then((m) => ({ default: m.RoleMatrixPanel })));
 const DuplicateRolePanel = lazy(() => import('@/features/team/components/DuplicateRolePanel').then((m) => ({ default: m.DuplicateRolePanel })));
 const EffectiveAccessPanel = lazy(() => import('@/features/team/components/EffectiveAccessPanel').then((m) => ({ default: m.EffectiveAccessPanel })));
+const CreateModulePanel = lazy(() => import('@/features/team/components/CreateModulePanel').then((m) => ({ default: m.CreateModulePanel })));
+const CreatePermissionPanel = lazy(() => import('@/features/team/components/CreatePermissionPanel').then((m) => ({ default: m.CreatePermissionPanel })));
 const RegisterClientPanel = lazy(() => import('@/features/developers/components/RegisterClientPanel').then((m) => ({ default: m.RegisterClientPanel })));
 const ManageClientPanel = lazy(() => import('@/features/developers/components/ManageClientPanel').then((m) => ({ default: m.ManageClientPanel })));
 const SecretRevealPanel = lazy(() => import('@/features/developers/components/SecretRevealPanel').then((m) => ({ default: m.SecretRevealPanel })));
@@ -86,6 +88,7 @@ function isUrlPanel(type: PanelType): type is UrlPanelType {
 
 const PAYLOADLESS: PanelType[] = [
   'newBooking', 'addDoctor', 'addPatient', 'bookTime', 'inviteUser', 'createRole',
+  'createModule', 'createPermission',
   'registerClient', 'createWebhook',
   'exportData', 'reportBreach', 'breakGlass',
   'registerBroker', 'createCommissionRule',
@@ -236,6 +239,10 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <DuplicateRolePanel roleId={panel.roleId} open onClose={closePanel} />;
     case 'effectiveAccess':
       return <EffectiveAccessPanel userId={panel.userId} open onClose={closePanel} />;
+    case 'createModule':
+      return <CreateModulePanel open onClose={closePanel} />;
+    case 'createPermission':
+      return <CreatePermissionPanel open onClose={closePanel} />;
     case 'registerClient':
       return <RegisterClientPanel open onClose={closePanel} />;
     case 'manageClient':

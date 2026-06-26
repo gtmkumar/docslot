@@ -181,6 +181,62 @@ public sealed class IamAdminTests(IamAdminWebAppFactory factory) : IClassFixture
         Assert.True(matrix.Editable);
     }
 
+    // ---- Catalog plane: create modules + permissions ----------------------------------------------
+
+    [Fact]
+    public async Task Super_CreatesModule_ThenPermission_AppearsInMatrix()
+    {
+        var client = await AuthedClientAsync(factory.SuperAdminEmail);
+        var moduleKey = $"{factory.CatalogPrefix}mod";
+        var permKey = $"{moduleKey}.review";
+
+        var modResp = await client.PostAsJsonAsync("/api/v1/iam/modules",
+            new CreateModuleRequest(moduleKey, "IAM Catalog Module", "test", 900));
+        Assert.Equal(HttpStatusCode.Created, modResp.StatusCode);
+        Assert.NotEqual(Guid.Empty, (await modResp.Content.ReadFromJsonAsync<CreateModuleResult>())!.ResourceTypeId);
+
+        var permResp = await client.PostAsJsonAsync("/api/v1/iam/permissions",
+            new CreatePermissionRequest(permKey, moduleKey, "review", "tenant", "Review catalog things", IsDangerous: true));
+        Assert.Equal(HttpStatusCode.Created, permResp.StatusCode);
+        Assert.NotEqual(Guid.Empty, (await permResp.Content.ReadFromJsonAsync<CreatePermissionResult>())!.PermissionId);
+
+        // The brand-new permission is immediately visible in a tenant role's matrix, under its module,
+        // ungranted and carrying the dangerous flag — i.e. ready to be mapped to roles via the toggle.
+        var matrix = await GetMatrixAsync(client, factory.CustomRoleId);
+        var module = matrix.Modules.SingleOrDefault(m => m.ResourceKey == moduleKey);
+        Assert.NotNull(module);
+        var cell = module!.Cells.Single(c => c.PermissionKey == permKey);
+        Assert.False(cell.Granted);
+        Assert.True(cell.IsDangerous);
+    }
+
+    [Fact]
+    public async Task Super_CreatesDuplicateModuleKey_Gets409()
+    {
+        var client = await AuthedClientAsync(factory.SuperAdminEmail);
+        var moduleKey = $"{factory.CatalogPrefix}dup";
+
+        var first = await client.PostAsJsonAsync("/api/v1/iam/modules",
+            new CreateModuleRequest(moduleKey, "First", null, 0));
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        var second = await client.PostAsJsonAsync("/api/v1/iam/modules",
+            new CreateModuleRequest(moduleKey, "Second", null, 0));
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+    }
+
+    [Fact]
+    public async Task Owner_CreatesModule_Gets403_LacksPlatformPermissionsManage()
+    {
+        var client = await AuthedClientAsync(factory.OwnerEmail);
+
+        // tenant_owner does not hold platform.permissions.manage → blocked at the RequirePermission gate.
+        var resp = await client.PostAsJsonAsync("/api/v1/iam/modules",
+            new CreateModuleRequest($"{factory.CatalogPrefix}nope", "Should Fail", null, 0));
+
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+    }
+
     // ---- helpers ----------------------------------------------------------------------------------
 
     private async Task<HttpClient> AuthedClientAsync(string email)

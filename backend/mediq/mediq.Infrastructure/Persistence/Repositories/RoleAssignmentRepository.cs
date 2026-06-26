@@ -24,6 +24,7 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
 {
     private const string SqlStateInsufficientPrivilege = "42501"; // grant-option / escalation guard
     private const string SqlStateIntegrityConstraint    = "23000"; // SoD role_incompatibility trigger
+    private const string SqlStateUniqueViolation        = "23505"; // duplicate catalog key (module/permission)
 
     // ---- Reads -------------------------------------------------------------------------------------
 
@@ -133,6 +134,31 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
             new NpgsqlParameter("@p4", (object?)description ?? DBNull.Value),
             new NpgsqlParameter("@p5", (object?)tenantId ?? DBNull.Value));
 
+    public Task<Guid> CreateResourceTypeAsync(
+        Guid actorUserId, string resourceKey, string name, string? description, int displayOrder, CancellationToken ct) =>
+        ScalarAsync<Guid>(
+            "SELECT platform.create_resource_type(@p0, @p1, @p2, @p3, @p4) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", resourceKey),
+            new NpgsqlParameter("@p2", name),
+            new NpgsqlParameter("@p3", (object?)description ?? DBNull.Value),
+            new NpgsqlParameter("@p4", displayOrder));
+
+    public Task<Guid> CreatePermissionAsync(
+        Guid actorUserId, string permissionKey, string resource, string action, string scope, string description,
+        bool isDangerous, CancellationToken ct) =>
+        ScalarAsync<Guid>(
+            "SELECT platform.create_permission(@p0, @p1, @p2, @p3, @p4, @p5, @p6) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", permissionKey),
+            new NpgsqlParameter("@p2", resource),
+            new NpgsqlParameter("@p3", action),
+            new NpgsqlParameter("@p4", scope),
+            new NpgsqlParameter("@p5", description),
+            new NpgsqlParameter("@p6", isDangerous));
+
     /// <summary>
     /// Runs a SECURITY DEFINER function that returns void (e.g. grant_permission_to_role) on the DbContext
     /// connection (enlisted in the ambient UoW transaction), translating the privilege/SoD SQLSTATEs the
@@ -148,7 +174,7 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
         {
             throw new ForbiddenException(pg.MessageText, pg);
         }
-        catch (PostgresException pg) when (pg.SqlState == SqlStateIntegrityConstraint)
+        catch (PostgresException pg) when (pg.SqlState is SqlStateIntegrityConstraint or SqlStateUniqueViolation)
         {
             throw new ConflictException(pg.MessageText, pg);
         }
@@ -171,9 +197,10 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
             // Grant-option / privilege-escalation guard inside the SECURITY DEFINER function → 403.
             throw new ForbiddenException(pg.MessageText, pg);
         }
-        catch (PostgresException pg) when (pg.SqlState == SqlStateIntegrityConstraint)
+        catch (PostgresException pg) when (pg.SqlState is SqlStateIntegrityConstraint or SqlStateUniqueViolation)
         {
-            // Separation-of-duties (role_incompatibility) trigger → 409 with the DB's explanatory message.
+            // SoD (role_incompatibility) trigger OR a duplicate catalog key (module/permission already
+            // exists) → 409 with the DB's explanatory message.
             throw new ConflictException(pg.MessageText, pg);
         }
     }

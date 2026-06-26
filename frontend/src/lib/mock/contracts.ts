@@ -1620,3 +1620,51 @@ export const EffectiveAccessSchema = z.object({
   permissionKeys: z.array(z.string()),
 });
 export type EffectiveAccess = z.infer<typeof EffectiveAccessSchema>;
+
+// ── Catalog-plane creates (platform-governed, gated platform.permissions.manage) ──
+// These define NEW catalog entries (a module / a permission). Distinct from the
+// assignment plane (granting an existing permission to a role). A new permission
+// is INERT until application code checks it — it becomes grantable in the matrix
+// but enforces nothing on its own.
+
+/** `POST /iam/modules` body. `resourceKey` is lower_snake (the matrix section key). */
+export const CreateModuleRequestSchema = z.object({
+  resourceKey: z
+    .string()
+    .trim()
+    .regex(/^[a-z][a-z0-9_]*$/),
+  name: z.string().trim().min(1),
+  description: z.string().trim().nullable().optional(),
+  displayOrder: z.number().int().optional(),
+});
+export type CreateModuleRequest = z.infer<typeof CreateModuleRequestSchema>;
+
+/** `POST /iam/modules` result → the new resource type's id. */
+export const CreateModuleResultSchema = z.object({ resourceTypeId: z.string() });
+export type CreateModuleResult = z.infer<typeof CreateModuleResultSchema>;
+
+/** `POST /iam/permissions` body. `permissionKey` is dotted lower_snake
+ *  (e.g. "docslot.report.sign"); `resource` is the owning module's resourceKey;
+ *  `action` is lower_snake; `scope` is one of platform|tenant|self. */
+export const CreatePermissionRequestSchema = z.object({
+  permissionKey: z
+    .string()
+    .trim()
+    .regex(/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/),
+  resource: z
+    .string()
+    .trim()
+    .regex(/^[a-z][a-z0-9_]*$/),
+  action: z
+    .string()
+    .trim()
+    .regex(/^[a-z][a-z0-9_]*$/),
+  scope: z.enum(['platform', 'tenant', 'self']),
+  description: z.string().trim().min(1),
+  isDangerous: z.boolean().optional(),
+});
+export type CreatePermissionRequest = z.infer<typeof CreatePermissionRequestSchema>;
+
+/** `POST /iam/permissions` result → the new permission's id. */
+export const CreatePermissionResultSchema = z.object({ permissionId: z.string() });
+export type CreatePermissionResult = z.infer<typeof CreatePermissionResultSchema>;

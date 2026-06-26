@@ -81,6 +81,35 @@ public sealed class IamController(ICommandDispatcher commands, IQueryDispatcher 
         return CreatedAtAction(nameof(GetRoleMatrix), new { roleId = result.RoleId }, result);
     }
 
+    // ---- Catalog plane (platform-governed): create modules + permissions -----------------------
+
+    /// <summary>Create a module (resource_type). Platform-plane: gated on <c>platform.permissions.manage</c>.</summary>
+    [HttpPost("modules")]
+    [RequirePermission("platform.permissions.manage")]
+    [ProducesResponseType<CreateModuleResult>(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<CreateModuleResult>> CreateModule(
+        [FromBody] CreateModuleRequest request, CancellationToken ct)
+    {
+        var result = await commands.Send(new CreateModuleCommand(request), ct);
+        return CreatedAtAction(nameof(ListModules), null, result);
+    }
+
+    /// <summary>Create a permission (<c>resource.action</c>). Platform-plane: gated on <c>platform.permissions.manage</c>.
+    /// It becomes grantable + visible in the matrix immediately; enforcement ships with the feature that checks it.</summary>
+    [HttpPost("permissions")]
+    [RequirePermission("platform.permissions.manage")]
+    [ProducesResponseType<CreatePermissionResult>(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<CreatePermissionResult>> CreatePermission(
+        [FromBody] CreatePermissionRequest request, CancellationToken ct)
+    {
+        var result = await commands.Send(new CreatePermissionCommand(request), ct);
+        return CreatedAtAction(nameof(ListPermissions), null, result);
+    }
+
     // ---- Effective access ----------------------------------------------------------------------
 
     /// <summary>The effective (resolved) permission set for a user in a tenant — role grants − denies + grants.</summary>

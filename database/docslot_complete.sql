@@ -7339,6 +7339,106 @@ COMMENT ON FUNCTION platform.duplicate_role IS
     'R3: clone a role into a new custom role and copy its grants. Non-super actors get a tenant-scoped role and must hold every permission the source confers (no escalation).';
 
 -- ============================================================================
+-- R3 (catalog plane) — CREATE MODULES / PERMISSIONS (the "vocabulary")
+-- ============================================================================
+-- Modules (resource_types) and permissions are PLATFORM-LEVEL catalog: they define
+-- the authority vocabulary the whole product speaks. Creating them is a platform-admin
+-- act, gated on 'platform.permissions.manage' (super_admin holds it). These run as
+-- definer so the authorization check is enforced at the database, consistent with the
+-- grant/revoke/duplicate path — even though the catalog tables carry no RLS.
+--
+-- NOTE: a permission only *does* something once application code checks it
+-- ([RequirePermission("…")]). create_permission adds the catalog row (makes it
+-- grantable + visible in the matrix); enforcement ships with the feature that needs it.
+
+CREATE OR REPLACE FUNCTION platform.create_resource_type(
+    p_actor_user_id UUID,
+    p_resource_key VARCHAR,
+    p_resource_name VARCHAR,
+    p_description TEXT DEFAULT NULL,
+    p_display_order INT DEFAULT 0
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_id UUID;
+BEGIN
+    IF NOT (platform.is_super_admin(p_actor_user_id)
+         OR platform.user_has_permission(p_actor_user_id, 'platform.permissions.manage', NULL)) THEN
+        RAISE EXCEPTION 'actor % may not manage the permission catalog', p_actor_user_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM platform.resource_types WHERE resource_key = p_resource_key) THEN
+        RAISE EXCEPTION 'module % already exists', p_resource_key
+            USING ERRCODE = 'unique_violation';
+    END IF;
+
+    INSERT INTO platform.resource_types (resource_key, resource_name, description, display_order, is_active)
+    VALUES (p_resource_key, p_resource_name, p_description, p_display_order, true)
+    RETURNING resource_type_id INTO v_id;
+    RETURN v_id;
+END;
+$$;
+COMMENT ON FUNCTION platform.create_resource_type IS
+    'Catalog: create a module (resource_type). Gated on platform.permissions.manage (or super_admin).';
+
+CREATE OR REPLACE FUNCTION platform.create_permission(
+    p_actor_user_id UUID,
+    p_permission_key VARCHAR,
+    p_resource VARCHAR,
+    p_action VARCHAR,
+    p_scope VARCHAR,
+    p_description TEXT,
+    p_is_dangerous BOOLEAN DEFAULT false
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_id UUID;
+BEGIN
+    IF NOT (platform.is_super_admin(p_actor_user_id)
+         OR platform.user_has_permission(p_actor_user_id, 'platform.permissions.manage', NULL)) THEN
+        RAISE EXCEPTION 'actor % may not manage the permission catalog', p_actor_user_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    IF p_scope NOT IN ('platform', 'tenant', 'self') THEN
+        RAISE EXCEPTION 'invalid scope % (must be platform|tenant|self)', p_scope;
+    END IF;
+    IF EXISTS (SELECT 1 FROM platform.permissions WHERE permission_key = p_permission_key) THEN
+        RAISE EXCEPTION 'permission % already exists', p_permission_key
+            USING ERRCODE = 'unique_violation';
+    END IF;
+
+    -- Ensure the action exists in the registry so the matrix has a column label + danger flag.
+    -- ON CONFLICT DO NOTHING: an existing action_key is left as-is (its is_dangerous is NOT refreshed) —
+    -- the per-permission is_dangerous on the permission row is the source of truth for the cell anyway.
+    INSERT INTO platform.action_types (action_key, action_name, is_dangerous)
+    VALUES (p_action, INITCAP(REPLACE(p_action, '_', ' ')), p_is_dangerous)
+    ON CONFLICT (action_key) DO NOTHING;
+
+    -- is_system=false → a custom catalog entry (deletable later); link the module + action registries
+    -- so the matrix groups/labels it correctly (NULL-safe if the module isn't registered yet).
+    INSERT INTO platform.permissions
+        (permission_key, resource, action, scope, description, is_system, is_dangerous, resource_type_id, action_type_id)
+    SELECT p_permission_key, p_resource, p_action, p_scope, p_description, false, p_is_dangerous,
+           rt.resource_type_id, at.action_type_id
+    FROM (SELECT 1) _
+    LEFT JOIN platform.resource_types rt ON rt.resource_key = p_resource
+    LEFT JOIN platform.action_types  at ON at.action_key   = p_action
+    RETURNING permission_id INTO v_id;
+    RETURN v_id;
+END;
+$$;
+COMMENT ON FUNCTION platform.create_permission IS
+    'Catalog: create a permission (resource.action), is_system=false. Ensures the action_type exists and links resource/action registries. Gated on platform.permissions.manage (or super_admin). A permission is inert until application code checks it.';
+
+-- ============================================================================
 -- R1 — ROW-LEVEL SECURITY ON THE RBAC / ENTITLEMENT TABLES
 -- ============================================================================
 -- Until now RLS protected only the 5 PHI tables. The authorization data itself
@@ -7496,6 +7596,8 @@ GRANT EXECUTE ON FUNCTION
     platform.grant_permission_to_role(UUID, UUID, UUID, UUID, BOOLEAN),
     platform.revoke_permission_from_role(UUID, UUID, UUID, UUID),
     platform.duplicate_role(UUID, UUID, VARCHAR, VARCHAR, TEXT, UUID),
+    platform.create_resource_type(UUID, VARCHAR, VARCHAR, TEXT, INT),
+    platform.create_permission(UUID, VARCHAR, VARCHAR, VARCHAR, VARCHAR, TEXT, BOOLEAN),
     platform.assign_role_to_user(UUID, UUID, UUID, UUID),
     platform.revoke_role_assignment(UUID, UUID, TEXT),
     platform.set_user_permission_override(UUID, UUID, UUID, UUID, BOOLEAN, TEXT, TIMESTAMPTZ, TIMESTAMPTZ),
@@ -7503,6 +7605,20 @@ GRANT EXECUTE ON FUNCTION
     platform.rls_can_see_tenant(UUID),
     platform.rls_can_write_tenant(UUID)
 TO docslot_app;
+
+-- ----------------------------------------------------------------------------
+-- Catalog write path: the SECURITY DEFINER functions are the SOLE writers.
+-- The catalog tables (permissions / resource_types / action_types) carry no RLS
+-- (they are global vocabulary, no tenant rows to isolate). To stop the app role
+-- from bypassing the create_permission/create_resource_type authorization check
+-- with a direct INSERT, revoke its direct write grants — keeping SELECT for the
+-- read-only matrix/catalog projections. The definer funcs run as owner and are
+-- unaffected. (Mirrors how R1 RLS makes the definer funcs the sole writers of the
+-- entitlement tables; for the RLS-less catalog tables we achieve it via REVOKE.)
+-- ----------------------------------------------------------------------------
+REVOKE INSERT, UPDATE ON platform.permissions     FROM docslot_app;
+REVOKE INSERT, UPDATE ON platform.resource_types  FROM docslot_app;
+REVOKE INSERT, UPDATE ON platform.action_types    FROM docslot_app;
 
 -- ============================================================================
 -- POST-CONDITIONS (fail loud if the hardening did not take)

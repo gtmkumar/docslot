@@ -11,3 +11,4 @@
 - [Commission live wiring (PASS 3)](project_commission_live_wiring.md) — Care Partners + Calendar live quirks: omitted CommissionRuleDto keys, 204 writes, raiseDispute injects raisedBy, payout approve≠execute RBAC gate, calendar client-side slot rollup.
 - [Platform-admin login](feedback_platform-admin-login.md) — verify Developers/Security live with admin@docslot.io/admin, NOT priyanka (tenant_owner gets 403 + no nav; mock fixture differs).
 - [Support impersonation](project_impersonation.md) — issue #3: `impersonated_tenant` JWT claim, begin/end endpoints, session slice (impersonationId), `lib/jwt.ts` decoder, global banner.
+- [IAM Roles & permissions matrix](project_iam-matrix.md) — Team & Roles IAM surface; assignment vs catalog plane gating split, + Module/+ Permission panels, seam fns, inert-permission caveat.

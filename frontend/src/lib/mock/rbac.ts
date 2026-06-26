@@ -10,6 +10,8 @@
 import { maskPhone } from '@/lib/format';
 import {
   AssignRoleResultSchema,
+  CreateModuleResultSchema,
+  CreatePermissionResultSchema,
   CreateUserResultSchema,
   DuplicateRoleResultSchema,
   EffectiveAccessSchema,
@@ -27,6 +29,10 @@ import {
   UserOverrideSchema,
   type AssignRoleRequest,
   type AssignRoleResult,
+  type CreateModuleRequest,
+  type CreateModuleResult,
+  type CreatePermissionRequest,
+  type CreatePermissionResult,
   type CreateUserRequest,
   type CreateUserResult,
   type DuplicateRoleRequest,
@@ -389,6 +395,9 @@ export function createRole(req: CreateRoleRequest, idempotencyKey: string): Prom
 
 // Module metadata: resource → display name + bilingual-neutral description +
 // order. Resources without an entry fall back to a title-cased resource name.
+// MUTABLE so the catalog-create mocks (createModule / createPermission) can add a
+// new module/permission and have listModules() + getRoleMatrix() reflect it
+// flag-off (a new permission surfaces as a matrix cell under its module).
 const MODULE_META: Record<string, { name: string; description: string; order: number }> = {
   booking: { name: 'Bookings', description: 'Appointment booking and lifecycle', order: 10 },
   patient: { name: 'Patients', description: 'Patient directory and registration', order: 20 },
@@ -432,7 +441,13 @@ function moduleMetaFor(resource: string): { name: string; description: string; o
   );
 }
 
-const RESOURCES_IN_ORDER: string[] = (() => {
+// The set of registered module resourceKeys. Seeded from the permission registry's
+// resources, plus any standalone module created via createModule (a module can
+// exist before it has any permissions). Recomputed on each read so catalog-create
+// mocks take effect flag-off.
+const EXTRA_MODULES = new Set<string>();
+
+function resourcesInOrder(): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const p of PERMISSION_REGISTRY) {
@@ -441,8 +456,14 @@ const RESOURCES_IN_ORDER: string[] = (() => {
       out.push(p.resource);
     }
   }
+  for (const r of EXTRA_MODULES) {
+    if (!seen.has(r)) {
+      seen.add(r);
+      out.push(r);
+    }
+  }
   return out.sort((a, b) => moduleMetaFor(a).order - moduleMetaFor(b).order);
-})();
+}
 
 // Mutable grant overlay so mock toggles take effect (seeded from ROLE_GRANTS).
 const MOCK_ROLE_GRANTS: Record<string, Set<string>> = (() => {
@@ -452,7 +473,7 @@ const MOCK_ROLE_GRANTS: Record<string, Set<string>> = (() => {
 })();
 
 export function listModules(): Promise<ModuleDto[]> {
-  const mods = RESOURCES_IN_ORDER.map((resource) => {
+  const mods = resourcesInOrder().map((resource) => {
     const meta = moduleMetaFor(resource);
     return ModuleDtoSchema.parse({
       resourceKey: resource,
@@ -492,7 +513,7 @@ export function getRoleMatrix(roleId: string): Promise<RoleMatrix> {
   let grantedTotal = 0;
   let total = 0;
 
-  const modules = RESOURCES_IN_ORDER.map((resource) => {
+  const modules = resourcesInOrder().map((resource) => {
     const meta = moduleMetaFor(resource);
     const defs = PERMISSION_REGISTRY.filter((p) => p.resource === resource);
     let modGranted = 0;
@@ -614,4 +635,47 @@ export function getEffectiveAccess(userId: string, _tenantId?: string | null): P
       permissionKeys: [...keys].sort(),
     }),
   );
+}
+
+// ── Catalog-plane creates (platform.permissions.manage) ──────────────────────
+// Mutate the in-memory catalog so the flag-off app reflects the new module /
+// permission: a new module appears in listModules() (and as an empty matrix
+// section once it has permissions); a new permission appears as a matrix cell
+// under its module. Idempotency-Key de-dupes a retry.
+
+export function createModule(req: CreateModuleRequest, idempotencyKey: string): Promise<CreateModuleResult> {
+  return withIdem(idempotencyKey, () => {
+    // Register the module's display metadata + mark the resourceKey known so
+    // listModules() emits it even before it has any permissions.
+    MODULE_META[req.resourceKey] = {
+      name: req.name,
+      description: req.description?.trim() ? req.description.trim() : `${req.name} permissions`,
+      order: req.displayOrder ?? 500,
+    };
+    EXTRA_MODULES.add(req.resourceKey);
+    return CreateModuleResultSchema.parse({ resourceTypeId: `rt-${req.resourceKey}` });
+  });
+}
+
+export function createPermission(
+  req: CreatePermissionRequest,
+  idempotencyKey: string,
+): Promise<CreatePermissionResult> {
+  return withIdem(idempotencyKey, () => {
+    // Append to the registry so getRoleMatrix() renders it as a (revocable) cell
+    // under its module, and listIamPermissions(module) returns it. The module is
+    // implicitly registered too (in case the permission names a brand-new module).
+    EXTRA_MODULES.add(req.resource);
+    if (!PERMISSION_REGISTRY.some((p) => p.permissionKey === req.permissionKey)) {
+      PERMISSION_REGISTRY.push({
+        permissionKey: req.permissionKey,
+        resource: req.resource,
+        action: req.action,
+        scope: req.scope,
+        description: req.description,
+        isDangerous: req.isDangerous ?? false,
+      });
+    }
+    return CreatePermissionResultSchema.parse({ permissionId: permIdFor(req.permissionKey) });
+  });
 }

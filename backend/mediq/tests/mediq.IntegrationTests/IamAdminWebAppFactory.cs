@@ -24,6 +24,13 @@ public sealed class IamAdminWebAppFactory : WebApplicationFactory<Program>, IAsy
     public Guid ViewerUserId { get; } = Guid.NewGuid();
     public Guid TargetUserId { get; } = Guid.NewGuid();
 
+    /// <summary>A platform super_admin — the only actor that may create catalog modules/permissions.</summary>
+    public Guid SuperAdminUserId { get; } = Guid.NewGuid();
+    public string SuperAdminEmail { get; } = $"iam.super+{Guid.NewGuid():N}@docslot.test";
+
+    /// <summary>Distinctive prefix for catalog rows the tests mint, so teardown sweeps them by key.</summary>
+    public string CatalogPrefix { get; } = ("iamcat_" + Guid.NewGuid().ToString("N"))[..14];
+
     /// <summary>An empty, tenant-scoped custom role — the editable target for grant/revoke toggle tests.</summary>
     public Guid CustomRoleId { get; } = Guid.NewGuid();
 
@@ -49,7 +56,10 @@ public sealed class IamAdminWebAppFactory : WebApplicationFactory<Program>, IAsy
             """,
             ("id", TenantId), ("code", $"iam-{TenantId.ToString()[..8]}"));
 
-        foreach (var (uid, email) in new[] { (OwnerUserId, OwnerEmail), (ViewerUserId, ViewerEmail), (TargetUserId, TargetEmail) })
+        foreach (var (uid, email) in new[]
+        {
+            (OwnerUserId, OwnerEmail), (ViewerUserId, ViewerEmail), (TargetUserId, TargetEmail), (SuperAdminUserId, SuperAdminEmail),
+        })
             await Exec(conn,
                 """
                 INSERT INTO platform.users (user_id, email, password_hash, full_name, email_verified, is_active, is_platform_user, created_at, updated_at)
@@ -57,6 +67,25 @@ public sealed class IamAdminWebAppFactory : WebApplicationFactory<Program>, IAsy
                 ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, deleted_at = NULL
                 """,
                 ("id", uid), ("email", email), ("pwd", Password));
+
+        // Super admin: platform-level super_admin (tenant_id NULL) PLUS a tenant_owner membership in the
+        // test tenant so a token can be minted scoped to TenantId. is_super_admin ⇒ may manage the catalog.
+        await Exec(conn,
+            """
+            INSERT INTO platform.user_tenant_roles (user_tenant_role_id, user_id, tenant_id, role_id, is_primary, granted_at)
+            SELECT gen_random_uuid(), @uid, NULL, r.role_id, true, NOW()
+            FROM platform.roles r WHERE r.role_key = 'super_admin' AND r.is_system = true
+            ON CONFLICT DO NOTHING
+            """,
+            ("uid", SuperAdminUserId));
+        await Exec(conn,
+            """
+            INSERT INTO platform.user_tenant_roles (user_tenant_role_id, user_id, tenant_id, role_id, is_primary, granted_at)
+            SELECT gen_random_uuid(), @uid, @tid, r.role_id, false, NOW()
+            FROM platform.roles r WHERE r.role_key = 'tenant_owner' AND r.is_system = true
+            ON CONFLICT DO NOTHING
+            """,
+            ("uid", SuperAdminUserId), ("tid", TenantId));
 
         await Exec(conn,
             """
@@ -99,18 +128,23 @@ public sealed class IamAdminWebAppFactory : WebApplicationFactory<Program>, IAsy
                OR role_id IN (SELECT role_id FROM platform.roles WHERE tenant_id = @tid AND role_key LIKE @dup)
             """,
             ("cr", CustomRoleId), ("tid", TenantId), ("dup", DuplicateKeyPrefix + "%"));
-        await Exec(conn, "DELETE FROM platform.user_permission_overrides WHERE user_id = ANY(@u)",
-            ("u", new[] { OwnerUserId, ViewerUserId, TargetUserId }));
-        await Exec(conn, "DELETE FROM platform.user_tenant_roles WHERE user_id = ANY(@u)",
-            ("u", new[] { OwnerUserId, ViewerUserId, TargetUserId }));
+        // Catalog rows the tests mint (modules + permissions + the action_types they introduce).
+        await Exec(conn, "DELETE FROM platform.permissions WHERE permission_key LIKE @cat", ("cat", CatalogPrefix + "%"));
+        await Exec(conn, "DELETE FROM platform.resource_types WHERE resource_key LIKE @cat", ("cat", CatalogPrefix + "%"));
+        await Exec(conn,
+            "DELETE FROM platform.action_types WHERE action_key LIKE @cat AND NOT EXISTS (SELECT 1 FROM platform.permissions WHERE action = action_types.action_key)",
+            ("cat", CatalogPrefix + "%"));
+
+        var users = new[] { OwnerUserId, ViewerUserId, TargetUserId, SuperAdminUserId };
+        var emails = new[] { OwnerEmail, ViewerEmail, TargetEmail, SuperAdminEmail };
+        await Exec(conn, "DELETE FROM platform.user_permission_overrides WHERE user_id = ANY(@u)", ("u", users));
+        await Exec(conn, "DELETE FROM platform.user_tenant_roles WHERE user_id = ANY(@u)", ("u", users));
         await Exec(conn, "DELETE FROM platform.roles WHERE role_id = @cr OR (tenant_id = @tid AND role_key LIKE @dup)",
             ("cr", CustomRoleId), ("tid", TenantId), ("dup", DuplicateKeyPrefix + "%"));
-        await Exec(conn, "DELETE FROM platform.user_sessions WHERE user_id = ANY(@u)",
-            ("u", new[] { OwnerUserId, ViewerUserId, TargetUserId }));
-        await Exec(conn, "DELETE FROM platform.login_attempts WHERE email = ANY(@e)",
-            ("e", new[] { OwnerEmail, ViewerEmail, TargetEmail }));
+        await Exec(conn, "DELETE FROM platform.user_sessions WHERE user_id = ANY(@u)", ("u", users));
+        await Exec(conn, "DELETE FROM platform.login_attempts WHERE email = ANY(@e)", ("e", emails));
 
-        foreach (var (uid, _) in new[] { (OwnerUserId, OwnerEmail), (ViewerUserId, ViewerEmail), (TargetUserId, TargetEmail) })
+        foreach (var (uid, _) in new[] { (OwnerUserId, OwnerEmail), (ViewerUserId, ViewerEmail), (TargetUserId, TargetEmail), (SuperAdminUserId, SuperAdminEmail) })
             await Exec(conn,
                 "UPDATE platform.users SET deleted_at = NOW(), is_active = false, email = @anon WHERE user_id = @u",
                 ("anon", $"deleted+{uid}@iam.test"), ("u", uid));
