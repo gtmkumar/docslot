@@ -6232,6 +6232,78 @@ ORDER BY wcp.distinct_patients_90d DESC;
 COMMENT ON VIEW docslot.v_suspected_care_partners IS 'Hidden-broker detection: high behalf-booking volume without registration. Targets for the Care Partner conversion nudge.';
 
 -- ============================================================================
+-- HIDDEN-PARTNER NUDGE SWEEP (the conversion funnel job — carrot, not stick)
+-- ============================================================================
+-- Nightly job: (1) recompute the funnel signal on every WhatsApp contact — how many DISTINCT patients this
+-- booker number has booked for in the last 90 days, and whether the number belongs to a REGISTERED broker
+-- (then it's not a "hidden" partner); (2) send the eligible "hidden Care Partners" (≥ p_min_patients distinct
+-- patients, not a registered broker, not nudged within the cooldown) a bilingual "become a Care Partner" nudge
+-- via the outbox + record it (one per cooldown — never nag). SECURITY DEFINER: the maintenance worker is
+-- cross-tenant with no app.tenant_id, so it cannot satisfy the RLS on outbox_messages. Returns nudges sent.
+CREATE OR REPLACE FUNCTION docslot.run_partner_nudge_sweep(
+    p_min_patients INT DEFAULT 3, p_cooldown INTERVAL DEFAULT INTERVAL '30 days')
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+DECLARE
+    v_n INT;
+BEGIN
+    -- 1) Recompute distinct-patients-90d + broker linkage on every contact profile.
+    UPDATE docslot.wa_contact_profiles wcp
+    SET distinct_patients_90d = COALESCE((
+            SELECT COUNT(DISTINCT bk.patient_id)
+            FROM docslot.bookings bk
+            WHERE bk.tenant_id = wcp.tenant_id
+              AND bk.behalf_booker_phone = wcp.phone
+              AND bk.booked_at > NOW() - INTERVAL '90 days'), 0),
+        linked_broker_id = (
+            SELECT br.broker_id FROM commission.brokers br
+            WHERE regexp_replace(br.phone, '[^0-9]', '', 'g') = regexp_replace(wcp.phone, '[^0-9]', '', 'g')
+            LIMIT 1),
+        updated_at = NOW();
+
+    -- 2) Nudge the eligible hidden partners (bilingual; carrot) + record it.
+    WITH eligible AS (
+        SELECT wcp.tenant_id, wcp.phone,
+               COALESCE(wcp.preferred_language, 'en') AS lang,
+               COALESCE(t.display_name, 'our clinic') AS clinic
+        FROM docslot.wa_contact_profiles wcp
+        LEFT JOIN platform.tenants t ON t.tenant_id = wcp.tenant_id
+        WHERE wcp.linked_broker_id IS NULL
+          AND wcp.distinct_patients_90d >= p_min_patients
+          AND (wcp.partner_nudge_sent_at IS NULL OR wcp.partner_nudge_sent_at < NOW() - p_cooldown)
+    ),
+    enqueued AS (
+        INSERT INTO docslot.outbox_messages
+            (outbox_id, tenant_id, message_intent, payload, status, attempt_count, max_attempts, next_retry_at, created_at)
+        SELECT gen_random_uuid(), e.tenant_id, 'partner_nudge',
+            jsonb_build_object('to', e.phone, 'text',
+                CASE WHEN e.lang = 'hi'
+                THEN 'नमस्ते! आप ' || e.clinic || ' में कई मरीज़ों की अपॉइंटमेंट बुक करने में मदद कर रहे हैं। हमारे Care Partner बनें और हर रेफ़रल पर कमाएँ — कोई शुल्क नहीं। अधिक जानने के लिए "PARTNER" लिखें।'
+                ELSE 'Namaste! You''ve been helping several patients book appointments at ' || e.clinic || '. Become a Care Partner and earn on every referral — no fees. Reply "PARTNER" to learn more.'
+                END),
+            'pending', 0, 5, NOW(), NOW()
+        FROM eligible e
+        RETURNING tenant_id, payload->>'to' AS phone
+    ),
+    marked AS (
+        UPDATE docslot.wa_contact_profiles wcp
+        SET partner_nudge_count = partner_nudge_count + 1, partner_nudge_sent_at = NOW(), updated_at = NOW()
+        FROM enqueued en WHERE wcp.tenant_id = en.tenant_id AND wcp.phone = en.phone
+        RETURNING 1
+    )
+    SELECT COUNT(*)::int INTO v_n FROM enqueued;
+    RETURN v_n;
+END;
+$$;
+COMMENT ON FUNCTION docslot.run_partner_nudge_sweep IS
+    'Recompute the hidden-Care-Partner funnel + send eligible numbers a bilingual conversion nudge via the outbox (one per cooldown). SECURITY DEFINER for the RLS-less maintenance worker. Returns nudges sent.';
+
+GRANT EXECUTE ON FUNCTION docslot.run_partner_nudge_sweep(INT, INTERVAL) TO docslot_app;
+
+-- ============================================================================
 -- END OF CHAT IDENTITY SCHEMA
 -- ============================================================================
 -- New tables: 2 (docslot.wa_contact_profiles, docslot.booking_consent_otps)  → platform total: 114 tables

@@ -297,3 +297,15 @@ public sealed record ConsentOtpInsert(
 public sealed record PendingConsentOtp(
     Guid ConsentOtpId, Guid BookingId, string PatientPhone, string BookerPhone, string Relation,
     string CodeSalt, string CodeHash, short Attempts, short MaxAttempts, DateTime ExpiresAt);
+
+/// <summary>
+/// The hidden-Care-Partner conversion sweep (nightly). Recomputes the behalf-booking funnel (distinct patients
+/// per booker in 90d + broker linkage) and sends eligible "hidden partner" numbers a bilingual "become a Care
+/// Partner" nudge via the outbox — at most one per cooldown (carrot, not spam). Backed by the SECURITY DEFINER
+/// fn <c>docslot.run_partner_nudge_sweep</c> (cross-tenant; the worker has no per-tenant RLS scope). Returns
+/// the number of nudges sent.
+/// </summary>
+public interface IPartnerNudgeStore
+{
+    Task<int> RunSweepAsync(int minDistinctPatients, TimeSpan cooldown, CancellationToken ct);
+}

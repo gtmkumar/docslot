@@ -117,6 +117,7 @@ public static class InfrastructureRegistration
 
         // Behalf-booking patient OTP consent (DPDP). Store = infra; service = application orchestration.
         services.AddScoped<IConsentOtpStore, Docslot.WhatsApp.ConsentOtpStore>();
+        services.AddScoped<IPartnerNudgeStore, Docslot.WhatsApp.PartnerNudgeStore>();
         services.AddScoped<IPatientConsentService, Application.Features.Docslot.WhatsApp.PatientConsentService>();
 
         // WhatsApp OUTBOUND drain: the store claims/transitions docslot.outbox_messages; the sender delivers.
