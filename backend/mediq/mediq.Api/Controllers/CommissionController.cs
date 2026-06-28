@@ -106,6 +106,18 @@ public sealed class CommissionController(
     public async Task<ActionResult<AttributionResultDto>> CreateAttribution([FromBody] CreateAttributionRequest request, CancellationToken ct)
         => Ok(await commands.Send(new CreateAttributionCommand(RequireTenant(), request), ct));
 
+    /// <summary>
+    /// File a POST-HOC broker-attribution claim for a booking: mints a 'post_hoc_claim' attribution (pending,
+    /// no money earns yet) and sends the patient an OTP to confirm/deny via WhatsApp. On confirm the attribution
+    /// earns; on deny / no-response within 24h it reverses. Gated by the dedicated <c>commission.attribution.claim</c>
+    /// write permission. The discount↔attribution DB trigger rejects a discounted booking (→ 422).
+    /// </summary>
+    [HttpPost("bookings/{bookingId:guid}/claim-attribution")]
+    [RequirePermission("commission.attribution.claim")]
+    [ProducesResponseType<ClaimAttributionResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ClaimAttributionResult>> ClaimAttribution(Guid bookingId, [FromBody] ClaimAttributionRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new PostHocClaimCommand(RequireTenant(), bookingId, request.BrokerId, request.ClaimedRelation), ct));
+
     /// <summary>Attribution ledger (most recent first). Patient identity is a first name + masked phone only (DPDP).</summary>
     [HttpGet("attributions")]
     [RequirePermission("commission.attribution.read")]

@@ -76,7 +76,26 @@ public interface IAttributionRepository
     /// Returns the SharedDataModel list DTO directly (masking applied at the infra seam).
     /// </summary>
     Task<IReadOnlyList<SharedDataModel.Docslot.Commission.AttributionListItemDto>> ListByTenantAsync(Guid tenantId, int skip, int take, CancellationToken ct);
+
+    /// <summary>
+    /// Patient confirmed a post-hoc claim (OTP) → flip the attribution's verification 'pending' → 'patient_confirmed'
+    /// (+ verified_at). Returns true if it flipped (idempotent: a non-pending attribution returns false). Earning
+    /// is then handled by <see cref="MarkEarnedForBookingAsync"/> once/if the booking is completed.
+    /// </summary>
+    Task<bool> MarkPatientConfirmedAsync(Guid attributionId, Guid tenantId, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>Patient declined a post-hoc claim → flip verification 'pending' → 'patient_denied' (+ verified_at). Reversal is separate (<see cref="ReverseOneAsync"/>).</summary>
+    Task MarkPatientDeniedAsync(Guid attributionId, Guid tenantId, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>True if the booking is in a completed state (drives earn-on-confirm for post-hoc claims filed after the visit).</summary>
+    Task<bool> IsBookingCompletedAsync(Guid bookingId, Guid tenantId, CancellationToken ct);
+
+    /// <summary>Patient phone + preferred language for a booking, to address + render a claim OTP. Null if the booking is not in this tenant.</summary>
+    Task<BookingPatientContact?> GetBookingPatientContactAsync(Guid bookingId, Guid tenantId, CancellationToken ct);
 }
+
+/// <summary>Minimal patient contact for OTP delivery (phone is PHI; resolved only for the referral-claim purpose).</summary>
+public sealed record BookingPatientContact(string Phone, string PreferredLanguage);
 
 public sealed record BookingValue(decimal AmountInr, decimal DirectDiscountInr, string? ServiceType, Guid PatientId);
 
@@ -186,4 +205,89 @@ public interface ICommissionLifecycleService
 {
     Task OnBookingCompletedAsync(Guid tenantId, Guid bookingId, DateTime nowUtc, CancellationToken ct);
     Task OnBookingReversedAsync(Guid tenantId, Guid bookingId, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>
+    /// A post-hoc claim's patient just CONFIRMED (verification → patient_confirmed). Because such claims are
+    /// usually filed AFTER the visit, the booking-completed event already fired before the attribution existed —
+    /// so if the booking is already completed, earn the attribution now (+ wallet + event); otherwise it stays
+    /// 'pending' and the eventual completion earns it.
+    /// </summary>
+    Task OnAttributionConfirmedAsync(Guid tenantId, Guid bookingId, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>
+    /// A post-hoc claim was REJECTED (patient denied, or no response on lapse) → reverse that single attribution
+    /// (commission_status → reversed) + debit the broker wallet from its current bucket (+ lifetime_reversed) +
+    /// emit <c>commission.commission.reversed</c>. Closes the phantom-pending_inr gap for the in-request deny path
+    /// (the no-response lapse is handled by the SECURITY DEFINER sweep <c>commission.expire_stale_attribution_claims</c>).
+    /// </summary>
+    Task OnAttributionRejectedAsync(Guid tenantId, Guid attributionId, Guid bookingId, string reason, DateTime nowUtc, CancellationToken ct);
 }
+
+// ============================================================================
+// Post-hoc broker-attribution claim (patient OTP confirm/deny)
+// ============================================================================
+
+/// <summary>
+/// Orchestrates the post-hoc attribution-claim OTP flow. A broker claims a (usually completed) booking and we
+/// mint a 'post_hoc_claim' attribution in verification 'pending', then send a one-time code to the PATIENT's
+/// WhatsApp number. The patient's reply confirms (→ patient_confirmed → earns) or declines (→ patient_denied →
+/// reversed). Mirrors <see cref="IPatientConsentService"/> but over <c>commission.attribution_claim_otps</c>.
+/// Runs inside the request/inbound tenant-scoped UoW so the attribution, OTP row, outbox and wallet all commit
+/// together.
+/// </summary>
+public interface IPostHocClaimService
+{
+    /// <summary>
+    /// Mints the pending attribution (via the attribution engine; the discount-exclusivity trigger rejects a
+    /// discounted booking → 422) and sends a claim OTP to the patient. Throws if the patient already has a live
+    /// consent OTP (so the patient's YES/NO can never resolve the wrong action). Returns the new attribution id.
+    /// </summary>
+    Task<Guid> SendForClaimAsync(ClaimSendRequest request, CancellationToken ct);
+
+    /// <summary>
+    /// If <paramref name="fromPhone"/> has a pending CLAIM OTP in this tenant, interpret <paramref name="body"/>
+    /// as the code (or a decline) and resolve it — confirming the attribution (→ patient_confirmed, earns if the
+    /// booking is completed) or denying it (→ patient_denied, reversed). Returns null when there is NO pending
+    /// claim for this number (the caller then runs the next handler).
+    /// </summary>
+    Task<ClaimVerifyResult?> TryVerifyReplyAsync(Guid tenantId, string fromPhone, string body, string lang, DateTime nowUtc, CancellationToken ct);
+}
+
+public sealed record ClaimSendRequest(
+    Guid TenantId, Guid BookingId, Guid BrokerId, string PatientPhone, string? BrokerPhone,
+    string? ClaimedRelation, string TenantName, string? BrokerName, string? ServiceType, string Lang, DateTime NowUtc);
+
+public enum ClaimOutcome { Confirmed, Denied, WrongCode, Expired }
+
+public sealed record ClaimVerifyResult(ClaimOutcome Outcome, string OutboundText, Guid AttributionId, Guid BookingId);
+
+/// <summary>Persistence over <c>commission.attribution_claim_otps</c> (tenant-isolated by RLS). Mirrors <see cref="IConsentOtpStore"/>.</summary>
+public interface IAttributionClaimOtpStore
+{
+    /// <summary>Expire any existing 'pending' claim for (tenant, patientPhone) so a newer claim supersedes it.</summary>
+    Task ExpireExistingPendingAsync(Guid tenantId, string patientPhone, DateTime nowUtc, CancellationToken ct);
+
+    Task CreateAsync(ClaimOtpInsert row, CancellationToken ct);
+
+    /// <summary>The single live (pending) claim for this number in this tenant, or null.</summary>
+    Task<PendingClaimOtp?> GetPendingByPhoneAsync(Guid tenantId, string patientPhone, DateTime nowUtc, CancellationToken ct);
+
+    Task SetStatusAsync(Guid claimOtpId, string status, DateTime? verifiedAtUtc, CancellationToken ct);
+
+    Task IncrementAttemptsAsync(Guid claimOtpId, CancellationToken ct);
+
+    /// <summary>
+    /// Sweeps lapsed pending claim OTPs: marks them 'expired', sets the attribution to no_response, reverses it
+    /// and debits the broker wallet. Backed by the SECURITY DEFINER fn <c>commission.expire_stale_attribution_claims</c>
+    /// (cross-tenant). Returns the number of claims lapsed.
+    /// </summary>
+    Task<int> ExpireStaleAsync(CancellationToken ct);
+}
+
+public sealed record ClaimOtpInsert(
+    Guid TenantId, Guid AttributionId, Guid BookingId, Guid BrokerId, string PatientPhone, string? BrokerPhone,
+    string? ClaimedRelation, string CodeSalt, string CodeHash, DateTime ExpiresAt, DateTime NowUtc);
+
+public sealed record PendingClaimOtp(
+    Guid ClaimOtpId, Guid AttributionId, Guid BookingId, Guid BrokerId, string PatientPhone,
+    string CodeSalt, string CodeHash, short Attempts, short MaxAttempts, DateTime ExpiresAt);

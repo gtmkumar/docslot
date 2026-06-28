@@ -70,6 +70,13 @@ public sealed class BookingMaintenanceWorker(
         if (expired > 0)
             logger.LogInformation("BookingMaintenance: expired {Count} stale consent OTPs (bookings cancelled).", expired);
 
+        // Lapse post-hoc attribution claims with no patient response within the TTL → verification 'no_response'
+        // + reverse the attribution + debit the broker wallet (closes the phantom-pending_inr gap).
+        var claims = scope.ServiceProvider.GetRequiredService<IAttributionClaimOtpStore>();
+        var lapsedClaims = await claims.ExpireStaleAsync(ct);
+        if (lapsedClaims > 0)
+            logger.LogInformation("BookingMaintenance: lapsed {Count} unanswered attribution claims (reversed).", lapsedClaims);
+
         // Commission settlement: earned attributions past the window → ready_to_pay (so a refund within the
         // window can still reverse before the money is locked into a payout batch).
         var settleWindow = TimeSpan.FromHours(Math.Max(0, config.GetValue("Commission:SettlementWindowHours", 24)));

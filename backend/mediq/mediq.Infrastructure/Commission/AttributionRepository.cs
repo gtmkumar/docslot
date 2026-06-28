@@ -87,7 +87,9 @@ public sealed class AttributionRepository(PlatformDbContext db) : IAttributionRe
                 FROM commission.attributions
                 WHERE broker_id = @p0 AND tenant_id = @p1
                   AND (attributed_at AT TIME ZONE 'Asia/Kolkata') >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-                  AND commission_status <> 'rejected'
+                  -- A reversed/rejected attribution earned nothing → it must not consume the broker's monthly
+                  -- cap base (auditor F2; otherwise a denied/no-response post-hoc claim shrinks future headroom).
+                  AND commission_status NOT IN ('rejected', 'reversed')
                 """,
                 P(("@p0", brokerId), ("@p1", tenantId)))
             .FirstAsync(ct);
@@ -167,6 +169,56 @@ public sealed class AttributionRepository(PlatformDbContext db) : IAttributionRe
         var r = rows.FirstOrDefault();
         return r is null ? null : new ReversedAttribution(r.BrokerId, r.Amount, r.FromStatus);
     }
+
+    public async Task<bool> MarkPatientConfirmedAsync(Guid attributionId, Guid tenantId, DateTime now, CancellationToken ct)
+    {
+        // Idempotent: only a still-'pending' verification flips. RLS-scoped by tenant (runs in the inbound UoW).
+        var n = await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE commission.attributions
+            SET verification_status='patient_confirmed', verified_at=@p2, updated_at=@p2
+            WHERE attribution_id=@p0 AND tenant_id=@p1 AND verification_status='pending'
+            """,
+            P(("@p0", attributionId), ("@p1", tenantId), ("@p2", now)));
+        return n > 0;
+    }
+
+    public Task MarkPatientDeniedAsync(Guid attributionId, Guid tenantId, DateTime now, CancellationToken ct) =>
+        db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE commission.attributions
+            SET verification_status='patient_denied', verified_at=@p2, updated_at=@p2
+            WHERE attribution_id=@p0 AND tenant_id=@p1 AND verification_status='pending'
+            """,
+            P(("@p0", attributionId), ("@p1", tenantId), ("@p2", now)));
+
+    public async Task<bool> IsBookingCompletedAsync(Guid bookingId, Guid tenantId, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<bool>(
+                "SELECT (status = 'completed') AS \"Value\" FROM docslot.bookings WHERE booking_id=@p0 AND tenant_id=@p1",
+                P(("@p0", bookingId), ("@p1", tenantId)))
+            .ToListAsync(ct);
+        return rows.FirstOrDefault();
+    }
+
+    public async Task<BookingPatientContact?> GetBookingPatientContactAsync(Guid bookingId, Guid tenantId, CancellationToken ct)
+    {
+        // Booking is tenant-scoped (RLS); patients is the global cross-tenant identity (phone). Purpose-of-use:
+        // referral-attribution claim — the phone leaves this seam only to address the patient's own OTP.
+        var rows = await db.Database.SqlQueryRaw<ContactRow>(
+                """
+                SELECT p.phone_number AS "Phone", COALESCE(p.preferred_language, 'en') AS "PreferredLanguage"
+                FROM docslot.bookings b
+                JOIN docslot.patients p ON p.patient_id = b.patient_id
+                WHERE b.booking_id = @p0 AND b.tenant_id = @p1
+                """,
+                P(("@p0", bookingId), ("@p1", tenantId)))
+            .ToListAsync(ct);
+        var r = rows.FirstOrDefault();
+        return r is null ? null : new BookingPatientContact(r.Phone, r.PreferredLanguage);
+    }
+
+    private sealed record ContactRow(string Phone, string PreferredLanguage);
 
     public Task WriteDirectDiscountAsync(Guid bookingId, Guid tenantId, decimal discountInr, Guid ruleId, DateTime now, CancellationToken ct) =>
         // Runs in the booking-creation UoW (app.tenant_id set) → bookings RLS allows own-tenant. The discount

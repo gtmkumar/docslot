@@ -1231,20 +1231,21 @@ SECURITY DEFINER
 SET search_path = docslot, pg_temp
 AS $$
 BEGIN
-    -- Mark delivered AND scrub the message body for consent OTPs so the live code does not linger in the
-    -- queue after delivery (DPDP — the code is a one-time secret; the consent row keeps only a salted hash).
+    -- Mark delivered AND scrub the message body for one-time-code intents (consent + attribution-claim OTPs)
+    -- so the live code does not linger in the queue after delivery (DPDP — the code is a one-time secret; the
+    -- OTP row keeps only a salted hash).
     UPDATE docslot.outbox_messages
     SET status = 'sent',
         sent_at = p_now,
         whatsapp_message_id = p_provider_id,
         last_error = NULL,
-        payload = CASE WHEN message_intent = 'consent_otp'
+        payload = CASE WHEN message_intent IN ('consent_otp', 'claim_otp')
                        THEN jsonb_set(payload, '{text}', '"[redacted after send]"'::jsonb)
                        ELSE payload END
     WHERE outbox_id = p_outbox_id;
 END;
 $$;
-COMMENT ON FUNCTION docslot.mark_outbox_sent IS 'Mark an outbox row sent (scrubs the consent-OTP body post-delivery). SECURITY DEFINER for the RLS-less drain worker.';
+COMMENT ON FUNCTION docslot.mark_outbox_sent IS 'Mark an outbox row sent (scrubs consent-OTP + claim-OTP bodies post-delivery). SECURITY DEFINER for the RLS-less drain worker.';
 
 CREATE OR REPLACE FUNCTION docslot.mark_outbox_failed(p_outbox_id UUID, p_error TEXT, p_next_retry_at TIMESTAMPTZ)
 RETURNS VOID
@@ -1254,20 +1255,21 @@ SET search_path = docslot, pg_temp
 AS $$
 BEGIN
     -- Increment attempt; terminal 'abandoned' at max_attempts, else back to 'pending' with the backoff. On
-    -- TERMINAL abandon, scrub the consent-OTP body so the one-time code doesn't linger in a dead-lettered row
-    -- (auditor F4). A retry (→pending) must KEEP the real text — it is the message still being delivered.
+    -- TERMINAL abandon, scrub the one-time-code body (consent + attribution-claim OTPs) so the code doesn't
+    -- linger in a dead-lettered row (auditor F4). A retry (→pending) must KEEP the real text — it is the
+    -- message still being delivered.
     UPDATE docslot.outbox_messages
     SET attempt_count = attempt_count + 1,
         last_error = p_error,
         status = CASE WHEN attempt_count + 1 >= max_attempts THEN 'abandoned' ELSE 'pending' END,
         next_retry_at = CASE WHEN attempt_count + 1 >= max_attempts THEN next_retry_at ELSE p_next_retry_at END,
-        payload = CASE WHEN attempt_count + 1 >= max_attempts AND message_intent = 'consent_otp'
+        payload = CASE WHEN attempt_count + 1 >= max_attempts AND message_intent IN ('consent_otp', 'claim_otp')
                        THEN jsonb_set(payload, '{text}', '"[redacted after send]"'::jsonb)
                        ELSE payload END
     WHERE outbox_id = p_outbox_id;
 END;
 $$;
-COMMENT ON FUNCTION docslot.mark_outbox_failed IS 'Record a failed outbox send (retry/backoff or abandon; scrubs consent-OTP body on terminal abandon). SECURITY DEFINER for the RLS-less drain worker.';
+COMMENT ON FUNCTION docslot.mark_outbox_failed IS 'Record a failed outbox send (retry/backoff or abandon; scrubs consent-OTP + claim-OTP body on terminal abandon). SECURITY DEFINER for the RLS-less drain worker.';
 
 -- ============================================================================
 -- END OF DOCSLOT SCHEMA

@@ -16,7 +16,7 @@ public static class WhatsAppTemplates
     public const string En = "en";
     public const string Hi = "hi";
 
-    private static bool IsHi(string? lang) => string.Equals(lang, Hi, StringComparison.OrdinalIgnoreCase);
+    public static bool IsHi(string? lang) => string.Equals(lang, Hi, StringComparison.OrdinalIgnoreCase);
 
     public static string Greeting(string lang, string tenantName) => IsHi(lang)
         ? $"नमस्ते! {tenantName} में आपका स्वागत है। मैं आपको डॉक्टर की अपॉइंटमेंट बुक करने में मदद कर सकता/सकती हूँ।\n\n" +
@@ -144,6 +144,32 @@ public static class WhatsAppTemplates
     public static string ConsentWrongCode(string lang, int attemptsRemaining) => IsHi(lang)
         ? $"वह कोड मेल नहीं खाया। कृपया दोबारा प्रयास करें ({attemptsRemaining} प्रयास शेष)। रद्द करने के लिए NO लिखें।"
         : $"That code didn't match. Please try again ({attemptsRemaining} attempts left). Reply NO to cancel.";
+
+    // ---- post-hoc attribution claim (broker referral confirmation) -----------------------------------
+
+    public static string ClaimRequest(string lang, string tenantName, string brokerLabel, string code) => IsHi(lang)
+        ? $"नमस्ते! {tenantName} में आपकी हाल की अपॉइंटमेंट के बारे में: क्या *{brokerLabel}* ने आपको हमारे पास भेजा था?\n\n" +
+          $"यदि हाँ, तो पुष्टि के लिए यह कोड भेजें: *{code}*\n" +
+          "यदि नहीं, तो NO लिखें। (इससे आपकी अपॉइंटमेंट पर कोई असर नहीं पड़ेगा।)"
+        : $"Namaste! About your recent appointment at {tenantName}: did *{brokerLabel}* refer you to us?\n\n" +
+          $"If yes, reply with this code to confirm: *{code}*\n" +
+          "If not, reply NO. (This does not affect your appointment in any way.)";
+
+    public static string ClaimConfirmed(string lang) => IsHi(lang)
+        ? "धन्यवाद! आपकी पुष्टि दर्ज कर ली गई है। ✅"
+        : "Thank you! Your confirmation has been recorded. ✅";
+
+    public static string ClaimDenied(string lang) => IsHi(lang)
+        ? "ठीक है, धन्यवाद। हमने वह रेफ़रल दावा रद्द कर दिया है। आपकी अपॉइंटमेंट पर कोई असर नहीं पड़ा।"
+        : "Okay, thank you. We've dismissed that referral claim. Your appointment is unaffected.";
+
+    public static string ClaimExpired(string lang) => IsHi(lang)
+        ? "यह रेफ़रल पुष्टि अनुरोध समाप्त हो गया है। किसी कार्रवाई की आवश्यकता नहीं है।"
+        : "That referral confirmation request has expired. No action is needed.";
+
+    public static string ClaimWrongCode(string lang, int attemptsRemaining) => IsHi(lang)
+        ? $"वह कोड मेल नहीं खाया। कृपया दोबारा प्रयास करें ({attemptsRemaining} प्रयास शेष)। अस्वीकार करने के लिए NO लिखें।"
+        : $"That code didn't match. Please try again ({attemptsRemaining} attempts left). Reply NO to dismiss.";
 
     // ---- generic --------------------------------------------------------------------------------------
 

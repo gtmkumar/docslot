@@ -26,6 +26,7 @@ public sealed class ProcessInboundWhatsAppMessageCommandHandler(
     IWhatsAppCatalogReadService catalog,
     IOutboxMessageEnqueuer outbox,
     IPatientConsentService consent,
+    IPostHocClaimService claims,
     ICommandDispatcher commands,
     IAmbientIdempotencyKey ambientIdempotencyKey,
     ICurrentUserContext ctx,
@@ -65,7 +66,9 @@ public sealed class ProcessInboundWhatsAppMessageCommandHandler(
             "inbound", command.MessageType, reply, Status: "received", now), ct);
 
         // 4) Consent-reply interception: if THIS number has a pending behalf-consent OTP, the message is the
-        // patient's approval/decline — resolve it and short-circuit the normal booking state machine.
+        // patient's approval/decline — resolve it and short-circuit the normal booking state machine. Consent
+        // is checked FIRST (it gates a live booking); the cross-table single-live-OTP guard on the claim send
+        // ensures a patient never has BOTH pending at once, so this ordering is unambiguous.
         var consentResult = await consent.TryVerifyReplyAsync(tenantId, phone, reply, lang, now, ct);
         if (consentResult is not null)
         {
@@ -73,6 +76,17 @@ public sealed class ProcessInboundWhatsAppMessageCommandHandler(
             return new ProcessInboundResult(
                 Skipped: false, NewStep: ConversationSteps.Done, OutboundText: consentResult.OutboundText,
                 BookingId: consentResult.BookingId, BookingNumber: null);
+        }
+
+        // 4b) Post-hoc attribution-claim reply: if THIS number has a pending claim OTP, the message confirms or
+        // declines the broker's referral claim — resolve it (earn / reverse) and short-circuit.
+        var claimResult = await claims.TryVerifyReplyAsync(tenantId, phone, reply, lang, now, ct);
+        if (claimResult is not null)
+        {
+            await EnqueueAndLogAsync(tenantId, patientId: null, "claim_reply", phone, claimResult.OutboundText, now, ct);
+            return new ProcessInboundResult(
+                Skipped: false, NewStep: ConversationSteps.Done, OutboundText: claimResult.OutboundText,
+                BookingId: claimResult.BookingId, BookingNumber: null);
         }
 
         // 5) Advance the booking state machine → produce the next outbound text (and, on confirm, a booking).
