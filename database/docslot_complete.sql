@@ -2496,7 +2496,7 @@ BEGIN
     FROM due
     WHERE o.outbox_id = due.outbox_id
     RETURNING o.outbox_id, o.tenant_id, o.patient_id, o.message_intent::text,
-              o.payload->>'to', o.payload->>'text', o.correlation_id,
+              o.payload->>'to', o.payload->>'text', o.correlation_id::text,
               o.attempt_count::int, o.max_attempts::int;
 END;
 $$;

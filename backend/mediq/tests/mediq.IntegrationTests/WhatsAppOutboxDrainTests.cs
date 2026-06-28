@@ -1,3 +1,7 @@
+using mediq.Application.Abstractions;
+using mediq.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace mediq.IntegrationTests;
@@ -60,5 +64,47 @@ public sealed class WhatsAppOutboxDrainAbandonTests(WhatsAppOutboxWebAppFactory 
         Assert.Equal("abandoned", afterSecond.Status);
         Assert.Equal(2, afterSecond.AttemptCount);
         Assert.Null(afterSecond.WhatsAppMessageId);
+    }
+}
+
+/// <summary>
+/// Regression for SQLSTATE 42804 ("structure of query does not match function result type") that crashed
+/// every <c>OutboxDrainWorker</c> tick: <c>docslot.claim_due_outbox</c> declared
+/// <c>RETURNS TABLE(... correlation_id text ...)</c> but returned the <c>varchar</c> <c>correlation_id</c>
+/// un-cast, which PostgreSQL's strict result-structure check rejects at that position.
+/// <para>
+/// The drain tests above deliberately use a test-scoped single-row claim that BYPASSES the definer function,
+/// so they never exercised its <c>RETURNS TABLE</c> projection — that's how a 100%-green suite hid a worker
+/// that was dead on every tick. This test drives the REAL <see cref="IOutboxDrainStore.ClaimDueAsync"/>
+/// (→ <c>docslot.claim_due_outbox</c>) so the bug cannot silently return. It runs inside an EF transaction
+/// that is rolled back, so flipping due rows to 'processing' (the function claims cross-tenant) leaves no
+/// trace for parallel tests.
+/// </para>
+/// </summary>
+public sealed class WhatsAppOutboxClaimDueFunctionTests(WhatsAppOutboxWebAppFactory factory)
+    : IClassFixture<WhatsAppOutboxWebAppFactory>
+{
+    [Fact]
+    public async Task ClaimDue_DefinerFunction_Projects_Varchar_CorrelationId_Without_TypeMismatch()
+    {
+        _ = factory.CreateClient();
+        var correlationId = Guid.NewGuid().ToString();
+        var outboxId = await factory.EnqueuePendingAsync(
+            "919876500003", "Regression: claim_due_outbox RETURNS TABLE projection.", correlationId: correlationId);
+
+        using var scope = factory.Services.CreateScope();
+        // Same scope → the store and this DbContext share one connection, so the store's claim query enlists
+        // in the transaction we begin here and is undone by the rollback.
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var store = scope.ServiceProvider.GetRequiredService<IOutboxDrainStore>();
+
+        await using var tx = await db.Database.BeginTransactionAsync();
+        // If correlation_id were returned un-cast (varchar → text-typed column), this throws PostgresException 42804.
+        var claimed = await store.ClaimDueAsync(batchSize: 1000, DateTime.UtcNow, default);
+        await tx.RollbackAsync();   // discard the cross-tenant 'processing' flip — no side effects
+
+        var mine = claimed.SingleOrDefault(m => m.OutboxId == outboxId);
+        Assert.NotNull(mine);                              // the definer function returned our enqueued row
+        Assert.Equal(correlationId, mine!.CorrelationId);  // the varchar value projects through intact
     }
 }
