@@ -141,6 +141,9 @@ public static class InfrastructureRegistration
         services.AddScoped<IBrokerIdentityResolver, Commission.BrokerIdentityResolver>();
         services.AddScoped<ICommissionLifecycleService, Application.Features.Commission.CommissionLifecycleService>();
         services.AddScoped<IDirectDiscountService, Application.Features.Commission.DirectDiscountService>();
+        // Post-hoc attribution claim (patient OTP confirm/deny) — store + orchestrator.
+        services.AddScoped<IAttributionClaimOtpStore, Commission.AttributionClaimOtpStore>();
+        services.AddScoped<IPostHocClaimService, Application.Features.Commission.PostHocClaimService>();
         // Payout rail: dev = honest dry-run stub. A real adapter (RazorpayX/Cashfree) is selected by config
         // when credentials are present (same pattern as the WhatsApp sender) — not wired until then.
         services.AddScoped<IPayoutGateway, Commission.StubPayoutGateway>();

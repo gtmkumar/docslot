@@ -57,6 +57,12 @@ public sealed record AttributionResultDto(
     Guid AttributionId, Guid BookingId, Guid BrokerId, string AttributionSource, string VerificationStatus,
     string CommissionStatus, decimal? CommissionAmountInr, decimal FraudScore, IReadOnlyList<string> FraudFlags);
 
+/// <summary>Body for POST /commission/bookings/{bookingId}/claim-attribution — the broker filing a post-hoc claim.</summary>
+public sealed record ClaimAttributionRequest(Guid BrokerId, string? ClaimedRelation);
+
+/// <summary>Result of filing a post-hoc claim: the pending attribution id + status ('otp_sent').</summary>
+public sealed record ClaimAttributionResult(Guid AttributionId, string Status);
+
 // ---- Payouts -------------------------------------------------------------------------------------
 
 public sealed record CreatePayoutBatchRequest(Guid BrokerId, DateOnly PeriodStart, DateOnly PeriodEnd);

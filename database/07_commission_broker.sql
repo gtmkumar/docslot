@@ -682,6 +682,7 @@ BEGIN
     -- Attribution
     ('commission.attribution.read', commission_product_id, 'attributions', 'read', 'tenant', 'View attribution ledger', false),
     ('commission.attribution.override', commission_product_id, 'attributions', 'update', 'tenant', 'Manual override of attribution (audited)', true),
+    ('commission.attribution.claim', commission_product_id, 'attributions', 'create', 'tenant', 'File a post-hoc broker attribution claim (patient confirms via OTP before it can earn)', false),
 
     -- Payouts (financial — requires elevated permission)
     ('commission.payouts.read', commission_product_id, 'payouts', 'read', 'tenant', 'View payout history', false),
@@ -842,6 +843,115 @@ COMMENT ON FUNCTION commission.settle_earned_attributions IS
     'Settle earned attributions past the window to ready_to_pay + move broker wallet earned→ready_to_pay. SECURITY DEFINER for the RLS-less settlement worker. Returns attributions settled.';
 
 GRANT EXECUTE ON FUNCTION commission.settle_earned_attributions(INTERVAL) TO docslot_app;
+
+-- ============================================================================
+-- POST-HOC ATTRIBUTION CLAIM OTPs (Phase 2 — organic attribution path: post-hoc claim)
+-- ============================================================================
+-- A broker can claim a (usually already-completed) booking — "I referred this patient" — AFTER the fact. The
+-- claim mints a 'post_hoc_claim' attribution in verification_status='pending' (CreateAttributionCommand) and a
+-- one-time code is sent to the PATIENT's WhatsApp number. The patient's reply confirms (→ patient_confirmed →
+-- the attribution earns) or declines (→ patient_denied → reversed). Unanswered claims lapse to 'no_response'
+-- and are reversed by the sweep below. This table is SEPARATE from docslot.booking_consent_otps so a behalf-
+-- consent OTP and a claim OTP on the same patient phone never collide on the one-live-OTP-per-(tenant,phone)
+-- scope. The code is NEVER stored in plaintext — only a per-row salted SHA-256 digest; verification is
+-- attempt-limited; tenant_id + RLS keep one tenant's pending claims invisible to another.
+CREATE TABLE commission.attribution_claim_otps (
+    claim_otp_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    attribution_id      UUID NOT NULL REFERENCES commission.attributions(attribution_id) ON DELETE CASCADE,
+    booking_id          UUID NOT NULL REFERENCES docslot.bookings(booking_id) ON DELETE CASCADE,
+    broker_id           UUID NOT NULL REFERENCES commission.brokers(broker_id) ON DELETE CASCADE,
+    patient_phone       VARCHAR(15) NOT NULL,                  -- the number that must confirm the referral
+    broker_phone        VARCHAR(15),                           -- the claiming broker's number (for the message)
+    claimed_relation    VARCHAR(20),                           -- optional broker-stated context
+    code_salt           TEXT NOT NULL,                         -- per-row random salt (base64)
+    code_hash           TEXT NOT NULL,                         -- base64( sha256(salt || code) ) — never plaintext
+    status              VARCHAR(15) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'denied', 'expired', 'failed')),
+    attempts            SMALLINT NOT NULL DEFAULT 0,
+    max_attempts        SMALLINT NOT NULL DEFAULT 5,
+    expires_at          TIMESTAMPTZ NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    verified_at         TIMESTAMPTZ
+);
+
+-- One live (pending) claim per patient number per tenant — a newer claim supersedes the old (rare).
+CREATE UNIQUE INDEX idx_claim_otps_one_pending ON commission.attribution_claim_otps(tenant_id, patient_phone)
+    WHERE status = 'pending';
+CREATE INDEX idx_claim_otps_attribution ON commission.attribution_claim_otps(attribution_id);
+CREATE INDEX idx_claim_otps_expiry ON commission.attribution_claim_otps(expires_at) WHERE status = 'pending';
+
+-- RLS: tenant isolation, mirroring the commission money tables + booking_consent_otps. The patient's reply is
+-- processed in a tenant-scoped UoW (app.tenant_id from the webhook's phone_number_id → tenant map), so a
+-- pending claim is only ever visible to its own tenant. No super_admin god-flag bypass (patient phone is PHI).
+ALTER TABLE commission.attribution_claim_otps ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_attribution_claim_otps ON commission.attribution_claim_otps
+    FOR ALL USING (tenant_id = platform.current_tenant_id() OR tenant_id = platform.current_impersonated_tenant());
+
+COMMENT ON TABLE commission.attribution_claim_otps IS 'Post-hoc broker-attribution claim OTPs. Salted-hash codes, attempt-limited, tenant-isolated by RLS. Separate from booking_consent_otps to avoid one-live-OTP collisions. Unanswered claims lapse to no_response and reverse the attribution.';
+
+-- Sweep: lapse pending claims past expiry → mark the OTP 'expired', set the attribution verification to
+-- 'no_response', reverse it (commission_status='reversed'), and debit the broker wallet from the bucket the
+-- attribution was sitting in (+ lifetime_reversed) — mirroring IBrokerWalletRepository.ApplyReversedAsync so
+-- the no-response path and the synchronous patient-deny path produce identical wallet effects. Closes the
+-- phantom-pending_inr gap (a no-response claim must not leave commission credited). SECURITY DEFINER: the
+-- maintenance worker is cross-tenant with no app.tenant_id, so it cannot satisfy RLS. Returns claims lapsed.
+CREATE OR REPLACE FUNCTION commission.expire_stale_attribution_claims()
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = commission, pg_temp
+AS $$
+DECLARE
+    v_n INT;
+BEGIN
+    WITH expired_claims AS (
+        UPDATE commission.attribution_claim_otps c
+        SET status = 'expired', verified_at = NOW()
+        WHERE c.status = 'pending' AND c.expires_at < NOW()
+        RETURNING c.attribution_id
+    ),
+    -- Capture each attribution's CURRENT bucket BEFORE flipping it (so the wallet debit hits the right bucket).
+    -- Filter out already-terminal rows so a concurrent deny/reverse can't be double-debited (idempotent).
+    to_reverse AS (
+        SELECT a.attribution_id, a.broker_id, COALESCE(a.commission_amount_inr, 0) AS amt, a.commission_status AS prev
+        FROM commission.attributions a
+        JOIN expired_claims e ON e.attribution_id = a.attribution_id
+        WHERE a.commission_status IN ('pending', 'earned', 'ready_to_pay')   -- never reverse a 'paid' or already-'reversed' one
+    ),
+    reversed AS (
+        UPDATE commission.attributions a
+        SET verification_status = 'no_response', commission_status = 'reversed', updated_at = NOW()
+        FROM to_reverse t WHERE a.attribution_id = t.attribution_id
+        RETURNING t.broker_id, t.amt, t.prev
+    ),
+    -- One row per broker; conditional per-bucket sums so a broker with claims in >1 bucket still debits correctly.
+    wallet_moves AS (
+        SELECT broker_id,
+               SUM(CASE WHEN prev = 'pending'      THEN amt ELSE 0 END) AS pending_amt,
+               SUM(CASE WHEN prev = 'earned'       THEN amt ELSE 0 END) AS earned_amt,
+               SUM(CASE WHEN prev = 'ready_to_pay' THEN amt ELSE 0 END) AS ready_amt,
+               SUM(amt) AS total_amt
+        FROM reversed GROUP BY broker_id
+    ),
+    debited AS (
+        UPDATE commission.broker_wallets w
+        SET pending_inr      = GREATEST(0, w.pending_inr - m.pending_amt),
+            earned_inr       = GREATEST(0, w.earned_inr - m.earned_amt),
+            ready_to_pay_inr = GREATEST(0, w.ready_to_pay_inr - m.ready_amt),
+            lifetime_reversed_inr = w.lifetime_reversed_inr + m.total_amt,
+            updated_at = NOW()
+        FROM wallet_moves m WHERE w.broker_id = m.broker_id
+        RETURNING 1
+    )
+    SELECT COUNT(*)::int INTO v_n FROM reversed;
+    RETURN v_n;
+END;
+$$;
+COMMENT ON FUNCTION commission.expire_stale_attribution_claims IS
+    'Lapse post-hoc claim OTPs past expiry: OTP→expired, attribution verification→no_response + reversed, debit the broker wallet from its current bucket (+lifetime_reversed). SECURITY DEFINER for the RLS-less maintenance worker. Returns claims lapsed.';
+
+GRANT EXECUTE ON FUNCTION commission.expire_stale_attribution_claims() TO docslot_app;
 
 -- ============================================================================
 -- END OF COMMISSION SCHEMA

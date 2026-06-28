@@ -1,7 +1,5 @@
-using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using mediq.Application.Abstractions;
+using mediq.Application.Common;
 using mediq.Domain.Docslot;
 
 namespace mediq.Application.Features.Docslot.WhatsApp;
@@ -18,11 +16,14 @@ public sealed class PatientConsentService(
     IOutboxMessageEnqueuer outbox,
     IWaMessageLogWriter messageLog,
     IBookingRepository bookings,
-    ISlotHoldService slotHolds)
+    ISlotHoldService slotHolds,
+    IAttributionClaimOtpStore claims,
+    IAttributionRepository attributions,
+    ICommissionLifecycleService commissionLifecycle)
     : IPatientConsentService
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(15);
-    private const int CodeLength = 6;
+    private const int CodeLength = OtpCodec.CodeLength;
 
     private static readonly HashSet<string> Declines = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -34,9 +35,22 @@ public sealed class PatientConsentService(
         // Supersede any prior pending code for this patient number (one live consent per number per tenant).
         await store.ExpireExistingPendingAsync(r.TenantId, r.PatientPhone, r.NowUtc, ct);
 
-        var code = GenerateCode();
-        var salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
-        var hash = Hash(salt, code);
+        // Cross-table single-live-OTP invariant (auditor F1): if a post-hoc attribution CLAIM OTP is live for
+        // this patient, supersede it — expire the OTP and reverse its (still-unverified) attribution — so the
+        // patient can only ever have ONE pending OTP. The inbound handler routes consent-first and must never
+        // face two live OTPs, or a claim-code reply could be misrouted as a wrong-code consent attempt.
+        var liveClaim = await claims.GetPendingByPhoneAsync(r.TenantId, r.PatientPhone, r.NowUtc, ct);
+        if (liveClaim is not null)
+        {
+            await claims.SetStatusAsync(liveClaim.ClaimOtpId, "expired", r.NowUtc, ct);
+            await attributions.MarkPatientDeniedAsync(liveClaim.AttributionId, r.TenantId, r.NowUtc, ct);
+            await commissionLifecycle.OnAttributionRejectedAsync(
+                r.TenantId, liveClaim.AttributionId, liveClaim.BookingId, "superseded_by_consent", r.NowUtc, ct);
+        }
+
+        var code = OtpCodec.GenerateCode();
+        var salt = OtpCodec.NewSalt();
+        var hash = OtpCodec.Hash(salt, code);
         var expiresAt = r.NowUtc.Add(Ttl);
 
         await store.CreateAsync(new ConsentOtpInsert(
@@ -83,7 +97,7 @@ public sealed class PatientConsentService(
 
         // Correct code → confirm consent.
         var submitted = new string(reply.Where(char.IsDigit).ToArray());
-        if (submitted.Length == CodeLength && CodeMatches(otp.CodeSalt, otp.CodeHash, submitted))
+        if (submitted.Length == CodeLength && OtpCodec.Matches(otp.CodeSalt, otp.CodeHash, submitted))
         {
             await store.SetStatusAsync(otp.ConsentOtpId, PatientConsentStatus.Confirmed, nowUtc, ct);
             var booking = await bookings.GetByIdAsync(otp.BookingId, tenantId, ct);
@@ -125,17 +139,4 @@ public sealed class PatientConsentService(
             await slotHolds.ReleaseSlotCapacityAsync(booking.SlotId, nowUtc, ct);
         }
     }
-
-    // ---- crypto helpers -------------------------------------------------------------------------------
-
-    private static string GenerateCode() =>
-        RandomNumberGenerator.GetInt32(0, (int)Math.Pow(10, CodeLength)).ToString("D" + CodeLength, CultureInfo.InvariantCulture);
-
-    private static string Hash(string salt, string code) =>
-        Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(salt + ":" + code)));
-
-    private static bool CodeMatches(string salt, string expectedHash, string submittedCode) =>
-        CryptographicOperations.FixedTimeEquals(
-            Convert.FromBase64String(Hash(salt, submittedCode)),
-            Convert.FromBase64String(expectedHash));
 }
