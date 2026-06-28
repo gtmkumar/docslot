@@ -70,6 +70,14 @@ public sealed class BookingMaintenanceWorker(
         if (expired > 0)
             logger.LogInformation("BookingMaintenance: expired {Count} stale consent OTPs (bookings cancelled).", expired);
 
+        // Commission settlement: earned attributions past the window → ready_to_pay (so a refund within the
+        // window can still reverse before the money is locked into a payout batch).
+        var settleWindow = TimeSpan.FromHours(Math.Max(0, config.GetValue("Commission:SettlementWindowHours", 24)));
+        var attributions = scope.ServiceProvider.GetRequiredService<mediq.Application.Abstractions.IAttributionRepository>();
+        var settled = await attributions.SettleEarnedAsync(settleWindow, ct);
+        if (settled > 0)
+            logger.LogInformation("BookingMaintenance: settled {Count} earned attributions → ready_to_pay.", settled);
+
         if (now - _lastMaterializeUtc >= materializeEvery)
         {
             var gen = scope.ServiceProvider.GetRequiredService<ISlotGenerationService>();

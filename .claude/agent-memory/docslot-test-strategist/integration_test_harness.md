@@ -28,4 +28,6 @@ Key conventions:
   load (global audit-chain advisory lock); existing tests resend "YES" up to 3x WHILE no booking exists yet.
   A real logic break fails every attempt, so this doesn't mask bugs. Mirror it for behalf flows.
 
-Baseline as of 2026-06: 116 integration tests pass clean.
+Baseline as of 2026-06: 162 integration tests pass clean (was 116; +18 from the Phase-2 commission
+money-pipeline suite — see [[phase2-commission-pipeline-tests]]). Full `dotnet test` runs ~6m against the
+single local Postgres; `dotnet test` buffers all stdout until completion (no streaming).

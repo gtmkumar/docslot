@@ -98,8 +98,10 @@ public sealed class CommissionController(
 
     // ---- Attribution -----------------------------------------------------------------------------
 
+    // Creating an attribution MINTS commission (money) — gate on the danger 'override' write permission, not
+    // the read permission (the prior read gate let any ledger-viewer mint commission).
     [HttpPost("attributions")]
-    [RequirePermission("commission.attribution.read")]
+    [RequirePermission("commission.attribution.override")]
     [ProducesResponseType<AttributionResultDto>(StatusCodes.Status201Created)]
     public async Task<ActionResult<AttributionResultDto>> CreateAttribution([FromBody] CreateAttributionRequest request, CancellationToken ct)
         => Ok(await commands.Send(new CreateAttributionCommand(RequireTenant(), request), ct));

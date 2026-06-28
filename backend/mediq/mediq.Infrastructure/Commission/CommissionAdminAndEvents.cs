@@ -25,15 +25,20 @@ public sealed class CommissionAdminRepository(PlatformDbContext db) : ICommissio
         return id;
     }
 
-    public Task ResolveDisputeAsync(Guid disputeId, ResolveDisputeRequest r, Guid byUserId, DateTime nowUtc, CancellationToken ct) =>
-        db.Database.ExecuteSqlRawAsync(
-            """
-            UPDATE commission.attribution_disputes
-            SET status=@p1, resolved_at=@p2, resolved_by_user_id=@p3, resolution_notes=@p4, resolution_amount_adjustment_inr=@p5
-            WHERE dispute_id=@p0
-            """,
-            P(("@p0", disputeId), ("@p1", r.Status), ("@p2", nowUtc), ("@p3", byUserId),
-              ("@p4", (object?)r.ResolutionNotes ?? DBNull.Value), ("@p5", (object?)r.AmountAdjustmentInr ?? DBNull.Value)));
+    public async Task<Guid> ResolveDisputeAsync(Guid disputeId, ResolveDisputeRequest r, Guid byUserId, DateTime nowUtc, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<Guid>(
+                """
+                UPDATE commission.attribution_disputes
+                SET status=@p1, resolved_at=@p2, resolved_by_user_id=@p3, resolution_notes=@p4, resolution_amount_adjustment_inr=@p5
+                WHERE dispute_id=@p0
+                RETURNING attribution_id AS "Value"
+                """,
+                P(("@p0", disputeId), ("@p1", r.Status), ("@p2", nowUtc), ("@p3", byUserId),
+                  ("@p4", (object?)r.ResolutionNotes ?? DBNull.Value), ("@p5", (object?)r.AmountAdjustmentInr ?? DBNull.Value)))
+            .ToListAsync(ct);
+        return rows.FirstOrDefault();
+    }
 
     public async Task<Guid> CreateCampaignAsync(Guid tenantId, CreateCampaignRequest r, Guid? byUserId, DateTime nowUtc, CancellationToken ct)
     {

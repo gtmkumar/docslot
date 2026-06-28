@@ -32,6 +32,7 @@ public sealed class BookingActionCommandHandler(
     IBookingRepository bookings,
     ISlotHoldService slotHolds,
     IBookingEventPublisher events,
+    ICommissionLifecycleService commission,
     IAuditTrailWriter audit,
     ICurrentUserContext ctx,
     IClock clock)
@@ -65,6 +66,13 @@ public sealed class BookingActionCommandHandler(
         // it) so the slot can be re-booked; complete/approve keep it consumed. Fixes the capacity leak.
         if (req.Action is BookingActionType.Cancel or BookingActionType.MarkNoShow)
             await slotHolds.ReleaseSlotCapacityAsync(booking.SlotId, now, ct);
+
+        // Commission lifecycle (same UoW): a completed visit EARNS its attributions (→ broker wallet); a
+        // cancelled/no-show booking REVERSES them. The no-op fast-paths when the booking has no attribution.
+        if (req.Action == BookingActionType.Complete)
+            await commission.OnBookingCompletedAsync(command.TenantId, booking.BookingId, now, ct);
+        else if (req.Action is BookingActionType.Cancel or BookingActionType.MarkNoShow)
+            await commission.OnBookingReversedAsync(command.TenantId, booking.BookingId, now, ct);
 
         // The UnitOfWork behavior commits the tracked mutation (and the DB trigger logs history).
         await audit.RecordAsync(new AuditEntry(

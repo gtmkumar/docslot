@@ -771,6 +771,79 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- ============================================================================
+-- ROW-LEVEL SECURITY (tenant isolation on the money tables)
+-- ============================================================================
+-- The tenant-scoped commission tables carry tenant_id and hold financial data; isolate them with the same
+-- policy as bookings/PHI (file 05). brokers + broker_wallets are GLOBAL identities (no tenant_id — a broker
+-- and their wallet span tenants, like docslot.patients), so they are not RLS-gated here. The cross-tenant
+-- settlement worker uses the SECURITY DEFINER fn below (no per-request tenant context). Enqueue/reads run
+-- with a tenant context (UnitOfWork / TenantScopeQuery set app.tenant_id), satisfying the policy directly.
+ALTER TABLE commission.attributions         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commission.payouts              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commission.commission_rules     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commission.attribution_disputes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commission.broker_campaigns     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commission.broker_tenant_links  ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_attributions ON commission.attributions
+    FOR ALL USING (tenant_id = platform.current_tenant_id() OR tenant_id = platform.current_impersonated_tenant());
+CREATE POLICY tenant_isolation_payouts ON commission.payouts
+    FOR ALL USING (tenant_id = platform.current_tenant_id() OR tenant_id = platform.current_impersonated_tenant());
+CREATE POLICY tenant_isolation_commission_rules ON commission.commission_rules
+    FOR ALL USING (tenant_id = platform.current_tenant_id() OR tenant_id = platform.current_impersonated_tenant());
+CREATE POLICY tenant_isolation_attribution_disputes ON commission.attribution_disputes
+    FOR ALL USING (tenant_id = platform.current_tenant_id() OR tenant_id = platform.current_impersonated_tenant());
+CREATE POLICY tenant_isolation_broker_campaigns ON commission.broker_campaigns
+    FOR ALL USING (tenant_id = platform.current_tenant_id() OR tenant_id = platform.current_impersonated_tenant());
+CREATE POLICY tenant_isolation_broker_tenant_links ON commission.broker_tenant_links
+    FOR ALL USING (tenant_id = platform.current_tenant_id() OR tenant_id = platform.current_impersonated_tenant());
+
+-- ============================================================================
+-- SETTLEMENT FUNCTION (earned → ready_to_pay) — SECURITY DEFINER, cross-tenant
+-- ============================================================================
+-- The settlement-window job has no per-request tenant context, so a plain app-role UPDATE would match zero
+-- rows under the attributions RLS. This definer fn flips 'earned' attributions whose earned_at is older than
+-- p_window to 'ready_to_pay' (so refunds within the window can still reverse before payout) and moves the
+-- broker wallet earned→ready_to_pay in the same statement. Returns the number of attributions settled.
+CREATE OR REPLACE FUNCTION commission.settle_earned_attributions(p_window INTERVAL DEFAULT INTERVAL '24 hours')
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = commission, pg_temp
+AS $$
+DECLARE
+    v_n INT;
+BEGIN
+    WITH settled AS (
+        UPDATE commission.attributions
+        SET commission_status = 'ready_to_pay'
+        WHERE commission_status = 'earned'
+          AND earned_at IS NOT NULL
+          AND earned_at < NOW() - p_window
+        RETURNING broker_id, commission_amount_inr
+    ),
+    agg AS (
+        SELECT broker_id, COALESCE(SUM(commission_amount_inr), 0) AS amt
+        FROM settled GROUP BY broker_id
+    ),
+    moved AS (
+        UPDATE commission.broker_wallets w
+        SET earned_inr = GREATEST(0, w.earned_inr - agg.amt),
+            ready_to_pay_inr = w.ready_to_pay_inr + agg.amt,
+            updated_at = NOW()
+        FROM agg WHERE w.broker_id = agg.broker_id
+        RETURNING 1
+    )
+    SELECT COUNT(*)::int INTO v_n FROM settled;
+    RETURN v_n;
+END;
+$$;
+COMMENT ON FUNCTION commission.settle_earned_attributions IS
+    'Settle earned attributions past the window to ready_to_pay + move broker wallet earned→ready_to_pay. SECURITY DEFINER for the RLS-less settlement worker. Returns attributions settled.';
+
+GRANT EXECUTE ON FUNCTION commission.settle_earned_attributions(INTERVAL) TO docslot_app;
+
+-- ============================================================================
 -- END OF COMMISSION SCHEMA
 -- ============================================================================
 -- Tables: 10 (C1-C10)

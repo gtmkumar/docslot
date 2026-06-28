@@ -290,7 +290,11 @@ INSERT INTO platform_api.api_event_types (event_type, resource, action, descript
 ('docslot.patient.deletion_requested', 'patient', 'deletion_requested', 'Patient requested data deletion', 'docslot.patients.read'),
 ('docslot.prescription.issued', 'prescription', 'created', 'Prescription issued', 'docslot.prescriptions.read'),
 ('docslot.report.uploaded', 'report', 'created', 'Lab report uploaded', 'docslot.reports.read'),
-('docslot.report.delivered', 'report', 'delivered', 'Report delivered to patient', 'docslot.reports.read');
+('docslot.report.delivered', 'report', 'delivered', 'Report delivered to patient', 'docslot.reports.read'),
+('commission.attribution.created', 'attribution', 'created', 'Broker attribution created', 'commission.attribution.read'),
+('commission.commission.earned', 'attribution', 'earned', 'Commission earned (booking completed)', 'commission.attribution.read'),
+('commission.commission.reversed', 'attribution', 'reversed', 'Commission reversed (cancel/clawback)', 'commission.attribution.read'),
+('commission.payout.paid', 'payout', 'paid', 'Payout disbursed', 'commission.payouts.read');
 
 -- ============================================================================
 -- VIEWS

@@ -94,14 +94,17 @@ public sealed class ApprovePayoutCommandHandler(
 // ---- Execute (STEP 2 — distinct permission: commission.payouts.execute) --------------------------
 
 /// <summary>
-/// Triggers the actual UPI/bank transfer. REQUIRES the payout to be 'approved' (approval≠execution: the two
-/// steps are gated by DISTINCT permission keys at the API). Payment gateway is a stub for this slice.
+/// Triggers the actual disbursement through <see cref="IPayoutGateway"/>. REQUIRES the payout to be 'approved'
+/// (approval≠execution: the two steps are gated by DISTINCT permission keys at the API). The gateway is the
+/// dev <c>StubPayoutGateway</c> (honest DRY RUN — a labelled <c>DRYRUN-…</c> reference, never a fabricated UTR)
+/// until real credentials wire a live adapter. On gateway success the batch + its attributions go 'paid' and
+/// the wallet moves ready_to_pay→lifetime_paid; on failure the batch goes 'failed' and NO money/wallet moves.
 /// </summary>
 public sealed record ExecutePayoutCommand(Guid TenantId, Guid PayoutId) : ICommand<PayoutActionResult>;
 
 public sealed class ExecutePayoutCommandHandler(
     IPayoutRepository payouts, IAttributionRepository attributions, IBrokerWalletRepository wallets,
-    IBrokerEventPublisher events, IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    IPayoutGateway gateway, IBrokerEventPublisher events, IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
     : ICommandHandler<ExecutePayoutCommand, PayoutActionResult>
 {
     public async Task<PayoutActionResult> Handle(ExecutePayoutCommand command, CancellationToken ct)
@@ -114,9 +117,27 @@ public sealed class ExecutePayoutCommandHandler(
         if (!payout.CanExecute)
             throw new BusinessRuleException($"Payout must be approved before execution (current: {payout.Status}).");
 
-        // Stub gateway: mint a payment reference (UTR-like). Real UPI/bank in a later slice.
-        var reference = $"UTR-{Guid.CreateVersion7():N}"[..18];
-        await payouts.MarkPaidAsync(payout.PayoutId, reference, clock.UtcNow, ct);
+        // Atomically claim the payout (approved → processing) BEFORE touching the gateway. A concurrent second
+        // execute loses the claim and is rejected here — so the gateway is called once and the wallet credited
+        // once (auditor P2 Finding 1: execute must be concurrency-safe / not double-disburse).
+        if (!await payouts.TryClaimForExecutionAsync(payout.PayoutId, command.TenantId, clock.UtcNow, ct))
+            throw new BusinessRuleException("Payout is not approved or is already being executed.");
+
+        // Disburse via the configured gateway (dev = honest dry-run; never a fake "paid").
+        var result = await gateway.SendAsync(
+            new PayoutInstruction(payout.PayoutId, payout.BrokerId, payout.NetAmountInr, payout.PaymentMethod, UpiId: null), ct);
+
+        if (!result.Success)
+        {
+            await payouts.MarkFailedAsync(payout.PayoutId, clock.UtcNow, ct);
+            await audit.RecordAsync(new AuditEntry(
+                "execute_payout", "payout", payout.PayoutId, null, userId, command.TenantId,
+                ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: false,
+                ChangeSummary: $"Payout FAILED via {result.GatewayName}: {result.Error}"), ct);
+            return new PayoutActionResult(payout.PayoutId, "failed", null);
+        }
+
+        await payouts.MarkPaidAsync(payout.PayoutId, result.Reference, result.GatewayName, clock.UtcNow, ct);
 
         // Mark the batch's attributions paid + apply the broker wallet transition (gross moves to lifetime_paid).
         var attributionIds = await attributions.ReadyToPayAttributionIdsAsync(command.TenantId, payout.BrokerId, ct);
@@ -124,15 +145,15 @@ public sealed class ExecutePayoutCommandHandler(
         await wallets.ApplyPaidAsync(payout.BrokerId, payout.GrossAmountInr, clock.UtcNow, ct);
 
         await audit.RecordAsync(new AuditEntry(
-            "execute_payout", "payout", payout.PayoutId, reference, userId, command.TenantId,
+            "execute_payout", "payout", payout.PayoutId, result.Reference, userId, command.TenantId,
             ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
-            ChangeSummary: $"Payout executed: net ₹{payout.NetAmountInr} → {reference}"), ct);
+            ChangeSummary: $"Payout executed via {result.GatewayName}{(result.IsDryRun ? " (DRY RUN)" : "")}: net ₹{payout.NetAmountInr} → {result.Reference}"), ct);
 
         // Integration event — IDs + amount ONLY, no PHI.
         await events.PublishAsync("commission.payout.paid", command.TenantId,
-            new { payout_id = payout.PayoutId, broker_id = payout.BrokerId, net_inr = payout.NetAmountInr, reference }, ct);
+            new { payout_id = payout.PayoutId, broker_id = payout.BrokerId, net_inr = payout.NetAmountInr, reference = result.Reference, dry_run = result.IsDryRun }, ct);
 
-        return new PayoutActionResult(payout.PayoutId, "paid", reference);
+        return new PayoutActionResult(payout.PayoutId, "paid", result.Reference);
     }
 }
 

@@ -13,6 +13,8 @@ public static class PayoutCalculator
     /// <summary>
     /// Computes a payout breakdown. TDS is deducted from gross. GST (18%) is ADDED for GST-registered
     /// brokers (they collect it and remit it; the facility pays it on top). Net = gross - TDS (+ GST if registered).
+    /// The ₹100 minimum is applied to GROSS (the commission earned) to stay consistent with the
+    /// <c>v_ready_payouts</c> view's <c>HAVING SUM(gross) >= 100</c> — so a broker can't pass one gate and fail the other.
     /// </summary>
     public static PayoutBreakdown Compute(decimal grossInr, bool brokerGstRegistered)
     {
@@ -20,7 +22,7 @@ public static class PayoutCalculator
         decimal? gstRate = brokerGstRegistered ? GstRate : null;
         var gst = brokerGstRegistered ? Math.Round(grossInr * GstRate / 100m, 2) : 0m;
         var net = Math.Round(grossInr - tds + gst, 2);
-        return new PayoutBreakdown(grossInr, DefaultTdsRate, tds, gstRate, gst, net, net >= MinimumPayoutInr);
+        return new PayoutBreakdown(grossInr, DefaultTdsRate, tds, gstRate, gst, net, grossInr >= MinimumPayoutInr);
     }
 }
 

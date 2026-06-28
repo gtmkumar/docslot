@@ -63,6 +63,7 @@ public sealed class CommissionRule
     public string CalcType { get; private set; } = default!;     // 'flat' | 'percentage' | 'tiered_table'
     public decimal? FlatAmountInr { get; private set; }
     public decimal? Percentage { get; private set; }
+    public string? TieredTableJson { get; private set; }         // [{min, max, amount} | {min, max, pct}] bands
     public decimal? MinCommissionInr { get; private set; }
     public decimal? MaxCommissionInr { get; private set; }
     public decimal? MaxMonthlyPerBrokerInr { get; private set; }
@@ -75,7 +76,8 @@ public sealed class CommissionRule
     public static CommissionRule FromRow(
         Guid id, Guid tenantId, string name, string[]? tiers, string[]? types, string[]? services,
         decimal? minVal, decimal? maxVal, string calcType, decimal? flat, decimal? pct,
-        decimal? minComm, decimal? maxComm, decimal? maxMonthly, int priority, bool excludesPndt, bool firstBookingOnly)
+        decimal? minComm, decimal? maxComm, decimal? maxMonthly, int priority, bool excludesPndt, bool firstBookingOnly,
+        string? tieredTableJson = null)
         => new()
         {
             RuleId = id, TenantId = tenantId, RuleName = name, AppliesToBrokerTier = tiers,
@@ -83,6 +85,7 @@ public sealed class CommissionRule
             MaxBookingValueInr = maxVal, CalcType = calcType, FlatAmountInr = flat, Percentage = pct,
             MinCommissionInr = minComm, MaxCommissionInr = maxComm, MaxMonthlyPerBrokerInr = maxMonthly,
             Priority = priority, ExcludesPndt = excludesPndt, FirstBookingOnly = firstBookingOnly,
+            TieredTableJson = tieredTableJson,
         };
 
     /// <summary>True if this rule applies to the (broker tier/type, service, booking value) context.</summary>
@@ -109,7 +112,7 @@ public static class CommissionCalculator
         {
             "flat" => rule.FlatAmountInr ?? 0m,
             "percentage" => Math.Round(bookingValueInr * (rule.Percentage ?? 0m) / 100m, 2),
-            "tiered_table" => 0m,   // tiered_table parsed by the engine from JSON; flat fallback here
+            "tiered_table" => TieredAmount(rule.TieredTableJson, bookingValueInr),
             _ => 0m,
         };
 
@@ -126,4 +129,34 @@ public static class CommissionCalculator
 
         return Math.Max(0m, Math.Round(amount, 2));
     }
+
+    /// <summary>
+    /// Evaluates a tiered_table rule. Format (schema 07: <c>[{min, max, amount_or_pct}]</c>): a JSON array of
+    /// bands; the band whose [min, max] contains the booking value yields either a flat <c>amount</c> or a
+    /// percentage <c>pct</c> of the booking value. <c>max</c> may be null/absent (open-ended top band).
+    /// Returns 0 when no band matches or the JSON is empty/malformed.
+    /// </summary>
+    private static decimal TieredAmount(string? json, decimal value)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return 0m;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array) return 0m;
+            foreach (var band in doc.RootElement.EnumerateArray())
+            {
+                var min = Num(band, "min") ?? 0m;
+                var max = Num(band, "max");
+                if (value < min || (max is { } mx && value > mx)) continue;
+                if (Num(band, "amount") is { } amt) return amt;
+                if (Num(band, "pct") is { } pct) return Math.Round(value * pct / 100m, 2);
+                return 0m;
+            }
+        }
+        catch (System.Text.Json.JsonException) { return 0m; }
+        return 0m;
+    }
+
+    private static decimal? Num(System.Text.Json.JsonElement e, string name) =>
+        e.TryGetProperty(name, out var p) && p.ValueKind == System.Text.Json.JsonValueKind.Number ? p.GetDecimal() : null;
 }

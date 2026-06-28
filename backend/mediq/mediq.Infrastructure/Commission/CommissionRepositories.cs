@@ -61,7 +61,8 @@ public sealed class CommissionRuleRepository(PlatformDbContext db) : ICommission
                        max_booking_value_inr AS "MaxBookingValueInr", calc_type AS "CalcType", flat_amount_inr AS "FlatAmountInr",
                        percentage AS "Percentage", min_commission_inr AS "MinCommissionInr", max_commission_inr AS "MaxCommissionInr",
                        max_monthly_per_broker_inr AS "MaxMonthlyPerBrokerInr", priority AS "Priority",
-                       excludes_pndt AS "ExcludesPndt", first_booking_only AS "FirstBookingOnly"
+                       excludes_pndt AS "ExcludesPndt", first_booking_only AS "FirstBookingOnly",
+                       tiered_table::text AS "TieredTableJson"
                 FROM commission.commission_rules
                 WHERE tenant_id=@p0 AND is_active=true AND effective_from <= NOW()
                   AND (effective_until IS NULL OR effective_until > NOW())
@@ -72,14 +73,16 @@ public sealed class CommissionRuleRepository(PlatformDbContext db) : ICommission
         return rows.Select(r => CommissionRule.FromRow(
             r.RuleId, r.TenantId, r.RuleName, r.AppliesToBrokerTier, r.AppliesToBrokerType, r.AppliesToServiceType,
             r.MinBookingValueInr, r.MaxBookingValueInr, r.CalcType, r.FlatAmountInr, r.Percentage,
-            r.MinCommissionInr, r.MaxCommissionInr, r.MaxMonthlyPerBrokerInr, r.Priority, r.ExcludesPndt, r.FirstBookingOnly)).ToList();
+            r.MinCommissionInr, r.MaxCommissionInr, r.MaxMonthlyPerBrokerInr, r.Priority, r.ExcludesPndt, r.FirstBookingOnly,
+            r.TieredTableJson)).ToList();
     }
 
     private static object[] P(params (string Name, object Value)[] ps) => ps.Select(p => (object)new NpgsqlParameter(p.Name, p.Value)).ToArray();
     private sealed record RuleListRow(Guid RuleId, string RuleName, string RuleKey, string CalcType, decimal? FlatAmountInr, decimal? Percentage, int Priority, bool IsActive, bool ExcludesPndt);
     private sealed record RuleRow(Guid RuleId, Guid TenantId, string RuleName, string[]? AppliesToBrokerTier, string[]? AppliesToBrokerType,
         string[]? AppliesToServiceType, decimal? MinBookingValueInr, decimal? MaxBookingValueInr, string CalcType, decimal? FlatAmountInr,
-        decimal? Percentage, decimal? MinCommissionInr, decimal? MaxCommissionInr, decimal? MaxMonthlyPerBrokerInr, int Priority, bool ExcludesPndt, bool FirstBookingOnly);
+        decimal? Percentage, decimal? MinCommissionInr, decimal? MaxCommissionInr, decimal? MaxMonthlyPerBrokerInr, int Priority, bool ExcludesPndt, bool FirstBookingOnly,
+        string? TieredTableJson);
 }
 
 /// <summary>Payout batches. approve and execute are separate operations (gated by distinct permissions at the API).</summary>
@@ -124,10 +127,27 @@ public sealed class PayoutRepository(PlatformDbContext db) : IPayoutRepository
             "UPDATE commission.payouts SET status='approved', approved_by_user_id=@p1, approved_at=@p2 WHERE payout_id=@p0 AND status='pending'",
             P(("@p0", payoutId), ("@p1", byUserId), ("@p2", nowUtc)));
 
-    public Task MarkPaidAsync(Guid payoutId, string reference, DateTime nowUtc, CancellationToken ct) =>
+    public async Task<bool> TryClaimForExecutionAsync(Guid payoutId, Guid tenantId, DateTime nowUtc, CancellationToken ct)
+    {
+        // Single-winner claim: approved → processing. The conditional UPDATE is atomic, so a concurrent second
+        // execute matches 0 rows and is rejected — no double gateway call, no double wallet credit.
+        var affected = await db.Database.ExecuteSqlRawAsync(
+            "UPDATE commission.payouts SET status='processing' WHERE payout_id=@p0 AND tenant_id=@p1 AND status='approved'",
+            P(("@p0", payoutId), ("@p1", tenantId)));
+        return affected == 1;
+    }
+
+    public Task MarkPaidAsync(Guid payoutId, string reference, string gateway, DateTime nowUtc, CancellationToken ct) =>
         db.Database.ExecuteSqlRawAsync(
-            "UPDATE commission.payouts SET status='paid', payment_reference=@p1, completed_at=@p2 WHERE payout_id=@p0 AND status='approved'",
-            P(("@p0", payoutId), ("@p1", reference), ("@p2", nowUtc)));
+            "UPDATE commission.payouts SET status='paid', payment_reference=@p1, payment_gateway=@p3, completed_at=@p2 WHERE payout_id=@p0 AND status='processing'",
+            P(("@p0", payoutId), ("@p1", reference), ("@p2", nowUtc), ("@p3", gateway)));
+
+    public Task MarkFailedAsync(Guid payoutId, DateTime nowUtc, CancellationToken ct) =>
+        // Gateway rejected the transfer — the batch returns to a terminal 'failed' (re-issue is a new batch).
+        // The failure detail is captured in the audit log (no money moved; attributions stay ready_to_pay).
+        db.Database.ExecuteSqlRawAsync(
+            "UPDATE commission.payouts SET status='failed', completed_at=@p1 WHERE payout_id=@p0 AND status='processing'",
+            P(("@p0", payoutId), ("@p1", nowUtc)));
 
     public async Task<IReadOnlyList<PayoutDto>> ListByTenantAsync(Guid tenantId, int skip, int take, CancellationToken ct) =>
         (await db.Database.SqlQueryRaw<PayoutListRow>(
@@ -178,16 +198,43 @@ public sealed class BrokerWalletRepository(PlatformDbContext db) : IBrokerWallet
             "INSERT INTO commission.broker_wallets (broker_id, updated_at) VALUES (@p0, NOW()) ON CONFLICT (broker_id) DO NOTHING",
             new NpgsqlParameter("@p0", brokerId));
 
-    public Task ApplyEarnedAsync(Guid brokerId, decimal amountInr, DateTime nowUtc, CancellationToken ct) =>
+    public Task ApplyAttributedAsync(Guid brokerId, decimal amountInr, DateTime nowUtc, CancellationToken ct) =>
+        // Attribution created (commission_status 'pending'): money sits in pending until the booking completes.
         db.Database.ExecuteSqlRawAsync(
             """
             UPDATE commission.broker_wallets
-            SET earned_inr = earned_inr + @p1, current_month_inr = current_month_inr + @p1,
+            SET pending_inr = pending_inr + @p1, current_month_inr = current_month_inr + @p1,
                 current_month_attributions = current_month_attributions + 1, lifetime_attributions = lifetime_attributions + 1,
                 last_attribution_at = @p2, updated_at = @p2
             WHERE broker_id = @p0
             """,
             new NpgsqlParameter("@p0", brokerId), new NpgsqlParameter("@p1", amountInr), new NpgsqlParameter("@p2", nowUtc));
+
+    public Task ApplyEarnedAsync(Guid brokerId, decimal amountInr, DateTime nowUtc, CancellationToken ct) =>
+        // Booking completed (pending → earned): move money from pending to earned (settlement later → ready_to_pay).
+        db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE commission.broker_wallets
+            SET pending_inr = GREATEST(0, pending_inr - @p1), earned_inr = earned_inr + @p1, updated_at = @p2
+            WHERE broker_id = @p0
+            """,
+            new NpgsqlParameter("@p0", brokerId), new NpgsqlParameter("@p1", amountInr), new NpgsqlParameter("@p2", nowUtc));
+
+    public Task ApplyReversedAsync(Guid brokerId, decimal amountInr, string fromStatus, DateTime nowUtc, CancellationToken ct) =>
+        // Clawback: debit the bucket the attribution was in (a 'paid' reversal has no live bucket — money's gone)
+        // and record it as lifetime_reversed.
+        db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE commission.broker_wallets
+            SET pending_inr      = CASE WHEN @p2 = 'pending'      THEN GREATEST(0, pending_inr - @p1)      ELSE pending_inr END,
+                earned_inr       = CASE WHEN @p2 = 'earned'       THEN GREATEST(0, earned_inr - @p1)       ELSE earned_inr END,
+                ready_to_pay_inr = CASE WHEN @p2 = 'ready_to_pay' THEN GREATEST(0, ready_to_pay_inr - @p1) ELSE ready_to_pay_inr END,
+                lifetime_reversed_inr = lifetime_reversed_inr + @p1,
+                updated_at = @p3
+            WHERE broker_id = @p0
+            """,
+            new NpgsqlParameter("@p0", brokerId), new NpgsqlParameter("@p1", amountInr),
+            new NpgsqlParameter("@p2", fromStatus), new NpgsqlParameter("@p3", nowUtc));
 
     public Task ApplyPaidAsync(Guid brokerId, decimal grossInr, DateTime nowUtc, CancellationToken ct) =>
         db.Database.ExecuteSqlRawAsync(

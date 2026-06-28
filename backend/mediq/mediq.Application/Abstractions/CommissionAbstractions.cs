@@ -46,6 +46,28 @@ public interface IAttributionRepository
     Task MarkPaidAsync(IReadOnlyList<Guid> attributionIds, Guid payoutId, DateTime nowUtc, CancellationToken ct);
 
     /// <summary>
+    /// Booking completed → advance that booking's verification-cleared 'pending' attributions to 'earned'
+    /// (sets earned_at). Returns the (broker, amount) earned so the caller can credit wallets + emit events.
+    /// </summary>
+    Task<IReadOnlyList<EarnedAttribution>> MarkEarnedForBookingAsync(Guid tenantId, Guid bookingId, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>
+    /// Booking cancelled/no-show → reverse that booking's not-yet-paid attributions (pending/earned/
+    /// ready_to_pay → 'reversed'). Returns (broker, amount, fromStatus) so the caller can debit the right
+    /// wallet bucket + lifetime_reversed.
+    /// </summary>
+    Task<IReadOnlyList<ReversedAttribution>> MarkReversedForBookingAsync(Guid tenantId, Guid bookingId, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>Reverse a SINGLE attribution (dispute clawback). Returns (broker, amount, fromStatus) or null if not reversible.</summary>
+    Task<ReversedAttribution?> ReverseOneAsync(Guid attributionId, Guid tenantId, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>
+    /// Settlement-window job: flip 'earned' attributions older than <paramref name="window"/> to 'ready_to_pay'
+    /// and move the broker wallet earned→ready_to_pay. Cross-tenant via a SECURITY DEFINER fn. Returns the count.
+    /// </summary>
+    Task<int> SettleEarnedAsync(TimeSpan window, CancellationToken ct);
+
+    /// <summary>
     /// Attribution ledger list (most recent first), tenant-scoped + offset-paginated. Returns display-safe
     /// rows: the patient is a FIRST NAME + MASKED phone (PHI), and the booking is the human BKG- ref.
     /// Returns the SharedDataModel list DTO directly (masking applied at the infra seam).
@@ -55,13 +77,26 @@ public interface IAttributionRepository
 
 public sealed record BookingValue(decimal AmountInr, decimal DirectDiscountInr, string? ServiceType, Guid PatientId);
 
+/// <summary>An attribution that just earned (booking completed): broker + commission amount.</summary>
+public sealed record EarnedAttribution(Guid BrokerId, decimal Amount);
+
+/// <summary>A reversed attribution: broker + amount + the status it held before reversal (drives the wallet bucket).</summary>
+public sealed record ReversedAttribution(Guid BrokerId, decimal Amount, string FromStatus);
+
 /// <summary>Payout batch persistence + approve/execute (TWO distinct steps, gated by distinct permissions).</summary>
 public interface IPayoutRepository
 {
     Task<Guid> CreateAsync(Payout payout, CancellationToken ct);
     Task<Payout?> GetByIdAsync(Guid payoutId, Guid tenantId, CancellationToken ct);
     Task ApproveAsync(Guid payoutId, Guid byUserId, DateTime nowUtc, CancellationToken ct);
-    Task MarkPaidAsync(Guid payoutId, string paymentReference, DateTime nowUtc, CancellationToken ct);
+    /// <summary>
+    /// Atomically claims an APPROVED payout for execution (approved → processing) — the concurrency gate so
+    /// two concurrent executes can't both disburse / double-credit the wallet. Returns true for the single
+    /// winner; false if the payout was not 'approved' (already executing/paid). Caller must early-return on false.
+    /// </summary>
+    Task<bool> TryClaimForExecutionAsync(Guid payoutId, Guid tenantId, DateTime nowUtc, CancellationToken ct);
+    Task MarkPaidAsync(Guid payoutId, string paymentReference, string paymentGateway, DateTime nowUtc, CancellationToken ct);
+    Task MarkFailedAsync(Guid payoutId, DateTime nowUtc, CancellationToken ct);
     Task<IReadOnlyList<PayoutDto>> ListByTenantAsync(Guid tenantId, int skip, int take, CancellationToken ct);
 }
 
@@ -69,8 +104,14 @@ public interface IPayoutRepository
 public interface IBrokerWalletRepository
 {
     Task EnsureExistsAsync(Guid brokerId, CancellationToken ct);
+    /// <summary>Attribution created (commission_status 'pending'): credit pending_inr + lifetime/month counters.</summary>
+    Task ApplyAttributedAsync(Guid brokerId, decimal amountInr, DateTime nowUtc, CancellationToken ct);
+    /// <summary>Booking completed (pending → earned): move pending_inr → earned_inr.</summary>
     Task ApplyEarnedAsync(Guid brokerId, decimal amountInr, DateTime nowUtc, CancellationToken ct);
+    /// <summary>Payout executed (ready_to_pay → paid): debit ready_to_pay_inr, credit lifetime_paid_inr.</summary>
     Task ApplyPaidAsync(Guid brokerId, decimal grossInr, DateTime nowUtc, CancellationToken ct);
+    /// <summary>Reversal/clawback: debit the bucket matching <paramref name="fromStatus"/> + credit lifetime_reversed_inr.</summary>
+    Task ApplyReversedAsync(Guid brokerId, decimal amountInr, string fromStatus, DateTime nowUtc, CancellationToken ct);
     Task<BrokerWalletDto?> GetAsync(Guid brokerId, CancellationToken ct);
 }
 
@@ -78,7 +119,8 @@ public interface IBrokerWalletRepository
 public interface ICommissionAdminRepository
 {
     Task<Guid> RaiseDisputeAsync(Guid tenantId, RaiseDisputeRequest request, Guid? byUserId, DateTime nowUtc, CancellationToken ct);
-    Task ResolveDisputeAsync(Guid disputeId, ResolveDisputeRequest request, Guid byUserId, DateTime nowUtc, CancellationToken ct);
+    /// <summary>Resolves the dispute and returns the disputed attribution_id (so the handler can claw back if the tenant won).</summary>
+    Task<Guid> ResolveDisputeAsync(Guid disputeId, ResolveDisputeRequest request, Guid byUserId, DateTime nowUtc, CancellationToken ct);
     Task<Guid> CreateCampaignAsync(Guid tenantId, CreateCampaignRequest request, Guid? byUserId, DateTime nowUtc, CancellationToken ct);
     Task<IReadOnlyList<DisputeDto>> ListDisputesAsync(Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<CampaignDto>> ListCampaignsAsync(Guid tenantId, CancellationToken ct);
@@ -95,4 +137,38 @@ public interface IReferralLinkRepository
 public interface IFraudScorer
 {
     Task<(decimal Score, string[] Flags)> ScoreAsync(Guid bookingId, Guid brokerId, CancellationToken ct);
+}
+
+/// <summary>
+/// The payout disbursement rail. Selected by config like the WhatsApp sender: when real gateway credentials
+/// are present the live adapter (RazorpayX/Cashfree) is wired; otherwise the dev <c>StubPayoutGateway</c> runs
+/// a HONEST DRY RUN — it returns a clearly-labelled <c>DRYRUN-…</c> reference and gateway name <c>stub_dryrun</c>
+/// so a payout is never silently reported "paid" with a fabricated UTR. The execute handler records whatever
+/// the gateway returns (success → 'paid' + reference + gateway; failure → 'failed' + error).
+/// </summary>
+public interface IPayoutGateway
+{
+    /// <summary>The configured gateway name (e.g. 'stub_dryrun', 'razorpayx'), surfaced for audit/transparency.</summary>
+    string Name { get; }
+    Task<PayoutGatewayResult> SendAsync(PayoutInstruction instruction, CancellationToken ct);
+}
+
+public sealed record PayoutInstruction(Guid PayoutId, Guid BrokerId, decimal NetAmountInr, string PaymentMethod, string? UpiId);
+
+public sealed record PayoutGatewayResult(bool Success, string Reference, string GatewayName, bool IsDryRun, string? Error)
+{
+    public static PayoutGatewayResult Ok(string reference, string gateway, bool isDryRun) => new(true, reference, gateway, isDryRun, null);
+    public static PayoutGatewayResult Failed(string error, string gateway) => new(false, "", gateway, false, error);
+}
+
+/// <summary>
+/// Drives the commission EARNING lifecycle off booking lifecycle events (the missing link that left every
+/// attribution stuck at 'pending'). Invoked from the booking action handler inside its tenant-scoped UoW:
+/// a completed booking earns its attributions (+ credits wallets + emits <c>commission.commission.earned</c>);
+/// a cancelled/no-show booking reverses them (+ debits wallets + emits <c>commission.commission.reversed</c>).
+/// </summary>
+public interface ICommissionLifecycleService
+{
+    Task OnBookingCompletedAsync(Guid tenantId, Guid bookingId, DateTime nowUtc, CancellationToken ct);
+    Task OnBookingReversedAsync(Guid tenantId, Guid bookingId, DateTime nowUtc, CancellationToken ct);
 }
