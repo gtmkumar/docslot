@@ -63,6 +63,17 @@ public interface IUnitOfWork
     /// is the pool-safe replacement for the old session-scoped GUC. No tenant context = a tx with no GUC.
     /// </summary>
     Task<ITenantScope> BeginTenantScopeAsync(Guid? tenantId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates a SAVEPOINT in the ambient transaction so a nested BEST-EFFORT operation can be rolled back in
+    /// isolation: if a nested statement raises a DB error (which aborts the whole PostgreSQL transaction), the
+    /// caller's C# catch cannot un-abort it — but <see cref="RollbackToSavepointAsync"/> can, leaving the work
+    /// done BEFORE the savepoint committable. No-op when there is no ambient transaction.
+    /// </summary>
+    Task CreateSavepointAsync(string name, CancellationToken ct = default);
+
+    /// <summary>Rolls the ambient transaction back to <paramref name="name"/> (un-aborting it after a nested DB error). No-op when there is no ambient transaction.</summary>
+    Task RollbackToSavepointAsync(string name, CancellationToken ct = default);
 }
 
 /// <summary>

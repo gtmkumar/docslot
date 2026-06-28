@@ -97,7 +97,26 @@ public sealed class ReferralLinkRepository(PlatformDbContext db) : IReferralLink
     {
         var id = Guid.CreateVersion7();
         var shortCode = $"BRK-{Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToUpperInvariant()}";
-        var targetUrl = $"https://wa.me/?ref={shortCode}";
+
+        // Deep link the patient straight into the clinic's WhatsApp with the code PREFILLED — the WhatsApp-first
+        // attribution mechanism (no shared web session): the patient's first message carries the code, which the
+        // inbound handler detects and attributes. Use the tenant's own primary_phone as the clinic number.
+        string? clinicDigits = null;
+        if (req.TenantId is { } tid)
+        {
+            var phones = await db.Database.SqlQueryRaw<string>(
+                    "SELECT COALESCE(primary_phone,'') AS \"Value\" FROM platform.tenants WHERE tenant_id=@p0",
+                    P(("@p0", tid)))
+                .ToListAsync(ct);
+            var raw = phones.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(raw))
+                clinicDigits = new string(raw.Where(char.IsDigit).ToArray());
+        }
+        var prefill = Uri.EscapeDataString($"Hi! I'd like to book an appointment. (Ref: {shortCode})");
+        var targetUrl = string.IsNullOrEmpty(clinicDigits)
+            ? $"https://wa.me/?text={prefill}"
+            : $"https://wa.me/{clinicDigits}?text={prefill}";
+
         await db.Database.ExecuteSqlRawAsync(
             """
             INSERT INTO commission.referral_links (link_id, broker_id, tenant_id, short_code, target_url, target_doctor_id, campaign_name, is_active, created_at, updated_at)
@@ -119,8 +138,61 @@ public sealed class ReferralLinkRepository(PlatformDbContext db) : IReferralLink
             .Select(r => new ReferralLinkDto(r.LinkId, r.ShortCode, r.TargetUrl, r.ClickCount, r.ConversionCount, r.IsActive))
             .ToListAsync(ct);
 
+    public async Task<ResolvedReferralLink?> ResolveActiveByShortCodeAsync(string shortCode, DateTime nowUtc, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<ResolvedRow>(
+                """
+                SELECT link_id AS "LinkId", broker_id AS "BrokerId", tenant_id AS "TenantId", target_url AS "TargetUrl"
+                FROM commission.referral_links
+                WHERE short_code=@p0 AND is_active = true AND (expires_at IS NULL OR expires_at > @p1)
+                LIMIT 1
+                """,
+                P(("@p0", shortCode), ("@p1", nowUtc)))
+            .ToListAsync(ct);
+        var r = rows.FirstOrDefault();
+        return r is null ? null : new ResolvedReferralLink(r.LinkId, r.BrokerId, r.TenantId, r.TargetUrl);
+    }
+
+    public async Task<Guid> LogClickAsync(Guid linkId, string shortCode, string? sessionToken, string? ipHash, string? userAgentBrief, string referrerSource, DateTime nowUtc, CancellationToken ct)
+    {
+        var clickId = Guid.CreateVersion7();
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO commission.referral_clicks (click_id, link_id, short_code, session_token, ip_address_hash, user_agent_brief, referrer_source, clicked_at)
+            VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7)
+            """,
+            P(("@p0", clickId), ("@p1", linkId), ("@p2", shortCode), ("@p3", (object?)sessionToken ?? DBNull.Value),
+              ("@p4", (object?)ipHash ?? DBNull.Value), ("@p5", (object?)userAgentBrief ?? DBNull.Value),
+              ("@p6", referrerSource), ("@p7", nowUtc)));
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE commission.referral_links SET click_count = click_count + 1, updated_at=@p1 WHERE link_id=@p0",
+            P(("@p0", linkId), ("@p1", nowUtc)));
+        return clickId;
+    }
+
+    public async Task MarkConvertedAsync(Guid linkId, Guid bookingId, DateTime nowUtc, CancellationToken ct)
+    {
+        // Best-effort click↔booking join for the WhatsApp channel: attach the booking to the link's most recent
+        // not-yet-converted click. Bump conversion_count regardless (the link demonstrably produced a booking).
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE commission.referral_clicks
+            SET converted_to_booking_id=@p1, converted_at=@p2
+            WHERE click_id = (
+                SELECT click_id FROM commission.referral_clicks
+                WHERE link_id=@p0 AND converted_to_booking_id IS NULL
+                ORDER BY clicked_at DESC LIMIT 1
+            )
+            """,
+            P(("@p0", linkId), ("@p1", bookingId), ("@p2", nowUtc)));
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE commission.referral_links SET conversion_count = conversion_count + 1, updated_at=@p1 WHERE link_id=@p0",
+            P(("@p0", linkId), ("@p1", nowUtc)));
+    }
+
     private static object[] P(params (string Name, object Value)[] ps) => ps.Select(p => (object)new NpgsqlParameter(p.Name, p.Value)).ToArray();
     private sealed record LinkRow(Guid LinkId, string ShortCode, string? TargetUrl, int ClickCount, int ConversionCount, bool IsActive);
+    private sealed record ResolvedRow(Guid LinkId, Guid BrokerId, Guid? TenantId, string? TargetUrl);
 }
 
 /// <summary>Resolves a user's own broker id (commission.brokers.user_id) at login → the IDOR-safe broker_id claim.</summary>

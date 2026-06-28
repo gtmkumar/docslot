@@ -153,7 +153,19 @@ public interface IReferralLinkRepository
 {
     Task<ReferralLinkDto> CreateAsync(Guid brokerId, CreateReferralLinkRequest request, DateTime nowUtc, CancellationToken ct);
     Task<IReadOnlyList<ReferralLinkDto>> ListByBrokerAsync(Guid brokerId, CancellationToken ct);
+
+    /// <summary>Resolve an ACTIVE, non-expired referral link by its public short code (for the anonymous click endpoint + the WA code-detector). Null if missing/inactive/expired.</summary>
+    Task<ResolvedReferralLink?> ResolveActiveByShortCodeAsync(string shortCode, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>Log a click (privacy: IP is pre-hashed by the caller; no raw IP, no PHI) + bump click_count. Returns the click id.</summary>
+    Task<Guid> LogClickAsync(Guid linkId, string shortCode, string? sessionToken, string? ipHash, string? userAgentBrief, string referrerSource, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>Mark the link's most-recent unconverted click as converted to this booking + bump conversion_count (best-effort click↔booking join for the WhatsApp channel).</summary>
+    Task MarkConvertedAsync(Guid linkId, Guid bookingId, DateTime nowUtc, CancellationToken ct);
 }
+
+/// <summary>An active referral link resolved from its public short code: who earns (broker), where it points (tenant + target url).</summary>
+public sealed record ResolvedReferralLink(Guid LinkId, Guid BrokerId, Guid? TenantId, string? TargetUrl);
 
 /// <summary>Pure fraud scoring for an attribution (repeat_phone / rapid_burst / self_referral). Score >0.5 → flag.</summary>
 public interface IFraudScorer
