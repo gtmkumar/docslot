@@ -67,6 +67,9 @@ public interface IAttributionRepository
     /// </summary>
     Task<int> SettleEarnedAsync(TimeSpan window, CancellationToken ct);
 
+    /// <summary>Writes the computed direct-patient discount onto the booking (direct_discount_inr + rule).</summary>
+    Task WriteDirectDiscountAsync(Guid bookingId, Guid tenantId, decimal discountInr, Guid ruleId, DateTime nowUtc, CancellationToken ct);
+
     /// <summary>
     /// Attribution ledger list (most recent first), tenant-scoped + offset-paginated. Returns display-safe
     /// rows: the patient is a FIRST NAME + MASKED phone (PHI), and the booking is the human BKG- ref.
@@ -137,6 +140,18 @@ public interface IReferralLinkRepository
 public interface IFraudScorer
 {
     Task<(decimal Score, string[] Flags)> ScoreAsync(Guid bookingId, Guid brokerId, CancellationToken ct);
+}
+
+/// <summary>
+/// Computes + writes the direct-booking discount (the flywheel incentive): a broker-LESS booking gets
+/// <c>direct_discount_pct</c> of the would-be commission as a patient discount, funded from the commission
+/// pool. Mutually exclusive with a broker attribution (the DB trigger <c>trg_no_attribution_on_discounted</c>
+/// blocks attribution once a discount is written). Runs in the booking-creation UoW.
+/// </summary>
+public interface IDirectDiscountService
+{
+    /// <summary>Applies the discount for a direct booking; returns the amount written (0 if no matching rule).</summary>
+    Task<decimal> ApplyAsync(Guid tenantId, Guid bookingId, DateTime nowUtc, CancellationToken ct);
 }
 
 /// <summary>

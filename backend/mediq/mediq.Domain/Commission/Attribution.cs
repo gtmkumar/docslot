@@ -64,6 +64,7 @@ public sealed class CommissionRule
     public decimal? FlatAmountInr { get; private set; }
     public decimal? Percentage { get; private set; }
     public string? TieredTableJson { get; private set; }         // [{min, max, amount} | {min, max, pct}] bands
+    public decimal DirectDiscountPct { get; private set; } = 50m; // % of the would-be commission given as a direct-patient discount
     public decimal? MinCommissionInr { get; private set; }
     public decimal? MaxCommissionInr { get; private set; }
     public decimal? MaxMonthlyPerBrokerInr { get; private set; }
@@ -77,7 +78,7 @@ public sealed class CommissionRule
         Guid id, Guid tenantId, string name, string[]? tiers, string[]? types, string[]? services,
         decimal? minVal, decimal? maxVal, string calcType, decimal? flat, decimal? pct,
         decimal? minComm, decimal? maxComm, decimal? maxMonthly, int priority, bool excludesPndt, bool firstBookingOnly,
-        string? tieredTableJson = null)
+        string? tieredTableJson = null, decimal directDiscountPct = 50m)
         => new()
         {
             RuleId = id, TenantId = tenantId, RuleName = name, AppliesToBrokerTier = tiers,
@@ -85,8 +86,20 @@ public sealed class CommissionRule
             MaxBookingValueInr = maxVal, CalcType = calcType, FlatAmountInr = flat, Percentage = pct,
             MinCommissionInr = minComm, MaxCommissionInr = maxComm, MaxMonthlyPerBrokerInr = maxMonthly,
             Priority = priority, ExcludesPndt = excludesPndt, FirstBookingOnly = firstBookingOnly,
-            TieredTableJson = tieredTableJson,
+            TieredTableJson = tieredTableJson, DirectDiscountPct = directDiscountPct,
         };
+
+    /// <summary>
+    /// True if this rule applies to a DIRECT (broker-less) booking for the direct-discount calc — matches on
+    /// service + booking value only (broker tier/type filters are irrelevant when there is no broker).
+    /// </summary>
+    public bool MatchesDirect(string? serviceType, decimal bookingValue)
+    {
+        if (AppliesToServiceType is { Length: > 0 } && serviceType is not null && !AppliesToServiceType.Contains(serviceType)) return false;
+        if (MinBookingValueInr is { } min && bookingValue < min) return false;
+        if (MaxBookingValueInr is { } max && bookingValue > max) return false;
+        return true;
+    }
 
     /// <summary>True if this rule applies to the (broker tier/type, service, booking value) context.</summary>
     public bool Matches(string brokerTier, string brokerType, string? serviceType, decimal bookingValue)

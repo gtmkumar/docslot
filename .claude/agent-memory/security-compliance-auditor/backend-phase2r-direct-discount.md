@@ -1,0 +1,23 @@
+---
+name: backend-phase2r-direct-discount
+description: Phase-2-remainder DIRECT-BOOKING DISCOUNT audit — clean PASS. Broker-less booking takes commission-pool-funded patient discount, mutually exclusive w/ broker attribution; DB trigger enforces, single create-time write path, bounded amount
+metadata:
+  type: project
+---
+
+Phase-2 remainder: the DIRECT-BOOKING DISCOUNT (flywheel incentive). Audited 2026-06-28 (working tree, uncommitted on `main`) — **PASS, no conditions**. Build clean; DirectDiscount+CommissionPipeline 11/11 + PlatformApi 6/6 green; live DB verified.
+
+**WHAT IT DOES:** A broker-LESS booking created with `applyDirectDiscount=true` gets `direct_discount_pct` (default 50) of the would-be commission written to `bookings.direct_discount_inr` (+ `direct_discount_rule_id`), funded from the commission pool. Writing it makes the booking attribution-INELIGIBLE (the anti-double-dip invariant). Files: `DirectDiscountService.cs` (new), `CommissionRule.DirectDiscountPct`/`MatchesDirect` (Attribution.cs — MatchesDirect ignores broker tier/type, matches service+value only — correct, no broker), `CreateBookingRequest.ApplyDirectDiscount` flag, `BookingCreationService` applies AFTER insert inside create UoW, `AttributionRepository.WriteDirectDiscountAsync` does the UPDATE.
+
+**VERIFIED SOUND (re-confirm, don't re-derive):**
+- **Mutual exclusivity DB-enforced (live)**: `trg_no_attribution_on_discounted` BEFORE INSERT on `commission.attributions`, fn `fn_block_attribution_on_discounted` (prosecdef=f / SECURITY INVOKER, owner gtmkumar, enabled 'O'), rejects attribution when `bookings.direct_discount_inr > 0` → SQLSTATE 23514. `AttributionRepository.AddAsync` catches 23514 → `AttributionOnDiscountedBookingException` → 422. New write path only SETs direct_discount_inr, never inserts attributions → can't bypass trigger. Trigger fn reads SAME-tenant booking (visible: the attr INSERT it fires on is own-tenant under RLS) → no RLS blind-spot. Test proves discounted booking rejects post_hoc_claim w/ 422 + COUNT=0.
+- **Bounded amount**: CommissionCalculator.Calculate returns Math.Max(0m,…); `direct_discount_pct` CHECK 0–100 (live: `commission_rules_direct_discount_pct_check`); discount=Round(commission*pct/100,2) + early-return if <=0 → discount ∈ [0, commission]. Monthly cap passed brokerEarnedThisMonth:0m → can only shrink would-be commission, never inflate discount.
+- **Single write path / no double-apply**: WriteDirectDiscountAsync has ONE caller (BookingCreationService.CreateAsync), gated on req.ApplyDirectDiscount, targets the just-inserted booking row in the create UoW — before any attribution can exist. Reschedule (RescheduleBookingCommand.cs) + WhatsApp (ProcessInboundWhatsAppMessageCommandHandler.cs) build CreateBookingRequest WITHOUT ApplyDirectDiscount (defaults false) and always target a freshly-minted booking, never an attributed one. CreateBookingCommand is IRequireIdempotency. Ledger uncorruptable.
+- **RLS (live)**: WriteDirectDiscountAsync UPDATE docslot.bookings (relrowsecurity=t, policy tenant_isolation_bookings = current_tenant_id OR current_impersonated_tenant) within create UoW (SET LOCAL app.tenant_id) + explicit tenant_id=@p1 predicate. docslot_app NOBYPASSRLS. Cross-tenant write impossible.
+- **No new permission** (part of booking create, gated by docslot.booking.create). **No new PHI read path** (GetBookingValueAsync returns fee/service-type/discount/patient-id only). No secrets/encryption/forbidden fields.
+
+**TEST-INFRA changes (harden, NOT weaken coverage):**
+- `CommissionPipelineCollection.cs` (new ICollectionFixture): shares ONE TestHost across CommissionPipelineTests + DirectDiscountTests AND forces them SEQUENTIAL — eliminates interference from the global cross-tenant settle_earned_attributions sweep. Same 11 tests, no assertion relaxed.
+- PlatformApiTests webhook URL `https://example.test/hook` → `https://127.0.0.1:9/hook` (loopback discard port): test delivers via FAKE dispatcher so URL irrelevant to its 6 assertions; the row is platform-wide (tenant_id NULL → matches every tenant's booking.created), so if it leaks, the REAL dispatcher in OTHER hosts fails INSTANTLY (connection-refused) instead of stalling minutes on a dead public host → cascading booking-create timeouts. Test-only, loopback, no SSRF concern.
+
+No carryover conditions from this change. (Pre-existing open items unchanged: ExecutePayout idempotency HIGH from [[backend-phase2-commission-pipeline]] — note: PayoutRepository now has TryClaimForExecutionAsync single-winner claim approved→processing, verify the handler actually early-returns on false before clearing that HIGH; MessagePack 2.5.192 advisory.)

@@ -168,6 +168,13 @@ public sealed class AttributionRepository(PlatformDbContext db) : IAttributionRe
         return r is null ? null : new ReversedAttribution(r.BrokerId, r.Amount, r.FromStatus);
     }
 
+    public Task WriteDirectDiscountAsync(Guid bookingId, Guid tenantId, decimal discountInr, Guid ruleId, DateTime now, CancellationToken ct) =>
+        // Runs in the booking-creation UoW (app.tenant_id set) → bookings RLS allows own-tenant. The discount
+        // makes the booking ineligible for any broker attribution (enforced by trg_no_attribution_on_discounted).
+        db.Database.ExecuteSqlRawAsync(
+            "UPDATE docslot.bookings SET direct_discount_inr=@p2, direct_discount_rule_id=@p3, updated_at=@p4 WHERE booking_id=@p0 AND tenant_id=@p1",
+            P(("@p0", bookingId), ("@p1", tenantId), ("@p2", discountInr), ("@p3", ruleId), ("@p4", now)));
+
     public Task<int> SettleEarnedAsync(TimeSpan window, CancellationToken ct) =>
         // SECURITY DEFINER fn (cross-tenant; the settlement worker has no app.tenant_id).
         db.Database.SqlQueryRaw<int>(

@@ -34,7 +34,10 @@ public sealed record CreateBookingRequest(
     string? BehalfRelation = null,
     string? BehalfBookerPhone = null,
     string? PatientConsentStatus = null,
-    Guid? RescheduledFromBookingId = null) : IIdempotentRequest;
+    Guid? RescheduledFromBookingId = null,
+    // Direct-patient flywheel: when true and a matching commission rule exists, the booking gets
+    // direct_discount_pct of the would-be commission as a discount (and becomes broker-attribution-ineligible).
+    bool ApplyDirectDiscount = false) : IIdempotentRequest;
 
 public sealed record CreateBookingResult(Guid BookingId, string? BookingNumber, int? TokenNumber);
 

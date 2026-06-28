@@ -21,6 +21,7 @@ public sealed class BookingCreationService(
     IOpdTokenService opdTokens,
     IBookingEventPublisher events,
     ISettingsReadService settings,
+    IDirectDiscountService directDiscount,
     IAuditTrailWriter audit,
     ICurrentUserContext ctx)
     : IBookingCreationService
@@ -63,6 +64,11 @@ public sealed class BookingCreationService(
         if (req.IssueOpdToken)
             tokenNumber = await opdTokens.IssueAsync(
                 tenantId, booking.BookingId, req.DoctorId, DateOnly.FromDateTime(now), now, ct);
+
+        // Direct-patient flywheel: a broker-less booking can take a discount funded from the commission pool.
+        // Writing it makes the booking ineligible for any broker attribution (DB trigger) — no double-dip.
+        if (req.ApplyDirectDiscount)
+            await directDiscount.ApplyAsync(tenantId, booking.BookingId, now, ct);
 
         await audit.RecordAsync(new AuditEntry(
             "create", "booking", booking.BookingId, bookingNumber, ctx.UserId, tenantId,

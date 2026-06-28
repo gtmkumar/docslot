@@ -22,8 +22,8 @@ namespace mediq.IntegrationTests;
 /// to the value read immediately before the action under test, never an absolute (the broker wallet is shared).
 /// </para>
 /// </summary>
+[Collection("CommissionPipeline")]
 public sealed class CommissionPipelineTests(CommissionPipelineWebAppFactory factory)
-    : IClassFixture<CommissionPipelineWebAppFactory>
 {
     private const decimal Commission = CommissionPipelineWebAppFactory.FlatCommission;   // ₹200
 

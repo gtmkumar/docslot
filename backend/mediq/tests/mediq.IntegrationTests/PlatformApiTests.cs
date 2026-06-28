@@ -94,8 +94,13 @@ public sealed class PlatformApiTests(PlatformApiWebAppFactory factory) : IClassF
         admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
 
         const string secret = "webhook-known-secret-abcdef";
+        // URL is a fast-fail loopback (port 9 = discard/closed → instant connection-refused), NOT a dead
+        // public host. This test delivers via the FAKE dispatcher so the URL is irrelevant to its assertions;
+        // but the row is platform-wide (tenant_id NULL → matches every tenant's booking.created), so if it
+        // ever leaks (a cleanup hiccup), the REAL dispatcher used by OTHER test hosts fails instantly instead
+        // of stalling for minutes on an unreachable public URL and cascading booking-create timeouts.
         var create = await admin.PostAsJsonAsync("/api/v1/webhooks", new CreateWebhookRequest(
-            factory.ClientId, TenantId: null, Name: "test-hook", Url: "https://example.test/hook",
+            factory.ClientId, TenantId: null, Name: "test-hook", Url: "https://127.0.0.1:9/hook",
             EventTypes: new[] { "docslot.booking.created" }, Secret: secret, MaxRetries: 3));
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
         var created = await create.Content.ReadFromJsonAsync<CreateWebhookResult>();
