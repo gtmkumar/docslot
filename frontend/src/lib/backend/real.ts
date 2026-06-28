@@ -56,6 +56,10 @@ import {
   SetOverrideResultSchema,
   UserListItemSchema,
   UserListItemDtoSchema,
+  CreateUserResultSchema,
+  SetUserStatusResultSchema,
+  UpdateUserProfileResultSchema,
+  ResetAccessResultSchema,
   MeSchema,
   MenusResponseSchema,
   PatientListItemDtoSchema,
@@ -112,6 +116,13 @@ import {
   type SetOverrideRequest,
   type SetOverrideResult,
   type UserListItem,
+  type CreateUserRequest,
+  type CreateUserResult,
+  type SetUserStatusRequest,
+  type SetUserStatusResult,
+  type UpdateUserProfileRequest,
+  type UpdateUserProfileResult,
+  type ResetAccessResult,
   type LoginRequest,
   type Me,
   type MenusResponse,
@@ -1413,20 +1424,22 @@ export async function listTenantUsers(): Promise<UserListItem[]> {
   const tenantId = getSessionSnapshot().tenantId;
   // The tenant comes from the path; the JWT claim re-scopes server-side anyway.
   const raw = await apiFetch<unknown[]>(`/tenants/${tenantId}/users`);
-  // The live UserListItemDto is leaner than the app-facing UserListItem: it sends
-  // `phone` (not `maskedPhone`). Parse the RAW DTO, then ADAPT — mask the phone (PHI;
-  // matches the mock's masking style) and pass the joined roles through (each carries
-  // its assignment id + isPrimary for the row chips and the manage panel).
+  // The server now MASKS the phone (DPDP) and returns the account security posture
+  // (lockedUntil, mustChangePassword) + the user's roles in the tenant — so this is a
+  // straight pass-through, no client-side masking. The list includes deactivated users
+  // (isActive=false, no role chips) so the manage panel can reactivate them.
   const dtos = UserListItemDtoSchema.array().parse(raw);
   return dtos.map((d) =>
     UserListItemSchema.parse({
       userId: d.userId,
       email: d.email,
       fullName: d.fullName,
-      maskedPhone: d.phone ? maskPhone(d.phone) : null,
+      maskedPhone: d.maskedPhone ?? null,
       isActive: d.isActive,
       mfaEnabled: d.mfaEnabled,
       lastLoginAt: d.lastLoginAt ?? null,
+      lockedUntil: d.lockedUntil ?? null,
+      mustChangePassword: d.mustChangePassword ?? false,
       roles: (d.roles ?? []).map((r) => ({
         userTenantRoleId: r.userTenantRoleId,
         roleId: r.roleId,
@@ -1437,6 +1450,78 @@ export async function listTenantUsers(): Promise<UserListItem[]> {
       })),
     }),
   );
+}
+
+/** POST /tenants/{tenantId}/users — invite/create a user (the tenant comes from the
+ *  session, NEVER a body field). No password is sent: the server seeds a temp credential
+ *  + must-change-password. `alreadyExisted`=true links an existing global identity. */
+export async function createUser(
+  req: CreateUserRequest,
+  idempotencyKey: string,
+): Promise<CreateUserResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/users`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      email: req.email,
+      fullName: req.fullName,
+      phone: req.phone ?? null,
+      preferredLanguage: req.preferredLanguage ?? 'en',
+      initialRoleId: req.initialRoleId ?? null,
+    },
+  });
+  return CreateUserResultSchema.parse(raw);
+}
+
+/** PUT /tenants/{tenantId}/users/{userId}/status — deactivate (revoke memberships in this
+ *  tenant) or reactivate. 403 self/last-admin guards surface via toUserError. */
+export async function setUserActive(
+  userId: string,
+  req: SetUserStatusRequest,
+  idempotencyKey: string,
+): Promise<SetUserStatusResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/users/${userId}/status`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: { isActive: req.isActive, reason: req.reason },
+  });
+  return SetUserStatusResultSchema.parse(raw);
+}
+
+/** PUT /tenants/{tenantId}/users/{userId} — edit profile (name/phone/language only). */
+export async function updateUser(
+  userId: string,
+  req: UpdateUserProfileRequest,
+  idempotencyKey: string,
+): Promise<UpdateUserProfileResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/users/${userId}`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: {
+      fullName: req.fullName,
+      phone: req.phone ?? null,
+      preferredLanguage: req.preferredLanguage ?? 'en',
+    },
+  });
+  return UpdateUserProfileResultSchema.parse(raw);
+}
+
+/** POST /tenants/{tenantId}/users/{userId}/reset-access — force password change + unlock. */
+export async function resetUserAccess(
+  userId: string,
+  reason: string,
+  idempotencyKey: string,
+): Promise<ResetAccessResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/users/${userId}/reset-access`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: { reason },
+  });
+  return ResetAccessResultSchema.parse(raw);
 }
 
 /** POST /role-assignments — assign a role to a user in the tenant. The new role then

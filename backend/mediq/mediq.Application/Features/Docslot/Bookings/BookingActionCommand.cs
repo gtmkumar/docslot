@@ -54,6 +54,11 @@ public sealed class BookingActionCommandHandler(
             _ => throw new ArgumentOutOfRangeException(nameof(req.Action)),
         };
 
+        // Cancel/no-show free the slot capacity the booking consumed at creation (ConvertAsync incremented
+        // it) so the slot can be re-booked; complete/approve keep it consumed. Fixes the capacity leak.
+        if (req.Action is BookingActionType.Cancel or BookingActionType.MarkNoShow)
+            await slotHolds.ReleaseSlotCapacityAsync(booking.SlotId, now, ct);
+
         // The UnitOfWork behavior commits the tracked mutation (and the DB trigger logs history).
         await audit.RecordAsync(new AuditEntry(
             req.Action.ToString().ToLowerInvariant(), "booking", booking.BookingId, booking.BookingNumber,

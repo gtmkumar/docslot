@@ -25,6 +25,8 @@ export type Panel =
   // so they are URL-restorable via ?panel=&id=.
   | { type: 'inviteUser' }
   | { type: 'manageUser'; userId: string }
+  // editUser carries a userId, so it is URL-restorable via ?panel=&id=.
+  | { type: 'editUser'; userId: string }
   | { type: 'roleView'; roleId: string }
   | { type: 'createRole' }
   // Roles & permissions privilege matrix (Slice 2). roleMatrix/duplicateRole carry

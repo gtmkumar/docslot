@@ -29,6 +29,7 @@ const AddDoctorPanel = lazy(() => import('@/features/doctors/components/AddDocto
 const AddPatientPanel = lazy(() => import('@/features/patients/components/AddPatientPanel').then((m) => ({ default: m.AddPatientPanel })));
 const InviteUserPanel = lazy(() => import('@/features/team/components/InviteUserPanel').then((m) => ({ default: m.InviteUserPanel })));
 const ManageUserPanel = lazy(() => import('@/features/team/components/ManageUserPanel').then((m) => ({ default: m.ManageUserPanel })));
+const EditUserPanel = lazy(() => import('@/features/team/components/EditUserPanel').then((m) => ({ default: m.EditUserPanel })));
 const RoleViewPanel = lazy(() => import('@/features/team/components/RoleViewPanel').then((m) => ({ default: m.RoleViewPanel })));
 const CreateRolePanel = lazy(() => import('@/features/team/components/CreateRolePanel').then((m) => ({ default: m.CreateRolePanel })));
 const RoleMatrixPanel = lazy(() => import('@/features/team/components/RoleMatrixPanel').then((m) => ({ default: m.RoleMatrixPanel })));
@@ -105,6 +106,7 @@ function panelToSearch(panel: Panel | null): { panel?: UrlPanelType; id?: string
   if ('bookingId' in panel) return { panel: panel.type as UrlPanelType, id: panel.bookingId };
   if ('booking' in panel && panel.booking) return { panel: panel.type as UrlPanelType, id: panel.booking.id };
   if (panel.type === 'manageUser') return { panel: panel.type, id: panel.userId };
+  if (panel.type === 'editUser') return { panel: panel.type, id: panel.userId };
   if (panel.type === 'roleView') return { panel: panel.type, id: panel.roleId };
   if (panel.type === 'roleMatrix' || panel.type === 'duplicateRole') return { panel: panel.type, id: panel.roleId };
   if (panel.type === 'effectiveAccess') return { panel: panel.type, id: panel.userId };
@@ -132,6 +134,7 @@ function searchToPanel(type: PanelType | undefined, id: string | undefined): Pan
   }
   // Team panels carry only an id (the panel fetches its own data by id).
   if (type === 'manageUser') return id ? { type, userId: id } : null;
+  if (type === 'editUser') return id ? { type, userId: id } : null;
   if (type === 'roleView') return id ? { type, roleId: id } : null;
   if (type === 'roleMatrix' || type === 'duplicateRole') return id ? { type, roleId: id } : null;
   if (type === 'effectiveAccess') return id ? { type, userId: id } : null;
@@ -229,6 +232,8 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <InviteUserPanel open onClose={closePanel} />;
     case 'manageUser':
       return <ManageUserPanel userId={panel.userId} open onClose={closePanel} />;
+    case 'editUser':
+      return <EditUserPanel userId={panel.userId} open onClose={closePanel} />;
     case 'roleView':
       return <RoleViewPanel roleId={panel.roleId} open onClose={closePanel} />;
     case 'createRole':

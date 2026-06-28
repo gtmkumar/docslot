@@ -15,13 +15,16 @@ namespace mediq.Infrastructure.Docslot;
 /// </summary>
 public sealed class SlotHoldService(PlatformDbContext db) : ISlotHoldService
 {
-    public async Task<SlotHold> HoldAsync(Guid tenantId, Guid slotId, TimeSpan ttl, DateTime nowUtc, CancellationToken ct)
+    public async Task<SlotHold> HoldAsync(
+        Guid tenantId, Guid slotId, Guid doctorId, TimeSpan ttl, DateTime nowUtc, CancellationToken ct)
     {
         var holdId = Guid.CreateVersion7();
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         var expiresAt = nowUtc.Add(ttl);
 
-        // Conditional insert: only succeeds if the slot is available, has capacity, and has no LIVE hold.
+        // Conditional insert: only succeeds if the slot is available, has capacity, BELONGS TO THIS DOCTOR
+        // (consistency guard — a valid slot id paired with an unrelated doctor must not book), and has no
+        // LIVE hold. All checked in one statement so concurrent holders can't both succeed.
         var affected = await db.Database.ExecuteSqlRawAsync(
             """
             INSERT INTO docslot.slot_holds (hold_id, tenant_id, slot_id, hold_token, status, created_at, expires_at)
@@ -29,6 +32,7 @@ public sealed class SlotHoldService(PlatformDbContext db) : ISlotHoldService
             FROM docslot.time_slots s
             WHERE s.slot_id = @p2
               AND s.tenant_id = @p1
+              AND s.doctor_id = @p5
               AND s.status = 'available'
               AND s.current_count < s.max_count
               AND NOT EXISTS (
@@ -40,7 +44,8 @@ public sealed class SlotHoldService(PlatformDbContext db) : ISlotHoldService
             new NpgsqlParameter("@p1", tenantId),
             new NpgsqlParameter("@p2", slotId),
             new NpgsqlParameter("@p3", token),
-            new NpgsqlParameter("@p4", expiresAt));
+            new NpgsqlParameter("@p4", expiresAt),
+            new NpgsqlParameter("@p5", doctorId));
 
         if (affected == 0)
             throw new SlotUnavailableException(slotId);
@@ -69,6 +74,30 @@ public sealed class SlotHoldService(PlatformDbContext db) : ISlotHoldService
         db.Database.ExecuteSqlRawAsync(
             "UPDATE docslot.slot_holds SET status = 'released' WHERE hold_id = @p0 AND status = 'held'",
             new NpgsqlParameter("@p0", holdId));
+
+    public Task ReleaseSlotCapacityAsync(Guid slotId, DateTime nowUtc, CancellationToken ct) =>
+        // Free the capacity a confirmed booking consumed (cancel/no-show): decrement (floored at 0) and
+        // re-open a 'booked' slot to 'available'. A 'blocked' slot stays blocked.
+        db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE docslot.time_slots
+            SET current_count = GREATEST(current_count - 1, 0),
+                status = CASE WHEN status = 'booked' THEN 'available' ELSE status END
+            WHERE slot_id = @p0
+            """,
+            new NpgsqlParameter("@p0", slotId));
+
+    public async Task<int> ExpireStaleHoldsAsync(DateTime nowUtc, CancellationToken ct)
+    {
+        // Via a SECURITY DEFINER fn: the maintenance worker has no per-request tenant context, and a plain
+        // app-role UPDATE would match zero rows under the slot_holds RLS (app.tenant_id unset). The definer
+        // runs as owner (bypasses RLS) and sweeps across all tenants.
+        var rows = await db.Database.SqlQueryRaw<IntResult>(
+            "SELECT docslot.expire_stale_slot_holds() AS \"Value\"").ToListAsync(ct);
+        return rows.FirstOrDefault()?.Value ?? 0;
+    }
+
+    private sealed record IntResult(int Value);
 
     public async Task<bool> IsLiveAsync(Guid holdId, DateTime nowUtc, CancellationToken ct)
     {

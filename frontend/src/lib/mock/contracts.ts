@@ -333,6 +333,10 @@ export const UserListItemSchema = z.object({
   isActive: z.boolean(),
   mfaEnabled: z.boolean(),
   lastLoginAt: z.string().nullable(),
+  // Account security posture for the manage panel: when the account is locked, and whether a
+  // password change is pending (after an admin reset). Both nullable/defaulted for resilience.
+  lockedUntil: z.string().nullable().default(null),
+  mustChangePassword: z.boolean().default(false),
   // Roles the user holds in this tenant — assembled for the list row (the backend
   // join over user_tenant_roles → roles). Each carries the assignment id so the
   // manage panel can revoke without a second lookup.
@@ -349,20 +353,23 @@ export const UserListItemSchema = z.object({
 });
 export type UserListItem = z.infer<typeof UserListItemSchema>;
 
-/** RAW shape the LIVE `GET /tenants/{tenantId}/users` returns — leaner than the
- *  app-facing UserListItem: it carries `phone` (not `maskedPhone`). It now joins
- *  the user's roles in the tenant. lib/backend/real.ts adapts it into UserListItem
- *  (masking phone, passing roles through). Tolerant/passthrough so additive backend
- *  fields don't break parsing; roles defaults to [] for resilience if ever omitted. */
+/** RAW shape the LIVE `GET /tenants/{tenantId}/users` returns. The server now MASKS
+ *  the phone (DPDP — raw phone never crosses the wire in an aggregate), so this
+ *  carries `maskedPhone` directly + the account security posture (lockedUntil,
+ *  mustChangePassword) and the user's roles in the tenant. lib/backend/real.ts passes
+ *  it through 1:1. Tolerant/passthrough so additive backend fields don't break
+ *  parsing; roles defaults to [] for resilience if ever omitted. */
 export const UserListItemDtoSchema = z
   .object({
     userId: z.string(),
     email: z.string(),
     fullName: z.string(),
-    phone: z.string().nullable().optional(),
+    maskedPhone: z.string().nullable().optional(),
     isActive: z.boolean(),
     mfaEnabled: z.boolean(),
     lastLoginAt: z.string().nullable().optional(),
+    lockedUntil: z.string().nullable().optional(),
+    mustChangePassword: z.boolean().optional().default(false),
     roles: z
       .array(
         z.object({
@@ -385,14 +392,47 @@ export const CreateUserRequestSchema = z.object({
   email: z.string(),
   fullName: z.string(),
   phone: z.string().nullable().optional(),
-  password: z.string().nullable().optional(),
   preferredLanguage: z.string().default('en'),
   initialRoleId: z.string().nullable().optional(),
 });
 export type CreateUserRequest = z.infer<typeof CreateUserRequestSchema>;
 
-export const CreateUserResultSchema = z.object({ userId: z.string() });
+/** `alreadyExisted`=true when the email matched a global identity and we only linked a
+ *  new tenant membership (the existing profile is never overwritten). */
+export const CreateUserResultSchema = z.object({
+  userId: z.string(),
+  alreadyExisted: z.boolean().optional().default(false),
+});
 export type CreateUserResult = z.infer<typeof CreateUserResultSchema>;
+
+// ── User lifecycle (deactivate/reactivate, edit profile, reset access) ─────────
+/** `PUT /tenants/{id}/users/{userId}/status`. Reason mandatory when deactivating. */
+export const SetUserStatusRequestSchema = z.object({
+  isActive: z.boolean(),
+  reason: z.string(),
+});
+export type SetUserStatusRequest = z.infer<typeof SetUserStatusRequestSchema>;
+
+export const SetUserStatusResultSchema = z.object({ userId: z.string(), isActive: z.boolean() });
+export type SetUserStatusResult = z.infer<typeof SetUserStatusResultSchema>;
+
+/** `PUT /tenants/{id}/users/{userId}`. Whitelisted fields only (never email/auth/status). */
+export const UpdateUserProfileRequestSchema = z.object({
+  fullName: z.string(),
+  phone: z.string().nullable().optional(),
+  preferredLanguage: z.enum(['en', 'hi']).default('en'),
+});
+export type UpdateUserProfileRequest = z.infer<typeof UpdateUserProfileRequestSchema>;
+
+export const UpdateUserProfileResultSchema = z.object({ userId: z.string() });
+export type UpdateUserProfileResult = z.infer<typeof UpdateUserProfileResultSchema>;
+
+/** `POST /tenants/{id}/users/{userId}/reset-access`. Reason mandatory; flags only (no plaintext). */
+export const ResetAccessRequestSchema = z.object({ reason: z.string() });
+export type ResetAccessRequest = z.infer<typeof ResetAccessRequestSchema>;
+
+export const ResetAccessResultSchema = z.object({ userId: z.string() });
+export type ResetAccessResult = z.infer<typeof ResetAccessResultSchema>;
 
 /** A role. Mirrors RoleDto. `isSystem` roles are read-only; `tenantId===null` = system. */
 export const RoleSchema = z.object({

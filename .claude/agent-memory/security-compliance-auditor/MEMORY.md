@@ -14,3 +14,5 @@
 - [IAM Roles&Permissions admin](backend-iam-roles-admin.md) — CLEARED PASS: duplicate_role grant-option escalation (HIGH) fixed (non-super forces is_grantable=false) & verified; 2 low-sev follow-ups open
 - [IAM Catalog plane (create module/perm)](rbac-catalog-plane.md) — CLEARED PASS: authz gate sound, actor=principal, create≠grant; condition (revoke app-role INSERT/UPDATE on catalog tables) applied & verified live SELECT-only; 409 broadening benign
 - [Module Licensing Slice](module_licensing_slice.md) — display-only entitlement gate; cleared, posture + why-not-cross-tenant
+- [User Management Lifecycle](user-management-lifecycle.md) — deactivate/reactivate/edit/reset + invite escalation fix; CLEARED PASS (all 4 findings fixed & re-verified live)
+- [Phase-0 Booking Data-Plane RLS](backend-phase0-booking-dataplane-rls.md) — RLS on 5 booking + 5 ai tables + generate_time_slots definer; PASS-WITH-CONDITIONS: worker hold-sweep silently no-ops under RLS (MEDIUM) + RLS test gap

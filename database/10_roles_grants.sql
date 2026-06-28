@@ -99,6 +99,9 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commission   TO docslot_app;
 -- ----------------------------------------------------------------------------
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA platform   TO docslot_app;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA commission TO docslot_app;
+-- docslot has app-callable functions too (e.g. generate_time_slots — the slot
+-- materializer); trigger functions are harmless to include.
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA docslot    TO docslot_app;
 
 -- ----------------------------------------------------------------------------
 -- 7. RLS: the app role is subject to RLS (NOBYPASSRLS). The policies on the PHI

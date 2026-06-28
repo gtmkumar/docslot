@@ -2248,6 +2248,131 @@ CREATE TRIGGER trg_booking_status_log AFTER UPDATE ON docslot.bookings
     FOR EACH ROW EXECUTE FUNCTION docslot.log_booking_status_change();
 
 -- ============================================================================
+-- SLOT GENERATION (FR-BOOK-02) — materialize bookable time_slots from the
+-- doctor's recurring weekly schedule, honouring schedule_overrides (blocked
+-- dates skip; custom hours replace the window) and the per-block break window.
+-- ============================================================================
+-- SECURITY DEFINER so the nightly materializer + the staff "generate" endpoint
+-- can write slots regardless of RLS; tenant_id is derived from the doctor row
+-- (authoritative — never a caller-supplied value), and the calling endpoint is
+-- tenant-scoped + permission-gated. Idempotent: ON CONFLICT DO NOTHING never
+-- clobbers an existing (possibly already-booked) slot. Returns rows created.
+CREATE OR REPLACE FUNCTION docslot.generate_time_slots(
+    p_doctor_id UUID,
+    p_from_date DATE,
+    p_to_date   DATE
+) RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+DECLARE
+    v_tenant       UUID;
+    v_date         DATE;
+    v_dow          SMALLINT;
+    v_sched        RECORD;
+    v_ovr          docslot.schedule_overrides%ROWTYPE;
+    v_has_override BOOLEAN;
+    v_win_start    TIME;
+    v_win_end      TIME;
+    v_slot_start   TIME;
+    v_slot_end     TIME;
+    v_created      INT := 0;
+    v_n            INT;
+BEGIN
+    IF p_from_date IS NULL OR p_to_date IS NULL OR p_to_date < p_from_date THEN
+        RAISE EXCEPTION 'invalid date range';
+    END IF;
+    IF p_to_date - p_from_date > 92 THEN
+        RAISE EXCEPTION 'date range too large (max 92 days)';
+    END IF;
+
+    SELECT tenant_id INTO v_tenant
+    FROM docslot.doctors
+    WHERE doctor_id = p_doctor_id AND deleted_at IS NULL AND is_active = true;
+    IF v_tenant IS NULL THEN
+        RETURN 0;   -- unknown / inactive / deleted doctor: nothing to generate
+    END IF;
+
+    v_date := p_from_date;
+    WHILE v_date <= p_to_date LOOP
+        v_dow := EXTRACT(DOW FROM v_date)::SMALLINT;   -- 0=Sunday .. 6=Saturday
+
+        SELECT * INTO v_ovr FROM docslot.schedule_overrides
+            WHERE doctor_id = p_doctor_id AND override_date = v_date;
+        v_has_override := FOUND;
+
+        -- A blocked override (holiday/leave) skips the whole day.
+        IF v_has_override AND v_ovr.is_blocked THEN
+            v_date := v_date + 1;
+            CONTINUE;
+        END IF;
+
+        FOR v_sched IN
+            SELECT * FROM docslot.doctor_schedules
+            WHERE doctor_id = p_doctor_id AND day_of_week = v_dow AND is_active = true
+        LOOP
+            -- Custom override hours (if provided) replace the schedule's window for this date.
+            IF v_has_override AND v_ovr.custom_start_time IS NOT NULL THEN
+                v_win_start := v_ovr.custom_start_time;
+                v_win_end   := COALESCE(v_ovr.custom_end_time, v_sched.end_time);
+            ELSE
+                v_win_start := v_sched.start_time;
+                v_win_end   := v_sched.end_time;
+            END IF;
+
+            v_slot_start := v_win_start;
+            WHILE v_slot_start + make_interval(mins => v_sched.slot_duration_minutes) <= v_win_end LOOP
+                v_slot_end := v_slot_start + make_interval(mins => v_sched.slot_duration_minutes);
+
+                -- Skip any slot overlapping the break window.
+                IF v_sched.break_start_time IS NULL
+                   OR NOT (v_slot_start < v_sched.break_end_time AND v_slot_end > v_sched.break_start_time) THEN
+                    INSERT INTO docslot.time_slots
+                        (tenant_id, doctor_id, slot_date, start_time, end_time, status, current_count, max_count)
+                    VALUES
+                        (v_tenant, p_doctor_id, v_date, v_slot_start, v_slot_end, 'available', 0, v_sched.max_patients_per_slot)
+                    ON CONFLICT (doctor_id, slot_date, start_time) DO NOTHING;
+                    GET DIAGNOSTICS v_n = ROW_COUNT;
+                    v_created := v_created + v_n;
+                END IF;
+
+                v_slot_start := v_slot_end;
+            END LOOP;
+        END LOOP;
+
+        v_date := v_date + 1;
+    END LOOP;
+
+    RETURN v_created;
+END;
+$$;
+COMMENT ON FUNCTION docslot.generate_time_slots IS
+    'Materialize bookable time_slots for a doctor over [from,to] from doctor_schedules, honouring schedule_overrides + breaks. Idempotent (ON CONFLICT DO NOTHING). tenant_id derived from the doctor. Returns rows created.';
+
+-- Sweep stale live slot holds to 'expired'. SECURITY DEFINER so the maintenance worker
+-- (which has no per-request tenant context) can run it under RLS on slot_holds — a plain
+-- app-role UPDATE would match zero rows once app.tenant_id is unset. Returns rows swept.
+CREATE OR REPLACE FUNCTION docslot.expire_stale_slot_holds()
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+DECLARE
+    v_n INT;
+BEGIN
+    UPDATE docslot.slot_holds
+    SET status = 'expired'
+    WHERE status = 'held' AND expires_at < NOW();
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RETURN v_n;
+END;
+$$;
+COMMENT ON FUNCTION docslot.expire_stale_slot_holds IS
+    'Mark stale held slot_holds (expires_at < now) as expired. SECURITY DEFINER so the RLS-less maintenance worker can sweep across all tenants. Returns rows swept.';
+
+-- ============================================================================
 -- END OF DOCSLOT SCHEMA
 -- ============================================================================
 -- Tables: 26 (D1-D26)
@@ -2968,6 +3093,59 @@ CREATE POLICY tenant_isolation_drug_alerts ON docslot.drug_alerts
     );
 
 COMMENT ON POLICY tenant_isolation_medical_history ON docslot.patient_medical_history IS 'Defense-in-depth: blocks cross-tenant queries even if app code forgets WHERE tenant_id = ...';
+
+-- ----------------------------------------------------------------------------
+-- BOOKING DATA-PLANE RLS (Phase-0 gap fix) — tenant isolation on the operational
+-- booking tables, mirroring the PHI pattern above (active tenant OR scoped
+-- impersonation; the super_admin god-flag is intentionally NOT honored).
+-- ----------------------------------------------------------------------------
+-- App writes run in the per-request UnitOfWork transaction that SET LOCAL
+-- app.tenant_id (authenticated requests from the JWT; the WhatsApp webhook via
+-- ITenantScopeOverride). Slot materialization runs through the SECURITY DEFINER
+-- docslot.generate_time_slots (bypasses RLS), so the nightly worker — which has no
+-- request tenant context — is unaffected.
+-- EXCLUDED: docslot.patients (cross-tenant by design — no tenant_id; isolation is
+-- via patient_tenant_links) and docslot.doctors (non-PHI directory data, already
+-- tenant-filtered in code; RLS there would block the worker's context-less doctor
+-- scan during materialization).
+ALTER TABLE docslot.bookings              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docslot.time_slots            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docslot.slot_holds            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docslot.opd_tokens            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docslot.booking_status_history ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_bookings ON docslot.bookings
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_time_slots ON docslot.time_slots
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_slot_holds ON docslot.slot_holds
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_opd_tokens ON docslot.opd_tokens
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+-- booking_status_history has no tenant_id; gate via the parent booking (the status
+-- trigger inserts during a booking UPDATE inside the same tenant-scoped transaction).
+CREATE POLICY tenant_isolation_booking_status_history ON docslot.booking_status_history
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM docslot.bookings b
+            WHERE b.booking_id = booking_status_history.booking_id
+              AND (b.tenant_id = platform.current_tenant_id()
+                   OR b.tenant_id = platform.current_impersonated_tenant())
+        )
+    );
 
 -- ============================================================================
 -- LAYER 6: PII MASKING FUNCTIONS (for unauthorized access display)
@@ -3796,6 +3974,54 @@ false),
 ('lab_report_extraction_v1', 'Lab Report OCR & Extraction', 'Extracts structured test values from uploaded PDF/image lab reports', 'ocr_lab_report',
 '{"nodes": ["ocr_pages", "detect_test_panel", "extract_values", "normalize_units", "flag_abnormal"], "edges": [["ocr_pages", "detect_test_panel"], ["detect_test_panel", "extract_values"], ["extract_values", "normalize_units"], ["normalize_units", "flag_abnormal"]]}',
 true);
+
+-- ============================================================================
+-- AI DATA-PLANE RLS (Phase-0 gap fix) — tenant isolation on the PHI-bearing ai.*
+-- tables, mirroring the PHI pattern in 05 (active tenant OR scoped impersonation;
+-- the super_admin god-flag is intentionally NOT honored). Defense-in-depth:
+-- TODAY the Python AI service connects as the DB owner (RLS-bypassing) and filters
+-- by tenant in code, so these policies are a BACKSTOP for the .NET app role
+-- (docslot_app, NOBYPASSRLS) and for the intended future state where the AI service
+-- connects as a least-privilege role and SET LOCAL app.tenant_id per request
+-- (see db/rls.py in the architecture note below).
+-- ============================================================================
+ALTER TABLE ai.embeddings              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai.ai_predictions          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai.ai_agent_runs           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai.ai_document_extractions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai.ai_agent_steps          ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_embeddings ON ai.embeddings
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_ai_predictions ON ai.ai_predictions
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_ai_agent_runs ON ai.ai_agent_runs
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_ai_document_extractions ON ai.ai_document_extractions
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+-- ai_agent_steps has no tenant_id; gate via the parent run.
+CREATE POLICY tenant_isolation_ai_agent_steps ON ai.ai_agent_steps
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM ai.ai_agent_runs r
+            WHERE r.run_id = ai_agent_steps.run_id
+              AND (r.tenant_id = platform.current_tenant_id()
+                   OR r.tenant_id = platform.current_impersonated_tenant())
+        )
+    );
 
 -- ============================================================================
 -- END OF AI SERVICES SCHEMA
@@ -6211,6 +6437,9 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commission   TO docslot_app;
 -- ----------------------------------------------------------------------------
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA platform   TO docslot_app;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA commission TO docslot_app;
+-- docslot has app-callable functions too (e.g. generate_time_slots — the slot
+-- materializer); trigger functions are harmless to include.
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA docslot    TO docslot_app;
 
 -- ----------------------------------------------------------------------------
 -- 7. RLS: the app role is subject to RLS (NOBYPASSRLS). The policies on the PHI
@@ -7067,11 +7296,21 @@ AS $$
 DECLARE
     v_tenant UUID;
     v_revoked TIMESTAMPTZ;
+    v_user UUID;
+    v_role_id UUID;
+    v_confers_admin BOOLEAN;
 BEGIN
     IF p_reason IS NULL OR length(btrim(p_reason)) = 0 THEN
         RAISE EXCEPTION 'a revoke reason is mandatory';
     END IF;
-    SELECT tenant_id, revoked_at INTO v_tenant, v_revoked
+    -- '[deactivated] ' is a RESERVED marker that set_tenant_user_active writes so reactivate can find the
+    -- rows it deactivated. A hand-typed revoke reason must never be able to forge it (else an unrelated
+    -- reactivate would silently un-revoke a revoked-for-cause assignment).
+    IF btrim(p_reason) ILIKE '[deactivated]%' THEN
+        RAISE EXCEPTION 'revoke reason may not start with the reserved "[deactivated]" prefix';
+    END IF;
+    SELECT tenant_id, revoked_at, user_id, role_id
+      INTO v_tenant, v_revoked, v_user, v_role_id
     FROM platform.user_tenant_roles WHERE user_tenant_role_id = p_user_tenant_role_id;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'role assignment % not found', p_user_tenant_role_id;
@@ -7088,6 +7327,30 @@ BEGIN
             RAISE EXCEPTION 'actor % may not revoke roles in tenant %', p_actor_user_id, v_tenant
                 USING ERRCODE = 'insufficient_privilege';
         END IF;
+        -- Last-active-admin guard (permission-based, never role_key strings): refuse to
+        -- strip the tenant's final administrator. Only bites when (a) the role being
+        -- revoked confers an admin capability, (b) no OTHER active member of the tenant
+        -- holds one, and (c) the target keeps no other active admin-conferring assignment.
+        -- Prevents tenant-bricking via the role-revoke door (red-team V4). 23000 → 409.
+        v_confers_admin := EXISTS (
+            SELECT 1 FROM platform.role_permissions rp
+            JOIN platform.permissions pm ON pm.permission_id = rp.permission_id
+            WHERE rp.role_id = v_role_id
+              AND pm.permission_key IN ('tenant.users.update', 'tenant.roles.assign'));
+        IF v_confers_admin
+           AND NOT platform.tenant_has_other_active_admin(v_tenant, v_user)
+           AND NOT EXISTS (
+               SELECT 1 FROM platform.user_tenant_roles utr2
+               JOIN platform.role_permissions rp2 ON rp2.role_id = utr2.role_id
+               JOIN platform.permissions pm2 ON pm2.permission_id = rp2.permission_id
+               WHERE utr2.user_id = v_user AND utr2.tenant_id = v_tenant
+                 AND utr2.user_tenant_role_id <> p_user_tenant_role_id
+                 AND utr2.revoked_at IS NULL
+                 AND (utr2.expires_at IS NULL OR utr2.expires_at > NOW())
+                 AND pm2.permission_key IN ('tenant.users.update', 'tenant.roles.assign')) THEN
+            RAISE EXCEPTION 'cannot revoke the last administrator''s access in tenant %', v_tenant
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
     END IF;
     UPDATE platform.user_tenant_roles
         SET revoked_at = NOW(), revoked_by = p_actor_user_id, revoked_reason = left(p_reason, 200)
@@ -7096,7 +7359,7 @@ BEGIN
 END;
 $$;
 COMMENT ON FUNCTION platform.revoke_role_assignment IS
-    'R3: soft-revoke an assignment; super_admin OR tenant.roles.assign in the assignment''s tenant. Idempotent.';
+    'R3: soft-revoke an assignment; super_admin OR tenant.roles.assign in the assignment''s tenant. Idempotent. Last-active-admin guard prevents tenant-bricking.';
 
 -- Grant/deny a single permission to a user (the per-user override escape hatch).
 CREATE OR REPLACE FUNCTION platform.set_user_permission_override(
@@ -7448,6 +7711,38 @@ COMMENT ON FUNCTION platform.create_permission IS
     'Catalog: create a permission (resource.action), is_system=false. Ensures the action_type exists and links resource/action registries. Gated on platform.permissions.manage (or super_admin). A permission is inert until application code checks it.';
 
 -- ============================================================================
+-- SHARED RLS PREDICATE HELPERS — defined here (before their first users, the
+-- MODULE LICENSING tme_* policies below and the R1 RBAC-table policies further
+-- down) so a fresh bundle build resolves them. They depend only on the tenant-
+-- context accessors (current_tenant_id / current_impersonated_tenant /
+-- current_is_super_admin), all defined earlier.
+-- ============================================================================
+-- Shared predicate helpers keep the policies terse and consistent.
+CREATE OR REPLACE FUNCTION platform.rls_can_see_tenant(p_row_tenant UUID)
+RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
+    SELECT p_row_tenant IS NULL                                  -- global/system row
+        OR p_row_tenant = platform.current_tenant_id()          -- own tenant
+        OR p_row_tenant = platform.current_impersonated_tenant()-- scoped impersonation (R6)
+        OR platform.current_is_super_admin();                   -- platform god-context
+$$;
+
+-- These predicates gate the RBAC/ENTITLEMENT tables only (roles, role_permissions,
+-- user_tenant_roles, …) — NOT PHI (the PHI policies in 05 use current_impersonated_tenant()
+-- and never the god-flag). The global super_admin context is intentionally retained here:
+-- platform administration of roles/permissions/menus is a legitimate cross-tenant capability.
+-- NOTE (audit Finding 4): a super_admin context satisfies rls_can_write_tenant for ANY tenant,
+-- which would bypass the R3 grant-option/escalation guard on a DIRECT table write. This is safe
+-- TODAY because the only sanctioned RBAC mutation path is the SECURITY DEFINER functions
+-- (grant_permission_to_role / assign_role_to_user / …), which enforce R3 regardless of RLS.
+-- Any future convenience path that writes these tables directly MUST route through those functions.
+CREATE OR REPLACE FUNCTION platform.rls_can_write_tenant(p_row_tenant UUID)
+RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
+    -- Writes never target a NULL (global/system) row unless super_admin context.
+    SELECT (p_row_tenant IS NOT NULL AND p_row_tenant = platform.current_tenant_id())
+        OR platform.current_is_super_admin();
+$$;
+
+-- ============================================================================
 -- MODULE LICENSING — a COMMERCIAL DISPLAY GATE, NOT a security boundary
 -- ============================================================================
 -- Per-tenant per-module entitlement that drives the matrix "Module not licensed"
@@ -7568,30 +7863,9 @@ COMMENT ON FUNCTION platform.set_module_license IS
 -- and/or routes RBAC mutations through assign_role_to_user()/grant_permission_to_role()
 -- (which additionally enforces the R3 escalation guard). Until then, keep R1 staged.
 
--- Shared predicate helpers keep the policies terse and consistent.
-CREATE OR REPLACE FUNCTION platform.rls_can_see_tenant(p_row_tenant UUID)
-RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
-    SELECT p_row_tenant IS NULL                                  -- global/system row
-        OR p_row_tenant = platform.current_tenant_id()          -- own tenant
-        OR p_row_tenant = platform.current_impersonated_tenant()-- scoped impersonation (R6)
-        OR platform.current_is_super_admin();                   -- platform god-context
-$$;
-
--- These predicates gate the RBAC/ENTITLEMENT tables only (roles, role_permissions,
--- user_tenant_roles, …) — NOT PHI (the PHI policies in 05 use current_impersonated_tenant()
--- and never the god-flag). The global super_admin context is intentionally retained here:
--- platform administration of roles/permissions/menus is a legitimate cross-tenant capability.
--- NOTE (audit Finding 4): a super_admin context satisfies rls_can_write_tenant for ANY tenant,
--- which would bypass the R3 grant-option/escalation guard on a DIRECT table write. This is safe
--- TODAY because the only sanctioned RBAC mutation path is the SECURITY DEFINER functions below
--- (grant_permission_to_role / assign_role_to_user / …), which enforce R3 regardless of RLS.
--- Any future convenience path that writes these tables directly MUST route through those functions.
-CREATE OR REPLACE FUNCTION platform.rls_can_write_tenant(p_row_tenant UUID)
-RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
-    -- Writes never target a NULL (global/system) row unless super_admin context.
-    SELECT (p_row_tenant IS NOT NULL AND p_row_tenant = platform.current_tenant_id())
-        OR platform.current_is_super_admin();
-$$;
+-- The shared predicate helpers (rls_can_see_tenant / rls_can_write_tenant) are
+-- defined ABOVE, before the MODULE LICENSING section — its tme_read/tme_write
+-- policies are the first users, so the definitions must precede them on a fresh build.
 
 -- ---- roles -----------------------------------------------------------------
 ALTER TABLE platform.roles ENABLE ROW LEVEL SECURITY;
@@ -7678,6 +7952,257 @@ CREATE POLICY menu_perms_write ON platform.menu_permissions FOR ALL
                      AND platform.rls_can_write_tenant(m.tenant_id)));
 
 -- ============================================================================
+-- USER LIFECYCLE (tenant-scoped) — invite is fixed in the .NET handler; these are
+-- the deactivate / reactivate / edit-profile / reset-access write paths.
+-- ----------------------------------------------------------------------------
+-- Design notes (all four are SECURITY DEFINER, the actor is ALWAYS the authenticated
+-- principal passed by the API — never a body field):
+--   * platform.users / user_tenant_roles are GLOBAL tables (a user is one identity
+--     across tenants). RLS does not row-filter them usefully, so EVERY function
+--     re-checks the actor's permission AND scopes the target to THIS tenant by
+--     requiring a membership row — the cross-cutting catch on the global tables.
+--   * "Deactivate in a tenant" = soft-revoke the target's active memberships IN THIS
+--     TENANT (marked so reactivate can restore exactly them). It NEVER flips the
+--     global users.is_active — a tenant-scoped permission must not have cross-tenant
+--     blast radius (red-team V1). The global flip is a super_admin/break-glass action.
+--   * Reactivate re-runs the escalation guard per role (restore only roles the actor
+--     may currently assign) so reactivation is not an escalation-via-the-revoke door.
+-- ============================================================================
+
+-- Does the tenant have an active admin OTHER than p_excluding_user_id? "Admin" is
+-- permission-based (holds tenant.users.update or tenant.roles.assign), never a role
+-- name — honoring the no-hardcoded-roles invariant. Used by the last-admin guards.
+CREATE OR REPLACE FUNCTION platform.tenant_has_other_active_admin(
+    p_tenant_id UUID,
+    p_excluding_user_id UUID
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+BEGIN
+    RETURN EXISTS (
+        SELECT 1
+        FROM (
+            SELECT DISTINCT utr.user_id
+            FROM platform.user_tenant_roles utr
+            WHERE utr.tenant_id = p_tenant_id
+              AND utr.revoked_at IS NULL
+              AND (utr.expires_at IS NULL OR utr.expires_at > NOW())
+              AND utr.user_id <> p_excluding_user_id
+        ) u
+        WHERE platform.user_has_permission(u.user_id, 'tenant.users.update', p_tenant_id)
+           OR platform.user_has_permission(u.user_id, 'tenant.roles.assign', p_tenant_id)
+    );
+END;
+$$;
+COMMENT ON FUNCTION platform.tenant_has_other_active_admin IS
+    'True if some OTHER active member of the tenant holds an admin capability (tenant.users.update/roles.assign). Permission-based, not role-name-based.';
+
+-- Deactivate (revoke all active memberships in this tenant) or reactivate (restore the
+-- ones this routine revoked, re-running the escalation guard). Tenant-scoped only.
+CREATE OR REPLACE FUNCTION platform.set_tenant_user_active(
+    p_actor_user_id UUID,
+    p_target_user_id UUID,
+    p_tenant_id UUID,
+    p_is_active BOOLEAN,
+    p_reason TEXT
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    -- Reserved, NON-user-writable marker: revoke_role_assignment rejects any reason starting with
+    -- '[deactivated]' (see its guard), so ONLY this routine can mark a revocation as a deactivation.
+    -- That stops a hand-typed revoke reason from being silently un-revoked by a later reactivate.
+    v_marker     CONSTANT TEXT := '[deactivated] ';
+    v_row        RECORD;
+    v_restored   INT := 0;
+    v_marked     INT := 0;
+BEGIN
+    IF p_reason IS NULL OR length(btrim(p_reason)) = 0 THEN
+        RAISE EXCEPTION 'a reason is mandatory';
+    END IF;
+    -- Permission re-check (defense in depth behind [RequirePermission]).
+    IF NOT platform.is_super_admin(p_actor_user_id)
+       AND NOT platform.user_has_permission(p_actor_user_id, 'tenant.users.update', p_tenant_id) THEN
+        RAISE EXCEPTION 'actor % may not manage users in tenant %', p_actor_user_id, p_tenant_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    -- Tenant-membership scoping: target must belong to THIS tenant (active OR revoked —
+    -- reactivation operates on revoked rows).
+    IF NOT EXISTS (
+        SELECT 1 FROM platform.user_tenant_roles
+        WHERE user_id = p_target_user_id AND tenant_id = p_tenant_id
+    ) THEN
+        RAISE EXCEPTION 'user % is not a member of tenant %', p_target_user_id, p_tenant_id
+            USING ERRCODE = 'no_data_found';
+    END IF;
+
+    IF NOT p_is_active THEN
+        -- DEACTIVATE -------------------------------------------------------------
+        IF p_actor_user_id = p_target_user_id THEN
+            RAISE EXCEPTION 'you cannot deactivate your own access'
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        -- Last-active-admin guard: refuse if the target is the tenant's only admin.
+        IF NOT platform.is_super_admin(p_actor_user_id)
+           AND NOT platform.tenant_has_other_active_admin(p_tenant_id, p_target_user_id)
+           AND (platform.user_has_permission(p_target_user_id, 'tenant.users.update', p_tenant_id)
+                OR platform.user_has_permission(p_target_user_id, 'tenant.roles.assign', p_tenant_id)) THEN
+            RAISE EXCEPTION 'cannot deactivate the last administrator of tenant %', p_tenant_id
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        UPDATE platform.user_tenant_roles
+            SET revoked_at = NOW(),
+                revoked_by = p_actor_user_id,
+                revoked_reason = left(v_marker || p_reason, 200)
+            WHERE user_id = p_target_user_id
+              AND tenant_id = p_tenant_id
+              AND revoked_at IS NULL;
+        RETURN true;
+    ELSE
+        -- REACTIVATE -------------------------------------------------------------
+        SELECT count(*) INTO v_marked
+        FROM platform.user_tenant_roles
+        WHERE user_id = p_target_user_id AND tenant_id = p_tenant_id
+          AND revoked_at IS NOT NULL AND revoked_reason LIKE v_marker || '%';
+        IF v_marked = 0 THEN
+            RETURN true;  -- nothing this routine deactivated → idempotent no-op
+        END IF;
+        FOR v_row IN
+            SELECT utr.user_tenant_role_id, utr.role_id, r.scope AS role_scope
+            FROM platform.user_tenant_roles utr
+            JOIN platform.roles r ON r.role_id = utr.role_id AND r.deleted_at IS NULL
+            WHERE utr.user_id = p_target_user_id
+              AND utr.tenant_id = p_tenant_id
+              AND utr.revoked_at IS NOT NULL
+              AND utr.revoked_reason LIKE v_marker || '%'
+        LOOP
+            -- Restore only roles the actor may CURRENTLY assign (inline no-escalation
+            -- guard, mirroring assign_role_to_user — including its platform-scope reject).
+            IF platform.is_super_admin(p_actor_user_id)
+               OR (
+                   v_row.role_scope <> 'platform'
+                   AND platform.user_has_permission(p_actor_user_id, 'tenant.roles.assign', p_tenant_id)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM platform.role_permissions rp
+                       JOIN platform.permissions pm ON pm.permission_id = rp.permission_id
+                       WHERE rp.role_id = v_row.role_id
+                         AND NOT platform.user_has_permission(p_actor_user_id, pm.permission_key, p_tenant_id)
+                   )
+               ) THEN
+                UPDATE platform.user_tenant_roles
+                    SET revoked_at = NULL, revoked_by = NULL, revoked_reason = NULL
+                    WHERE user_tenant_role_id = v_row.user_tenant_role_id;
+                v_restored := v_restored + 1;
+            END IF;
+        END LOOP;
+        IF v_restored = 0 THEN
+            RAISE EXCEPTION 'no roles could be restored — you may not assign this user''s roles in tenant %', p_tenant_id
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        RETURN true;
+    END IF;
+END;
+$$;
+COMMENT ON FUNCTION platform.set_tenant_user_active IS
+    'Deactivate (soft-revoke all active memberships in the tenant, marked) or reactivate (restore marked ones, re-running the escalation guard). Tenant-scoped; never touches global users.is_active. Self-guard + last-admin guard.';
+
+-- Edit a user's profile (whitelisted columns only). Self-edit allowed (benign).
+CREATE OR REPLACE FUNCTION platform.update_user_profile(
+    p_actor_user_id UUID,
+    p_target_user_id UUID,
+    p_tenant_id UUID,
+    p_full_name VARCHAR,
+    p_phone VARCHAR,
+    p_preferred_language VARCHAR
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+BEGIN
+    IF p_full_name IS NULL OR length(btrim(p_full_name)) = 0 THEN
+        RAISE EXCEPTION 'full name is required';
+    END IF;
+    IF p_preferred_language IS NULL OR p_preferred_language NOT IN ('en', 'hi') THEN
+        RAISE EXCEPTION 'preferred language must be en or hi';
+    END IF;
+    IF NOT platform.is_super_admin(p_actor_user_id)
+       AND NOT platform.user_has_permission(p_actor_user_id, 'tenant.users.update', p_tenant_id) THEN
+        RAISE EXCEPTION 'actor % may not edit users in tenant %', p_actor_user_id, p_tenant_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM platform.user_tenant_roles
+        WHERE user_id = p_target_user_id AND tenant_id = p_tenant_id
+    ) THEN
+        RAISE EXCEPTION 'user % is not a member of tenant %', p_target_user_id, p_tenant_id
+            USING ERRCODE = 'no_data_found';
+    END IF;
+    -- Whitelist: full_name, phone, preferred_language ONLY. Email/auth/status/mfa
+    -- are never mutable here (red-team A12 identity-takeover).
+    UPDATE platform.users
+        SET full_name          = left(btrim(p_full_name), 200),
+            phone               = NULLIF(btrim(p_phone), ''),
+            preferred_language  = p_preferred_language,
+            updated_at          = NOW()
+        WHERE user_id = p_target_user_id AND deleted_at IS NULL;
+    RETURN true;
+END;
+$$;
+COMMENT ON FUNCTION platform.update_user_profile IS
+    'Edit full_name/phone/preferred_language only; tenant.users.update + tenant membership. Email/auth/status untouchable.';
+
+-- Reset/unlock access: flags only — force a password change, clear the lockout.
+-- Never generates/returns/stores plaintext; never nulls password_hash (would break
+-- chk_user_has_auth); never advances password_changed_at.
+CREATE OR REPLACE FUNCTION platform.reset_user_access(
+    p_actor_user_id UUID,
+    p_target_user_id UUID,
+    p_tenant_id UUID,
+    p_reason TEXT
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+BEGIN
+    IF p_reason IS NULL OR length(btrim(p_reason)) = 0 THEN
+        RAISE EXCEPTION 'a reason is mandatory';
+    END IF;
+    IF p_actor_user_id = p_target_user_id THEN
+        RAISE EXCEPTION 'you cannot reset your own access — use self-service recovery'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF NOT platform.is_super_admin(p_actor_user_id)
+       AND NOT platform.user_has_permission(p_actor_user_id, 'tenant.users.update', p_tenant_id) THEN
+        RAISE EXCEPTION 'actor % may not reset access in tenant %', p_actor_user_id, p_tenant_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM platform.user_tenant_roles
+        WHERE user_id = p_target_user_id AND tenant_id = p_tenant_id
+    ) THEN
+        RAISE EXCEPTION 'user % is not a member of tenant %', p_target_user_id, p_tenant_id
+            USING ERRCODE = 'no_data_found';
+    END IF;
+    UPDATE platform.users
+        SET must_change_password = true,
+            locked_until         = NULL,
+            failed_login_count   = 0,
+            updated_at           = NOW()
+        WHERE user_id = p_target_user_id AND deleted_at IS NULL;
+    RETURN true;
+END;
+$$;
+COMMENT ON FUNCTION platform.reset_user_access IS
+    'Force password change + clear lockout (flags only; no plaintext, preserves chk_user_has_auth). Self-guard; tenant.users.update + membership.';
+
+-- ============================================================================
 -- GRANTS for the new objects (docslot_app is least-privilege; see file 10)
 -- ============================================================================
 -- New tables follow the same SELECT/INSERT/UPDATE pattern; impersonation +
@@ -7711,6 +8236,10 @@ GRANT EXECUTE ON FUNCTION
     platform.assign_role_to_user(UUID, UUID, UUID, UUID),
     platform.revoke_role_assignment(UUID, UUID, TEXT),
     platform.set_user_permission_override(UUID, UUID, UUID, UUID, BOOLEAN, TEXT, TIMESTAMPTZ, TIMESTAMPTZ),
+    platform.tenant_has_other_active_admin(UUID, UUID),
+    platform.set_tenant_user_active(UUID, UUID, UUID, BOOLEAN, TEXT),
+    platform.update_user_profile(UUID, UUID, UUID, VARCHAR, VARCHAR, VARCHAR),
+    platform.reset_user_access(UUID, UUID, UUID, TEXT),
     platform.create_custom_role(UUID, VARCHAR, VARCHAR, TEXT, UUID, VARCHAR),
     platform.rls_can_see_tenant(UUID),
     platform.rls_can_write_tenant(UUID)

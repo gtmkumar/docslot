@@ -14,6 +14,7 @@ import {
   assignRole,
   createModule,
   createPermission,
+  createUser,
   duplicateRole,
   getEffectiveAccess,
   getRoleMatrix,
@@ -22,13 +23,15 @@ import {
   listModules,
   listRoles,
   listTenantUsers,
+  resetUserAccess,
   revokeRoleAssignment,
   revokeRolePermission,
   setOverride,
+  setUserActive,
+  updateUser,
 } from '@/lib/backend';
 import {
   createRole,
-  createUser,
   getEffectivePermissions,
   getPermissionRegistry,
   getRolePermissions,
@@ -43,6 +46,8 @@ import type {
   DuplicateRoleRequest,
   RoleMatrix,
   SetOverrideRequest,
+  SetUserStatusRequest,
+  UpdateUserProfileRequest,
 } from '@/lib/mock/contracts';
 
 export const usersQueryKey = ['team', 'users'] as const;
@@ -128,6 +133,47 @@ export function useCreateUser() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ idempotencyKey, ...req }: CreateUserInput) => createUser(req, idempotencyKey),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: usersQueryKey }),
+  });
+}
+
+// ── User lifecycle: deactivate/reactivate, edit profile, reset access ─────────
+/** Deactivate (revoke memberships in this tenant) or reactivate a user. Invalidates the
+ *  users list + that user's effective access (status changes what they can do). */
+export function useSetUserStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: SetUserStatusRequest & { userId: string; idempotencyKey: string }) =>
+      setUserActive(vars.userId, { isActive: vars.isActive, reason: vars.reason }, vars.idempotencyKey),
+    onSuccess: (_r, vars) => {
+      void qc.invalidateQueries({ queryKey: usersQueryKey });
+      void qc.invalidateQueries({ queryKey: ['team', 'effective', vars.userId] });
+      void qc.invalidateQueries({ queryKey: effectiveAccessQueryKey(vars.userId) });
+    },
+  });
+}
+
+/** Edit a user's profile (name / phone / language). Invalidates the users list. */
+export function useUpdateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: UpdateUserProfileRequest & { userId: string; idempotencyKey: string }) =>
+      updateUser(
+        vars.userId,
+        { fullName: vars.fullName, phone: vars.phone ?? null, preferredLanguage: vars.preferredLanguage },
+        vars.idempotencyKey,
+      ),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: usersQueryKey }),
+  });
+}
+
+/** Reset/unlock a user's access (force password change + clear lockout). Invalidates the
+ *  users list so the locked/pending-reset chips refresh. */
+export function useResetUserAccess() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { userId: string; reason: string; idempotencyKey: string }) =>
+      resetUserAccess(vars.userId, vars.reason, vars.idempotencyKey),
     onSuccess: () => void qc.invalidateQueries({ queryKey: usersQueryKey }),
   });
 }

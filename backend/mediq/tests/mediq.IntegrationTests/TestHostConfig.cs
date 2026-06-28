@@ -22,5 +22,9 @@ internal static class TestHostConfig
     internal static void DisableOutboxBackgroundWorker()
     {
         Environment.SetEnvironmentVariable("WhatsApp__OutboxWorkerEnabled", "false");
+        // Same rationale for the booking maintenance worker: its startup slot-materialize races the
+        // slot-generation tests (it would pre-create the very slots a test asserts it created) and adds
+        // pool churn. Tests drive ISlotGenerationService / ISlotHoldService explicitly. Default-ON for the app.
+        Environment.SetEnvironmentVariable("Booking__MaintenanceWorkerEnabled", "false");
     }
 }

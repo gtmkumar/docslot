@@ -1,6 +1,7 @@
 using mediq.Application.Features.Docslot.Settings;
 using mediq.Domain.Docslot;
 using mediq.SharedDataModel.Docslot.Dashboard.Dtos;
+using mediq.SharedDataModel.Docslot.Doctors;
 
 namespace mediq.Application.Abstractions;
 
@@ -74,6 +75,23 @@ public interface IDoctorReadService
 {
     Task<IReadOnlyList<DoctorDto>> ListAsync(Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<SlotDto>> GetSlotsAsync(Guid tenantId, Guid doctorId, DateOnly date, CancellationToken ct);
+
+    /// <summary>True if the (active, non-deleted) doctor belongs to the tenant — the cross-tenant guard for
+    /// doctor-scoped writes (slot generation, schedule edits) so a tenant can't act on another's doctor.</summary>
+    Task<bool> ExistsInTenantAsync(Guid doctorId, Guid tenantId, CancellationToken ct);
+
+    /// <summary>
+    /// The doctor's recurring weekly schedule blocks (<c>docslot.doctor_schedules</c>), ordered by weekday then
+    /// start time. The cross-tenant guard is the CALLER'S responsibility (handlers gate via
+    /// <see cref="ExistsInTenantAsync"/> first); this projection itself joins on doctor_id only.
+    /// </summary>
+    Task<IReadOnlyList<ScheduleBlockDto>> GetSchedulesAsync(Guid doctorId, CancellationToken ct);
+
+    /// <summary>
+    /// The doctor's date-specific schedule overrides (<c>docslot.schedule_overrides</c>), optionally from
+    /// <paramref name="from"/> (inclusive) onward, ordered by date. Cross-tenant guard is the caller's job.
+    /// </summary>
+    Task<IReadOnlyList<ScheduleOverrideDto>> GetOverridesAsync(Guid doctorId, DateOnly? from, CancellationToken ct);
 }
 
 /// <summary>
@@ -154,7 +172,73 @@ public interface IPatientRepository
 public interface IDoctorRepository
 {
     Task<Guid> CreateAsync(NewDoctor doctor, Guid tenantId, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>
+    /// REPLACES the doctor's entire weekly schedule: deletes all existing <c>docslot.doctor_schedules</c> rows
+    /// for the doctor then inserts the supplied blocks, all within the command's UnitOfWork transaction
+    /// (atomic — RLS-honoured). Passing an empty list clears the schedule. The DB CHECK constraints
+    /// (chk_schedule_time, chk_break_time) back the FluentValidation rules. Returns rows inserted.
+    /// </summary>
+    Task<int> ReplaceSchedulesAsync(Guid doctorId, IReadOnlyList<ScheduleBlock> blocks, CancellationToken ct);
+
+    /// <summary>
+    /// UPSERTs a date-specific override (ON CONFLICT (doctor_id, override_date) DO UPDATE). Runs inside the
+    /// command transaction. Returns the override_id (existing or newly generated).
+    /// </summary>
+    Task<Guid> UpsertOverrideAsync(Guid doctorId, ScheduleOverride ovr, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>Deletes one override by id, scoped to the doctor. Returns true when a row was removed.</summary>
+    Task<bool> DeleteOverrideAsync(Guid doctorId, Guid overrideId, CancellationToken ct);
+
+    /// <summary>
+    /// Updates ONLY the supplied (non-null) WHITELISTED columns on <c>docslot.doctors</c> (full_name,
+    /// display_name, specialization, department_id, consultation_fee, phone, email, is_active,
+    /// is_accepting_new_patients). Immutable columns (tenant_id, user_id, nmc_*) are never named. Scoped to the
+    /// doctor + tenant + not-deleted; runs inside the command transaction. Returns true when a row was updated.
+    /// </summary>
+    Task<bool> UpdateAsync(Guid doctorId, Guid tenantId, DoctorUpdate update, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>
+    /// SOFT-deletes the doctor (sets <c>deleted_at = nowUtc</c>; never a hard DELETE), scoped to doctor +
+    /// tenant + not-already-deleted, inside the command transaction. Returns true when a row was soft-deleted.
+    /// </summary>
+    Task<bool> SoftDeleteAsync(Guid doctorId, Guid tenantId, DateTime nowUtc, CancellationToken ct);
 }
+
+/// <summary>Insert shape for one <c>docslot.doctor_schedules</c> block (no PK — the DB generates schedule_id).</summary>
+public sealed record ScheduleBlock(
+    short DayOfWeek,
+    TimeOnly StartTime,
+    TimeOnly EndTime,
+    short SlotDurationMinutes,
+    short MaxPatientsPerSlot,
+    TimeOnly? BreakStartTime,
+    TimeOnly? BreakEndTime,
+    bool IsActive);
+
+/// <summary>Upsert shape for one <c>docslot.schedule_overrides</c> row.</summary>
+public sealed record ScheduleOverride(
+    DateOnly OverrideDate,
+    bool IsBlocked,
+    TimeOnly? CustomStartTime,
+    TimeOnly? CustomEndTime,
+    string? Reason);
+
+/// <summary>
+/// Whitelisted doctor-update input. Every column is nullable; a null leaves that column UNTOUCHED. Only these
+/// columns can ever be mutated through the update path — the immutable identity/regulatory columns are absent
+/// by construction. <c>Email</c> is the citext contact column; it is never silently mutable beyond this list.
+/// </summary>
+public sealed record DoctorUpdate(
+    string? FullName,
+    string? DisplayName,
+    string? Specialization,
+    Guid? DepartmentId,
+    decimal? ConsultationFee,
+    string? Phone,
+    string? Email,
+    bool? IsActive,
+    bool? IsAcceptingNewPatients);
 
 /// <summary>Provisioning input for a new <c>docslot.doctors</c> row — only columns that exist on the table.</summary>
 public sealed record NewDoctor(

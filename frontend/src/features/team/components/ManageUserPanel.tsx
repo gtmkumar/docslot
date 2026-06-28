@@ -10,26 +10,29 @@
 
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Info, Plus, ShieldAlert, Trash2 } from 'lucide-react';
+import { Info, KeyRound, Pencil, Plus, ShieldAlert, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
 import { Select, TextArea, labelClass } from '@/components/ui/Field';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { shortDate } from '@/lib/format';
+import { dateTime, shortDate } from '@/lib/format';
 import { idempotencyKey } from '@/lib/api-client';
 import { toUserError } from '@/lib/backend';
 import { usePermissions } from '@/lib/permissions';
 import { useSession } from '@/stores/session';
 import { useUI } from '@/stores/ui';
+import type { UserListItem } from '@/lib/mock/contracts';
 import {
   useAssignRole,
   useEffectivePermissions,
   usePermissionRegistry,
+  useResetUserAccess,
   useRevokeRole,
   useRoles,
   useSetOverride,
+  useSetUserStatus,
   useTenantUsers,
   useUserOverrides,
 } from '../api';
@@ -49,6 +52,10 @@ export function ManageUserPanel({ userId, open, onClose }: { userId: string; ope
 
   const canAssign = can('tenant.roles.assign') && !isSelf;
   const canOverride = can('platform.overrides.grant') && !isSelf;
+  // Profile edit + lifecycle actions gate on tenant.users.update. Editing your own
+  // name/phone is benign (allowed for self); the lifecycle actions (deactivate /
+  // reset) are self-lockout hazards and stay hidden for self inside AccountSection.
+  const canManage = can('tenant.users.update');
 
   return (
     <SlideOver
@@ -67,11 +74,191 @@ export function ManageUserPanel({ userId, open, onClose }: { userId: string; ope
           </p>
         ) : null}
 
+        {user ? <AccountSection user={user} isSelf={isSelf} canManage={canManage} /> : null}
         <RolesSection userId={userId} canAssign={canAssign} />
         {canOverride ? <OverridesSection userId={userId} /> : null}
         <EffectiveSection userId={userId} />
       </div>
     </SlideOver>
+  );
+}
+
+// ── 0. Account (read-first status/security, then the lifecycle action cluster) ─
+function AccountSection({ user, isSelf, canManage }: { user: UserListItem; isSelf: boolean; canManage: boolean }) {
+  const { t } = useTranslation();
+  const openPanel = useUI((s) => s.openPanel);
+  const setStatus = useSetUserStatus();
+  const resetAccess = useResetUserAccess();
+
+  const locked = Boolean(user.lockedUntil) && new Date(user.lockedUntil as string).getTime() > Date.now();
+
+  // Inline confirm + mandatory reason — reuses the override-form pattern. Only one
+  // confirm flow is open at a time ('deactivate' | 'reset' | null).
+  type Flow = 'status' | 'reset' | null;
+  const [flow, setFlow] = useState<Flow>(null);
+  const [reason, setReason] = useState('');
+  const [reasonTouched, setReasonTouched] = useState(false);
+  const reasonMissing = reason.trim().length === 0;
+
+  const resetForm = () => {
+    setFlow(null);
+    setReason('');
+    setReasonTouched(false);
+  };
+
+  const onConfirmStatus = async () => {
+    setReasonTouched(true);
+    if (reasonMissing) return; // reason is MANDATORY
+    const key = idempotencyKey();
+    try {
+      await setStatus.mutateAsync({ userId: user.userId, isActive: !user.isActive, reason: reason.trim(), idempotencyKey: key });
+      toast.success(user.isActive ? t('team.toast.deactivated') : t('team.toast.reactivated'));
+      resetForm();
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
+  };
+
+  const onConfirmReset = async () => {
+    setReasonTouched(true);
+    if (reasonMissing) return; // reason is MANDATORY
+    const key = idempotencyKey();
+    try {
+      await resetAccess.mutateAsync({ userId: user.userId, reason: reason.trim(), idempotencyKey: key });
+      toast.success(t('team.toast.accessReset'));
+      resetForm();
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
+  };
+
+  // "Unlock" reads better when the only thing wrong is a lockout (no pending reset).
+  const resetLabel = locked && !user.mustChangePassword ? t('team.account.unlock') : t('team.account.resetAccess');
+  const confirmCopy =
+    flow === 'reset'
+      ? t('team.account.confirmReset')
+      : user.isActive
+        ? t('team.account.confirmDeactivate')
+        : t('team.account.confirmReactivate');
+  const pending = setStatus.isPending || resetAccess.isPending;
+
+  return (
+    <section>
+      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-2">
+        {t('team.account.heading')}
+      </h3>
+
+      {/* Read-first status + security posture. */}
+      <div className="flex flex-col gap-2 rounded-[var(--radius-sm)] border border-line px-3 py-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={[
+              'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+              user.isActive ? 'bg-primary-soft text-primary' : 'bg-surface-sunk text-muted-2',
+            ].join(' ')}
+          >
+            {user.isActive ? t('team.account.statusActive') : t('team.account.statusInactive')}
+          </span>
+          {locked ? (
+            <span className="rounded-full bg-warn-soft px-2 py-0.5 text-[10px] font-medium text-warn">
+              {t('team.account.lockedUntil', { date: dateTime(user.lockedUntil) })}
+            </span>
+          ) : null}
+          <span className="text-[11px] text-muted">{user.mfaEnabled ? t('team.account.mfaOn') : t('team.account.mfaOff')}</span>
+        </div>
+        <p className="text-[12px] text-muted">
+          {t('team.account.lastLogin')}:{' '}
+          <span className="mono text-ink">{user.lastLoginAt ? dateTime(user.lastLoginAt) : t('team.neverLoggedIn')}</span>
+        </p>
+        {user.mustChangePassword ? (
+          <p className="flex items-center gap-1.5 text-[12px] text-warn">
+            <ShieldAlert size={13} aria-hidden="true" />
+            {t('team.account.mustReset')}
+          </p>
+        ) : null}
+      </div>
+
+      {/* Action cluster. Edit is allowed for self; lifecycle actions hidden for self. */}
+      {canManage ? (
+        <>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button variant="ghost" size="sm" onClick={() => openPanel({ type: 'editUser', userId: user.userId })}>
+              <Pencil size={14} aria-hidden="true" />
+              {t('team.account.editProfile')}
+            </Button>
+            {!isSelf ? (
+              <>
+                <Button
+                  variant={user.isActive ? 'danger' : 'ghost'}
+                  size="sm"
+                  disabled={pending}
+                  onClick={() => {
+                    setReason('');
+                    setReasonTouched(false);
+                    setFlow('status');
+                  }}
+                >
+                  {user.isActive ? t('team.account.deactivate') : t('team.account.reactivate')}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={pending}
+                  onClick={() => {
+                    setReason('');
+                    setReasonTouched(false);
+                    setFlow('reset');
+                  }}
+                >
+                  <KeyRound size={14} aria-hidden="true" />
+                  {resetLabel}
+                </Button>
+              </>
+            ) : null}
+          </div>
+
+          {/* Inline confirm with a MANDATORY reason (override-form pattern). */}
+          {flow ? (
+            <div className="mt-3 flex flex-col gap-3 rounded-[var(--radius)] border border-line bg-bg-2 p-3">
+              <p className="text-[12px] text-muted">{confirmCopy}</p>
+              <div>
+                <label htmlFor="acct-reason" className={labelClass}>
+                  {t('team.account.reasonLabel')}
+                </label>
+                <TextArea
+                  id="acct-reason"
+                  rows={2}
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder={t('team.account.reasonPlaceholder')}
+                  aria-invalid={reasonTouched && reasonMissing}
+                />
+                {reasonTouched && reasonMissing ? (
+                  <p className="mt-1 text-[11px] text-danger">{t('team.validation.reason')}</p>
+                ) : null}
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" size="sm" onClick={resetForm} disabled={pending}>
+                  {t('common.cancel')}
+                </Button>
+                <Button
+                  variant={flow === 'status' && user.isActive ? 'danger' : 'primary'}
+                  size="sm"
+                  disabled={reasonMissing || pending}
+                  onClick={() => void (flow === 'status' ? onConfirmStatus() : onConfirmReset())}
+                >
+                  {flow === 'reset'
+                    ? resetLabel
+                    : user.isActive
+                      ? t('team.account.deactivate')
+                      : t('team.account.reactivate')}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </section>
   );
 }
 

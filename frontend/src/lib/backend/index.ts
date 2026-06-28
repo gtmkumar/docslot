@@ -154,6 +154,17 @@ export const assignRole = USE_REAL_API ? real.assignRole : mock.assignRole;
 export const revokeRoleAssignment = USE_REAL_API ? real.revokeRoleAssignment : mock.revokeRoleAssignment;
 export const setOverride = USE_REAL_API ? real.setOverride : mock.setOverride;
 
+// ── USER MANAGEMENT (lifecycle) ───────────────────────────────────────────────
+// createUser is the invite write — live POST /tenants/{id}/users (escalation-safe;
+// server seeds a temp credential + must-change-password). setUserActive (deactivate/
+// reactivate), updateUser (edit profile), resetUserAccess (force change + unlock) hit
+// the new gated lifecycle endpoints. All carry an Idempotency-Key; the actor is bound
+// server-side. Mock side returns the synthetic result shape so flag-off stays functional.
+export const createUser = USE_REAL_API ? real.createUser : mock.createUser;
+export const setUserActive = USE_REAL_API ? real.setUserActive : mock.setUserActive;
+export const updateUser = USE_REAL_API ? real.updateUser : mock.updateUser;
+export const resetUserAccess = USE_REAL_API ? real.resetUserAccess : mock.resetUserAccess;
+
 export const listModules = USE_REAL_API ? real.listModules : mock.listModules;
 export const listIamPermissions = USE_REAL_API ? real.listIamPermissions : mock.listIamPermissions;
 // CATALOG-PLANE CREATES (platform.permissions.manage) — real POSTs to /iam/modules

@@ -51,6 +51,33 @@ public sealed class AdminController(ICommandDispatcher commands, IQueryDispatche
         return CreatedAtAction(nameof(ListUsers), new { tenantId }, result);
     }
 
+    /// <summary>Deactivate (revoke the user's memberships in this tenant) or reactivate them. Tenant-scoped —
+    /// never flips the global users.is_active. Self-guard + last-admin guard enforced at the DB.</summary>
+    [HttpPut("tenants/{tenantId:guid}/users/{userId:guid}/status")]
+    [RequirePermission("tenant.users.update")]
+    [ProducesResponseType<SetUserStatusResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<SetUserStatusResult>> SetUserStatus(
+        Guid tenantId, Guid userId, [FromBody] SetUserStatusRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new SetUserStatusCommand(tenantId, userId, request), ct));
+
+    /// <summary>Edit a user's profile (full name / phone / preferred language only). Email/auth/status are
+    /// never mutable here.</summary>
+    [HttpPut("tenants/{tenantId:guid}/users/{userId:guid}")]
+    [RequirePermission("tenant.users.update")]
+    [ProducesResponseType<UpdateUserProfileResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<UpdateUserProfileResult>> UpdateUserProfile(
+        Guid tenantId, Guid userId, [FromBody] UpdateUserProfileRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new UpdateUserProfileCommand(tenantId, userId, request), ct));
+
+    /// <summary>Reset access — force a password change + clear the lockout (flags only; no plaintext). The
+    /// actor cannot reset their own access (self-guard at the DB).</summary>
+    [HttpPost("tenants/{tenantId:guid}/users/{userId:guid}/reset-access")]
+    [RequirePermission("tenant.users.update")]
+    [ProducesResponseType<ResetAccessResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ResetAccessResult>> ResetUserAccess(
+        Guid tenantId, Guid userId, [FromBody] ResetAccessRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new ResetAccessCommand(tenantId, userId, request), ct));
+
     // ---- Roles ---------------------------------------------------------------------------------
 
     [HttpGet("roles")]

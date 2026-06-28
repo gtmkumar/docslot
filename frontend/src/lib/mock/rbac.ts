@@ -25,6 +25,9 @@ import {
   RoleSchema,
   RevokeRoleResultSchema,
   SetOverrideResultSchema,
+  SetUserStatusResultSchema,
+  UpdateUserProfileResultSchema,
+  ResetAccessResultSchema,
   TokenResponseSchema,
   UserListItemSchema,
   UserOverrideSchema,
@@ -376,6 +379,40 @@ export function setOverride(req: SetOverrideRequest, idempotencyKey: string): Pr
   return withIdem(idempotencyKey, () => {
     void req;
     return SetOverrideResultSchema.parse({ overrideId: crypto.randomUUID() });
+  });
+}
+
+// User-lifecycle mock stubs — no-op (return the synthetic result shape) like the other
+// mock mutations above; flag-off keeps the static user list, so the screens just re-render.
+export function setUserActive(
+  userId: string,
+  req: { isActive: boolean; reason: string },
+  idempotencyKey: string,
+): Promise<{ userId: string; isActive: boolean }> {
+  return withIdem(idempotencyKey, () =>
+    SetUserStatusResultSchema.parse({ userId, isActive: req.isActive }),
+  );
+}
+
+export function updateUser(
+  userId: string,
+  req: { fullName: string; phone?: string | null; preferredLanguage: 'en' | 'hi' },
+  idempotencyKey: string,
+): Promise<{ userId: string }> {
+  return withIdem(idempotencyKey, () => {
+    void req;
+    return UpdateUserProfileResultSchema.parse({ userId });
+  });
+}
+
+export function resetUserAccess(
+  userId: string,
+  reason: string,
+  idempotencyKey: string,
+): Promise<{ userId: string }> {
+  return withIdem(idempotencyKey, () => {
+    void reason;
+    return ResetAccessResultSchema.parse({ userId });
   });
 }
 
