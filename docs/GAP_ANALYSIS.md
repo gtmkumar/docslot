@@ -105,12 +105,14 @@ Cross-cutting: large swaths of the polished React SPA are **mock-only despite li
 
 ## 5. Roadmap (sequenced to the PRD acceptance gates)
 
-**Phase 0 — Unblock the production data plane** *(prerequisite)*
+> **Progress** — Phase 0 ✅ done (2026-06-24) · Phase 1 ✅ done (2026-06-28, auditor PASS, 149/149 tests). Phases 2–4 pending.
+
+**Phase 0 — Unblock the production data plane** ✅ DONE *(prerequisite)*
 Make the live API usable at all: bookable inventory, slot reconciliation, DB-level isolation backstop.
 `time_slots` generator + materializer · doctor schedule-management/update/delete endpoints · fix cancel/no-show capacity leak · hold sweeper · RLS on booking + `ai.*` tables · (slot,doctor) consistency check.
 
-**Phase 1 — One WhatsApp booking end-to-end with OTP consent** *(PRD gate 1)*
-Behalf OTP consent flow · reschedule end-to-end + cutoff enforcement · bilingual templates + per-contact language + tenant name · `checked_in` state · live conversation read API · complete relation picker / canonical message statuses / outbox reaper.
+**Phase 1 — One WhatsApp booking end-to-end with OTP consent** ✅ DONE *(PRD gate 1)*
+Delivered: behalf OTP consent flow (`docslot.booking_consent_otps`, salted-hash codes, attempt-limited, RLS; DPDP approval gate blocks un-consented behalf bookings) · reschedule end-to-end (terminate-old/mint-new with lineage) + cutoff enforcement (create+reschedule) · fully bilingual templates + per-contact language + tenant `display_name` (dropped hardcoded "Apollo Care") · `checked_in` lifecycle state · live conversation read API wired in the SPA · all 5 relations · canonical `wa_message_log` statuses (CHECK) · outbox `processing` reaper + consent-OTP expiry sweep · RLS added to `wa_message_log` + `outbox_messages` (drain via SECURITY DEFINER fns) · OTP code redacted from journal + scrubbed from queue post-send (auditor F1) · check-in/reschedule/consent surfaced in the SPA with consent-gated Approve.
 
 **Phase 2 — Commission attribution + payout dry-run** *(PRD gate 2)*
 Earning→settlement pipeline (complete-hook + settlement job + wallet credit) · fix attribution write authz · compute/write direct discount · 3 real attribution paths · hidden-partner nightly job + nudge · reconcile ₹100 net/gross + tiered_table + campaign bonuses · dispute clawback + invoice/Form 16A · broker self-service portal.

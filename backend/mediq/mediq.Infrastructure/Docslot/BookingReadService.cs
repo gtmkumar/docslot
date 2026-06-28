@@ -59,7 +59,9 @@ public sealed class BookingReadService(PlatformDbContext db) : IBookingReadServi
                     dep.name AS "DepartmentName",
                     s.slot_date AS "SlotDate", s.start_time AS "StartTime", s.end_time AS "EndTime",
                     b.status AS "Status", b.booked_via AS "Source", b.notes AS "Note",
-                    b.booked_at AS "BookedAt", p.preferred_language AS "Language"
+                    b.booked_at AS "BookedAt", p.preferred_language AS "Language",
+                    b.booked_by_type AS "BookedByType", b.behalf_relation AS "BehalfRelation",
+                    b.patient_consent_status AS "PatientConsentStatus", b.doctor_id AS "DoctorId"
                 FROM docslot.bookings b
                 JOIN docslot.time_slots s ON s.slot_id = b.slot_id
                 JOIN docslot.doctors d ON d.doctor_id = b.doctor_id
@@ -114,7 +116,9 @@ public sealed class BookingReadService(PlatformDbContext db) : IBookingReadServi
                     dep.name AS "DepartmentName",
                     s.slot_date AS "SlotDate", s.start_time AS "StartTime", s.end_time AS "EndTime",
                     b.status AS "Status", b.booked_via AS "Source", b.notes AS "Note",
-                    b.booked_at AS "BookedAt", p.preferred_language AS "Language"
+                    b.booked_at AS "BookedAt", p.preferred_language AS "Language",
+                    b.booked_by_type AS "BookedByType", b.behalf_relation AS "BehalfRelation",
+                    b.patient_consent_status AS "PatientConsentStatus", b.doctor_id AS "DoctorId"
                 FROM docslot.bookings b
                 JOIN docslot.time_slots s ON s.slot_id = b.slot_id
                 JOIN docslot.doctors d ON d.doctor_id = b.doctor_id
@@ -158,7 +162,8 @@ public sealed class BookingReadService(PlatformDbContext db) : IBookingReadServi
         ToIst(r.SlotDate, r.StartTime), ToIst(r.SlotDate, r.EndTime),
         EnumParse.Status(r.Status), EnumParse.Source(r.Source), r.Note,
         new DateTimeOffset(DateTime.SpecifyKind(r.BookedAt, DateTimeKind.Utc)),
-        EnumParse.Language(r.Language));
+        EnumParse.Language(r.Language),
+        r.BookedByType, r.BehalfRelation, r.PatientConsentStatus, r.DoctorId);
 
     private static DateTimeOffset ToIst(DateOnly date, TimeOnly time) =>
         new(date.ToDateTime(time), DashboardContract.TimeZoneOffset);
@@ -168,6 +173,7 @@ public sealed class BookingReadService(PlatformDbContext db) : IBookingReadServi
     private sealed record BookingRow(
         Guid BookingId, string BookingNumber, int? TokenNumber, string? PatientName, string? RawPhone,
         short? Age, string? Gender, string? DoctorName, string? DepartmentName, DateOnly SlotDate,
-        TimeOnly StartTime, TimeOnly EndTime, string Status, string Source, string? Note, DateTime BookedAt, string? Language);
+        TimeOnly StartTime, TimeOnly EndTime, string Status, string Source, string? Note, DateTime BookedAt, string? Language,
+        string BookedByType, string? BehalfRelation, string PatientConsentStatus, Guid DoctorId);
     private sealed record ConvRow(Guid LogId, string Direction, string MessageType, string? Content, string? Status, DateTime SentAt);
 }

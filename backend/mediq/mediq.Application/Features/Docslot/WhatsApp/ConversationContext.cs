@@ -10,6 +10,7 @@ public static class ConversationSteps
 {
     public const string WhoFor = "who_for";
     public const string ChooseRelation = "choose_relation";
+    public const string AskPatientPhone = "ask_patient_phone";
     public const string ChooseDepartment = "choose_department";
     public const string ChooseDoctor = "choose_doctor";
     public const string ChooseSlot = "choose_slot";
@@ -26,6 +27,8 @@ public sealed record ConversationContext
 {
     [JsonPropertyName("relation")] public string? Relation { get; init; }
     [JsonPropertyName("displayName")] public string? DisplayName { get; init; }
+    /// <summary>For a behalf booking: the PATIENT's WhatsApp number (the booker is the conversation phone).</summary>
+    [JsonPropertyName("patientPhone")] public string? PatientPhone { get; init; }
 
     [JsonPropertyName("departmentId")] public Guid? DepartmentId { get; init; }
     [JsonPropertyName("departmentName")] public string? DepartmentName { get; init; }

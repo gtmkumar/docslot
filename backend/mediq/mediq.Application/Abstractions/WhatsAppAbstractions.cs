@@ -121,6 +121,14 @@ public interface IOutboxDrainStore
     /// to the computed exponential backoff.
     /// </summary>
     Task MarkFailedAsync(Guid outboxId, string error, DateTime nextRetryAtUtc, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>
+    /// Requeues rows stranded in 'processing' (the worker died/was cancelled mid-send) older than
+    /// <paramref name="olderThan"/> back to 'pending' so the next drain re-attempts them. Backed by the
+    /// SECURITY DEFINER fn <c>docslot.requeue_stranded_outbox</c> (the worker has no per-tenant RLS scope).
+    /// Returns rows requeued.
+    /// </summary>
+    Task<int> RequeueStrandedAsync(TimeSpan olderThan, CancellationToken ct);
 }
 
 /// <summary>
@@ -184,6 +192,8 @@ public sealed record ConversationState(
 /// </summary>
 public interface IWhatsAppCatalogReadService
 {
+    /// <summary>The tenant's customer-facing <c>display_name</c> for greetings/templates (never a hardcoded brand).</summary>
+    Task<string?> GetTenantDisplayNameAsync(Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<WaDepartment>> ListDepartmentsAsync(Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<WaDoctor>> ListDoctorsAsync(Guid tenantId, Guid departmentId, CancellationToken ct);
     Task<IReadOnlyList<WaSlot>> ListEarliestSlotsAsync(Guid tenantId, Guid doctorId, int take, CancellationToken ct);
@@ -218,3 +228,72 @@ public interface ITenantScopeOverride
     Guid? TenantId { get; }
     void Set(Guid tenantId);
 }
+
+// ============================================================================
+// Behalf-booking patient consent (DPDP fake-patient guard)
+// ============================================================================
+
+/// <summary>
+/// Orchestrates the behalf-booking patient OTP consent flow (DPDP). When a number books FOR SOMEONE ELSE we
+/// create the booking 'pending' with <c>patient_consent_status='pending'</c>, generate a one-time code, store
+/// only a salted hash, and send the code to the PATIENT's WhatsApp number naming the booker + relation. The
+/// patient's reply (matched by phone to a pending code) confirms or declines. Runs inside the inbound
+/// command's tenant-scoped UoW, so the OTP row, outbox message, and booking mutation commit together.
+/// </summary>
+public interface IPatientConsentService
+{
+    /// <summary>
+    /// Generates + persists a consent OTP for a freshly-created behalf booking and enqueues the OTP message
+    /// to the patient (any prior pending code for that number is superseded/expired first).
+    /// </summary>
+    Task SendForBehalfBookingAsync(ConsentSendRequest request, CancellationToken ct);
+
+    /// <summary>
+    /// If <paramref name="fromPhone"/> has a pending consent OTP in this tenant, interpret <paramref name="body"/>
+    /// as the code (or a decline) and resolve it — confirming the booking's consent, or denying it (which also
+    /// cancels the booking and frees its slot), or returning a wrong-code / expired prompt. Returns null when
+    /// there is NO pending consent for this number (the caller then runs the normal booking state machine).
+    /// </summary>
+    Task<ConsentVerifyResult?> TryVerifyReplyAsync(
+        Guid tenantId, string fromPhone, string body, string lang, DateTime nowUtc, CancellationToken ct);
+}
+
+public sealed record ConsentSendRequest(
+    Guid TenantId, Guid BookingId, Guid? PatientId, string PatientPhone, string BookerPhone,
+    string Relation, string TenantName, string? BookerName, string? DoctorName, string? SlotLabel,
+    string Lang, DateTime NowUtc);
+
+public enum ConsentOutcome { Confirmed, Denied, WrongCode, Expired }
+
+public sealed record ConsentVerifyResult(ConsentOutcome Outcome, string OutboundText, Guid BookingId, Guid? PatientId);
+
+/// <summary>Persistence over <c>docslot.booking_consent_otps</c> (tenant-isolated by RLS).</summary>
+public interface IConsentOtpStore
+{
+    /// <summary>Expire any existing 'pending' code for (tenant, patientPhone) so a new behalf booking supersedes it.</summary>
+    Task ExpireExistingPendingAsync(Guid tenantId, string patientPhone, DateTime nowUtc, CancellationToken ct);
+
+    Task CreateAsync(ConsentOtpInsert row, CancellationToken ct);
+
+    /// <summary>The single live (pending, non-expired) consent for this number in this tenant, or null.</summary>
+    Task<PendingConsentOtp?> GetPendingByPhoneAsync(Guid tenantId, string patientPhone, DateTime nowUtc, CancellationToken ct);
+
+    Task SetStatusAsync(Guid consentOtpId, string status, DateTime? verifiedAtUtc, CancellationToken ct);
+
+    Task IncrementAttemptsAsync(Guid consentOtpId, CancellationToken ct);
+
+    /// <summary>
+    /// Sweeps lapsed pending consent OTPs: marks them 'expired', cancels the awaiting booking, and frees its
+    /// slot capacity. Backed by the SECURITY DEFINER fn <c>docslot.expire_stale_consent_otps</c> (cross-tenant;
+    /// the worker has no per-tenant RLS scope). Returns the number of slots freed.
+    /// </summary>
+    Task<int> ExpireStaleAsync(CancellationToken ct);
+}
+
+public sealed record ConsentOtpInsert(
+    Guid TenantId, Guid BookingId, string PatientPhone, string BookerPhone, string Relation,
+    string CodeSalt, string CodeHash, DateTime ExpiresAt, DateTime NowUtc);
+
+public sealed record PendingConsentOtp(
+    Guid ConsentOtpId, Guid BookingId, string PatientPhone, string BookerPhone, string Relation,
+    string CodeSalt, string CodeHash, short Attempts, short MaxAttempts, DateTime ExpiresAt);

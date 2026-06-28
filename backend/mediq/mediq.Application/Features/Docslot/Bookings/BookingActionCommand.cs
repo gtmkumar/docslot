@@ -45,9 +45,16 @@ public sealed class BookingActionCommandHandler(
         var booking = await bookings.GetByIdAsync(req.BookingId, command.TenantId, ct)
             ?? throw new KeyNotFoundException("Booking not found.");
 
+        // DPDP fake-patient guard: a behalf booking cannot be approved until the patient has confirmed consent
+        // via their WhatsApp OTP. The schema permits 'pending'/'denied'/'expired'; only 'confirmed' clears this.
+        if (req.Action == BookingActionType.Approve && booking.AwaitingPatientConsent)
+            throw new mediq.Utilities.Exceptions.BusinessRuleException(
+                "This booking was made on someone's behalf and cannot be approved until the patient confirms consent.");
+
         (string EventType, DateTime At) result = req.Action switch
         {
             BookingActionType.Approve   => Apply(() => booking.Approve(now), BookingEventTypes.Confirmed, now),
+            BookingActionType.CheckIn   => Apply(() => booking.CheckIn(now), BookingEventTypes.CheckedIn, now),
             BookingActionType.Cancel    => Apply(() => booking.Cancel(req.Reason!, ctx.UserId, now), BookingEventTypes.Cancelled, now),
             BookingActionType.MarkNoShow => Apply(() => booking.MarkNoShow(now), BookingEventTypes.NoShow, now),
             BookingActionType.Complete  => Apply(() => booking.Complete(now), BookingEventTypes.Completed, now),
@@ -89,6 +96,7 @@ internal static class BookingStatusEnumMap
     {
         mediq.Domain.Docslot.BookingStatus.Pending => mediq.SharedDataModel.Docslot.Dashboard.Enums.BookingStatus.Pending,
         mediq.Domain.Docslot.BookingStatus.Confirmed => mediq.SharedDataModel.Docslot.Dashboard.Enums.BookingStatus.Confirmed,
+        mediq.Domain.Docslot.BookingStatus.CheckedIn => mediq.SharedDataModel.Docslot.Dashboard.Enums.BookingStatus.CheckedIn,
         mediq.Domain.Docslot.BookingStatus.Cancelled => mediq.SharedDataModel.Docslot.Dashboard.Enums.BookingStatus.Cancelled,
         mediq.Domain.Docslot.BookingStatus.Completed => mediq.SharedDataModel.Docslot.Dashboard.Enums.BookingStatus.Completed,
         mediq.Domain.Docslot.BookingStatus.NoShow => mediq.SharedDataModel.Docslot.Dashboard.Enums.BookingStatus.NoShow,

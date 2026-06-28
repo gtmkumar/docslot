@@ -746,6 +746,25 @@ CREATE POLICY tenant_isolation_booking_status_history ON docslot.booking_status_
         )
     );
 
+-- WhatsApp message journal + outbound queue carry tenant_id and PHI-adjacent content
+-- (patient/booker/doctor/slot in message text; behalf-consent OTP transits the outbox).
+-- Tenant-isolate both. The conversation read + enqueue run with a tenant context; the
+-- cross-tenant DRAIN worker has none, so it goes through SECURITY DEFINER functions
+-- (docslot.claim_due_outbox / mark_outbox_sent / mark_outbox_failed / requeue_stranded_outbox)
+-- that legitimately bypass RLS — never a plain app-role cross-tenant query.
+ALTER TABLE docslot.wa_message_log   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docslot.outbox_messages  ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_wa_message_log ON docslot.wa_message_log
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_outbox_messages ON docslot.outbox_messages
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
 -- ============================================================================
 -- LAYER 6: PII MASKING FUNCTIONS (for unauthorized access display)
 -- ============================================================================

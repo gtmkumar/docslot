@@ -27,14 +27,41 @@ public sealed record CreateBookingRequest(
     string BookedVia,
     string? ChiefComplaint,
     bool IssueOpdToken,
-    string? IdempotencyKey) : IIdempotentRequest;
+    string? IdempotencyKey,
+    // Behalf-booking identity (DPDP). For a behalf booking, PatientPhone is the PATIENT's number and
+    // BehalfBookerPhone is who typed it; consent defaults to 'pending' unless carried forward (reschedule).
+    string BookedByType = mediq.Domain.Docslot.BookedByType.Self,
+    string? BehalfRelation = null,
+    string? BehalfBookerPhone = null,
+    string? PatientConsentStatus = null,
+    Guid? RescheduledFromBookingId = null) : IIdempotentRequest;
 
 public sealed record CreateBookingResult(Guid BookingId, string? BookingNumber, int? TokenNumber);
+
+/// <summary>
+/// Shared booking-cutoff guard: the chosen slot must be at least the tenant's <c>BookingCutoffHours</c> in
+/// the future. Used by create + reschedule so the rule is enforced identically on every path (FR-BOOK).
+/// </summary>
+internal static class BookingCutoff
+{
+    public static async Task EnsureSlotBeyondCutoffAsync(
+        ISettingsReadService settings, ISlotHoldService slots, Guid tenantId, Guid slotId, DateTime nowUtc, CancellationToken ct)
+    {
+        var cutoffHours = (await settings.GetAsync(tenantId, ct))?.AppointmentSettings.BookingCutoffHours ?? 0;
+        if (cutoffHours <= 0) return;
+        var start = await slots.GetSlotStartUtcAsync(slotId, ct);
+        if (start is { } s && s < nowUtc.AddHours(cutoffHours))
+            throw new mediq.Utilities.Exceptions.BusinessRuleException(
+                $"Bookings must be made at least {cutoffHours} hour(s) before the appointment time.");
+    }
+}
 
 public sealed class CreateBookingValidator : AbstractValidator<CreateBookingCommand>
 {
     private static readonly string[] ValidVia = ["whatsapp", "dashboard", "api", "walk_in", "phone_call"];
     private static readonly string[] ValidType = ["consultation", "follow_up", "test", "home_collection", "procedure", "tele_consultation"];
+
+    private static readonly string[] ValidBookedByType = ["self", "behalf"];
 
     public CreateBookingValidator()
     {
@@ -44,64 +71,20 @@ public sealed class CreateBookingValidator : AbstractValidator<CreateBookingComm
         RuleFor(x => x.Request.PatientPhone).NotEmpty().MaximumLength(15);
         RuleFor(x => x.Request.BookedVia).Must(v => ValidVia.Contains(v)).WithMessage("Invalid booked_via.");
         RuleFor(x => x.Request.BookingType).Must(t => ValidType.Contains(t)).WithMessage("Invalid booking_type.");
+        RuleFor(x => x.Request.BookedByType).Must(v => ValidBookedByType.Contains(v)).WithMessage("Invalid booked_by_type.");
+        // A behalf booking must carry a valid relation; a self booking must not carry one (mirrors chk_behalf_relation).
+        RuleFor(x => x.Request.BehalfRelation)
+            .Must(BehalfRelation.IsValid).When(x => x.Request.BookedByType == BookedByType.Behalf)
+            .WithMessage("A valid behalf_relation is required for a behalf booking.");
+        RuleFor(x => x.Request.BehalfRelation)
+            .Empty().When(x => x.Request.BookedByType == BookedByType.Self)
+            .WithMessage("A self booking must not carry a behalf_relation.");
     }
 }
 
-public sealed class CreateBookingCommandHandler(
-    IBookingRepository bookings,
-    IPatientRepository patients,
-    ISlotHoldService slotHolds,
-    IOpdTokenService opdTokens,
-    IBookingEventPublisher events,
-    IAuditTrailWriter audit,
-    ICurrentUserContext ctx,
-    IClock clock)
+public sealed class CreateBookingCommandHandler(IBookingCreationService creator, IClock clock)
     : ICommandHandler<CreateBookingCommand, CreateBookingResult>
 {
-    private static readonly TimeSpan HoldTtl = TimeSpan.FromMinutes(5);   // FR-BOOK-02
-
-    public async Task<CreateBookingResult> Handle(CreateBookingCommand command, CancellationToken ct)
-    {
-        var now = clock.UtcNow;
-        var req = command.Request;
-
-        // Patient: cross-tenant identity by phone. Resolve or register, then ensure tenant link.
-        var patient = await patients.GetByPhoneAsync(req.PatientPhone, ct);
-        var patientId = patient?.PatientId
-            ?? await patients.CreateAsync(req.PatientPhone, req.PatientName, req.PatientAge, req.PatientGender, "en", now, ct);
-        if (!await patients.IsLinkedToTenantAsync(patientId, command.TenantId, ct))
-            await patients.LinkToTenantAsync(patientId, command.TenantId, now, ct);
-
-        // Hold the slot for 5 minutes (atomic capacity reservation; throws if unavailable or if the slot
-        // doesn't belong to req.DoctorId — the (slot,doctor) consistency guard).
-        var hold = await slotHolds.HoldAsync(command.TenantId, req.SlotId, req.DoctorId, HoldTtl, now, ct);
-
-        var booking = Booking.Create(
-            command.TenantId, req.SlotId, patientId, req.DoctorId, req.DepartmentId,
-            req.BookingType, req.BookedVia, req.PatientName, req.PatientPhone, req.PatientAge,
-            req.ChiefComplaint, notes: null, ctx.UserId, now);
-
-        // Insert + flush immediately: the DB trigger assigns booking_number, and the hold-conversion /
-        // OPD token below reference the booking row by FK.
-        var bookingNumber = await bookings.AddAndSaveAsync(booking, ct);
-
-        // Convert the hold (consume slot capacity) now that the booking row exists.
-        await slotHolds.ConvertAsync(hold.HoldId, booking.BookingId, now, ct);
-
-        int? tokenNumber = null;
-        if (req.IssueOpdToken)
-            tokenNumber = await opdTokens.IssueAsync(
-                command.TenantId, booking.BookingId, req.DoctorId,
-                DateOnly.FromDateTime(now), now, ct);
-
-        await audit.RecordAsync(new AuditEntry(
-            "create", "booking", booking.BookingId, bookingNumber, ctx.UserId, command.TenantId,
-            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
-            ChangeSummary: $"Created booking for patient {patientId} on slot {req.SlotId}"), ct);
-
-        await events.PublishAsync(BookingEventTypes.Created, command.TenantId, booking.BookingId, bookingNumber,
-            new { booking_id = booking.BookingId, patient_id = patientId, slot_id = req.SlotId }, ct);
-
-        return new CreateBookingResult(booking.BookingId, bookingNumber, tokenNumber);
-    }
+    public Task<CreateBookingResult> Handle(CreateBookingCommand command, CancellationToken ct) =>
+        creator.CreateAsync(command.TenantId, command.Request, clock.UtcNow, ct);
 }

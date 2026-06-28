@@ -124,6 +124,11 @@ const SIGNED_IN_PERMISSIONS: PermissionsResponse = {
     'docslot.booking.approve',
     'docslot.booking.cancel',
     'docslot.booking.reschedule',
+    // docslot.booking.complete gates BOTH complete AND check-in (the backend's
+    // check-in endpoint is gated by docslot.booking.complete). no_show gates the
+    // no-show action.
+    'docslot.booking.complete',
+    'docslot.booking.no_show',
     'docslot.patient.read',
     'docslot.patient.update',
     'docslot.doctor.read',
@@ -226,6 +231,9 @@ export function listBookings(): Promise<BookingRow[]> {
       source: b.source,
       note: b.note,
       createdAgo: b.createdAgo,
+      bookedByType: b.bookedByType,
+      behalfRelation: b.behalfRelation,
+      patientConsentStatus: b.patientConsentStatus,
     }),
   );
   return delay(rows);

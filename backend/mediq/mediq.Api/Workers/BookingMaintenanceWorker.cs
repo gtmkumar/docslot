@@ -58,6 +58,18 @@ public sealed class BookingMaintenanceWorker(
         if (swept > 0)
             logger.LogInformation("BookingMaintenance: swept {Count} expired slot holds.", swept);
 
+        // Requeue outbox rows stranded in 'processing' (worker died mid-send) so they're not lost.
+        var outbox = scope.ServiceProvider.GetRequiredService<IOutboxDrainStore>();
+        var requeued = await outbox.RequeueStrandedAsync(TimeSpan.FromMinutes(5), ct);
+        if (requeued > 0)
+            logger.LogWarning("BookingMaintenance: requeued {Count} stranded outbox messages.", requeued);
+
+        // Expire lapsed behalf-booking consent OTPs (cancels the awaiting booking + frees its slot).
+        var consent = scope.ServiceProvider.GetRequiredService<IConsentOtpStore>();
+        var expired = await consent.ExpireStaleAsync(ct);
+        if (expired > 0)
+            logger.LogInformation("BookingMaintenance: expired {Count} stale consent OTPs (bookings cancelled).", expired);
+
         if (now - _lastMaterializeUtc >= materializeEvery)
         {
             var gen = scope.ServiceProvider.GetRequiredService<ISlotGenerationService>();

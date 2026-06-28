@@ -8,8 +8,11 @@ namespace mediq.SharedDataModel.Docslot.Dashboard.Dtos;
 /// </summary>
 public enum BookingActionType
 {
-    /// <summary>pending → confirmed. Sets <c>confirmed_at</c>.</summary>
+    /// <summary>pending → confirmed. Sets <c>confirmed_at</c>. Blocked for a behalf booking until patient consent is confirmed.</summary>
     Approve,
+
+    /// <summary>confirmed → checked_in. Sets <c>checked_in_at</c> (front-desk arrival).</summary>
+    CheckIn,
 
     /// <summary>* → cancelled. Sets <c>cancelled_at</c>, <c>cancellation_reason</c>, <c>cancelled_by_user_id</c>. Requires a reason.</summary>
     Cancel,
