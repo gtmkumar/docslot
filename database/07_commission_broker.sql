@@ -673,6 +673,7 @@ BEGIN
     ('commission.broker.read_self', commission_product_id, 'brokers', 'read', 'self', 'Broker views own profile, attributions, wallet', false),
     ('commission.broker.update_self', commission_product_id, 'brokers', 'update', 'self', 'Broker updates own bank/UPI details', false),
     ('commission.broker.generate_link_self', commission_product_id, 'referral_links', 'create', 'self', 'Broker creates referral links', false),
+    ('commission.broker.create_booking_self', commission_product_id, 'bookings', 'create', 'self', 'Broker self-service: book on behalf of a referred patient (patient consent OTP required)', false),
 
     -- Rule management
     ('commission.rules.read', commission_product_id, 'commission_rules', 'read', 'tenant', 'View commission rate cards', false),
@@ -757,7 +758,8 @@ BEGIN
       AND p.permission_key IN (
         'commission.broker.read_self',
         'commission.broker.update_self',
-        'commission.broker.generate_link_self'
+        'commission.broker.generate_link_self',
+        'commission.broker.create_booking_self'
       );
 END $perms$;
 

@@ -63,6 +63,14 @@ public sealed record ClaimAttributionRequest(Guid BrokerId, string? ClaimedRelat
 /// <summary>Result of filing a post-hoc claim: the pending attribution id + status ('otp_sent').</summary>
 public sealed record ClaimAttributionResult(Guid AttributionId, string Status);
 
+/// <summary>Body for POST /commission/me/bookings — a broker booking on behalf of a referred patient (broker self-service).</summary>
+public sealed record CreateBrokerBookingRequest(
+    string PatientPhone, string? PatientName, short? PatientAge, string? PatientGender,
+    Guid SlotId, Guid DoctorId, Guid? DepartmentId, string? ChiefComplaint);
+
+/// <summary>Result of a broker-portal booking: the booking + its auto-verified attribution + status ('awaiting_patient_consent').</summary>
+public sealed record BrokerBookingResult(Guid BookingId, string? BookingNumber, Guid AttributionId, string Status);
+
 // ---- Payouts -------------------------------------------------------------------------------------
 
 public sealed record CreatePayoutBatchRequest(Guid BrokerId, DateOnly PeriodStart, DateOnly PeriodEnd);

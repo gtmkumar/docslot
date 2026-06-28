@@ -75,6 +75,17 @@ public sealed class CommissionController(
     public async Task<ActionResult<IReadOnlyList<ReferralLinkDto>>> MyLinks(CancellationToken ct)
         => Ok(await queries.Query(new ListReferralLinksQuery(RequireOwnBroker()), ct));
 
+    /// <summary>
+    /// Broker self-service booking on behalf of a referred patient. Creates a behalf booking (patient consent
+    /// OTP, DPDP) + an auto-verified <c>broker_portal_booking</c> attribution. IDOR-safe: tenant + broker_id come
+    /// from the signed token, never the body. The broker must be active + linked to the tenant (else 403).
+    /// </summary>
+    [HttpPost("me/bookings")]
+    [RequirePermission("commission.broker.create_booking_self")]
+    [ProducesResponseType<BrokerBookingResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<BrokerBookingResult>> CreateBrokerBooking([FromBody] CreateBrokerBookingRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new BrokerPortalBookingCommand(RequireTenant(), RequireOwnBroker(), request), ct));
+
     // ---- Rules -----------------------------------------------------------------------------------
 
     [HttpGet("rules")]
