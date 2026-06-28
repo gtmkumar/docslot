@@ -137,6 +137,10 @@ public sealed class PatientConsentService(
                 outcome == ConsentOutcome.Expired ? "Patient consent OTP expired" : "Patient declined consent",
                 byUserId: null, nowUtc);
             await slotHolds.ReleaseSlotCapacityAsync(booking.SlotId, nowUtc, ct);
+            // A broker-portal booking carries an auto-verified attribution; cancelling it (consent denied/lapsed)
+            // must claw that back too, exactly as an explicit cancel/no-show does. No-op for an ordinary behalf
+            // booking with no attribution. (The SQL consent-expiry sweep does the equivalent for the worker path.)
+            await commissionLifecycle.OnBookingReversedAsync(tenantId, bookingId, nowUtc, ct);
         }
     }
 }

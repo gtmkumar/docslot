@@ -335,7 +335,7 @@ CREATE TABLE docslot.bookings (
 
     -- Booking context
     booked_via          VARCHAR(20) NOT NULL DEFAULT 'whatsapp'
-        CHECK (booked_via IN ('whatsapp', 'dashboard', 'api', 'walk_in', 'phone_call')),
+        CHECK (booked_via IN ('whatsapp', 'dashboard', 'api', 'walk_in', 'phone_call', 'broker_portal')),
     booked_for          VARCHAR(20) NOT NULL DEFAULT 'self'
         CHECK (booked_for IN ('self', 'family_member', 'other')),
     booked_for_patient_id UUID REFERENCES docslot.patients(patient_id),
@@ -1173,19 +1173,56 @@ BEGIN
         WHERE b.booking_id = e.booking_id
           AND b.status IN ('pending', 'confirmed')
           AND b.patient_consent_status = 'pending'
-        RETURNING b.slot_id
+        RETURNING b.booking_id, b.slot_id
+    ),
+    freed AS (
+        UPDATE docslot.time_slots s
+        SET current_count = GREATEST(s.current_count - 1, 0),
+            status = CASE WHEN s.status = 'booked' THEN 'available' ELSE s.status END
+        FROM cancelled c
+        WHERE s.slot_id = c.slot_id
+        RETURNING 1
+    ),
+    -- A cancelled booking earns no commission: reverse any broker attribution on it (a broker-portal booking)
+    -- and debit the wallet from the bucket it sat in (+ lifetime_reversed) — same math as ApplyReversedAsync,
+    -- so the consent-expiry worker path matches the in-request consent-deny path. No-op for ordinary behalf
+    -- bookings (no attribution).
+    to_reverse AS (
+        SELECT a.attribution_id, a.broker_id, COALESCE(a.commission_amount_inr, 0) AS amt, a.commission_status AS prev
+        FROM commission.attributions a
+        JOIN cancelled c ON c.booking_id = a.booking_id
+        WHERE a.commission_status IN ('pending', 'earned', 'ready_to_pay')
+    ),
+    reversed AS (
+        UPDATE commission.attributions a
+        SET commission_status = 'reversed', updated_at = NOW()
+        FROM to_reverse t WHERE a.attribution_id = t.attribution_id
+        RETURNING t.broker_id, t.amt, t.prev
+    ),
+    wallet_moves AS (
+        SELECT broker_id,
+               SUM(CASE WHEN prev = 'pending'      THEN amt ELSE 0 END) AS pending_amt,
+               SUM(CASE WHEN prev = 'earned'       THEN amt ELSE 0 END) AS earned_amt,
+               SUM(CASE WHEN prev = 'ready_to_pay' THEN amt ELSE 0 END) AS ready_amt,
+               SUM(amt) AS total_amt
+        FROM reversed GROUP BY broker_id
+    ),
+    debited AS (
+        UPDATE commission.broker_wallets w
+        SET pending_inr      = GREATEST(0, w.pending_inr - m.pending_amt),
+            earned_inr       = GREATEST(0, w.earned_inr - m.earned_amt),
+            ready_to_pay_inr = GREATEST(0, w.ready_to_pay_inr - m.ready_amt),
+            lifetime_reversed_inr = w.lifetime_reversed_inr + m.total_amt,
+            updated_at = NOW()
+        FROM wallet_moves m WHERE w.broker_id = m.broker_id
+        RETURNING 1
     )
-    UPDATE docslot.time_slots s
-    SET current_count = GREATEST(s.current_count - 1, 0),
-        status = CASE WHEN s.status = 'booked' THEN 'available' ELSE s.status END
-    FROM cancelled c
-    WHERE s.slot_id = c.slot_id;
-    GET DIAGNOSTICS v_n = ROW_COUNT;
+    SELECT COUNT(*)::int INTO v_n FROM cancelled;
     RETURN v_n;
 END;
 $$;
 COMMENT ON FUNCTION docslot.expire_stale_consent_otps IS
-    'Expire behalf-booking consent OTPs past expiry: mark OTP expired, cancel the awaiting booking, free its slot capacity. SECURITY DEFINER for the RLS-less maintenance worker. Returns slots freed.';
+    'Expire behalf-booking consent OTPs past expiry: mark OTP expired, cancel the awaiting booking, free its slot capacity, and reverse any broker attribution on it (+ wallet debit). SECURITY DEFINER for the RLS-less maintenance worker. Returns bookings cancelled.';
 
 -- ----------------------------------------------------------------------------
 -- Outbox drain functions (SECURITY DEFINER) — RLS bypass for the context-less worker
