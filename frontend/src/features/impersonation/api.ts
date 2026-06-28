@@ -1,8 +1,9 @@
-// Support-impersonation feature: the begin/end helpers + the React mutation that
-// wires "Exit impersonation". The begin UI itself is out of scope (no admin panel
-// yet) — `beginImpersonation` exists so a future panel can reuse the exact wiring.
+// Support-impersonation feature: the begin/end helpers + the React queries and
+// mutations behind the begin panel and the banner's "Exit impersonation" action.
 //
 // Contract (issue #3):
+//   GET  /api/v1/tenants → TenantDto[] (super_admin, `platform.tenants.read`) — the
+//        begin panel's target-tenant picker.
 //   POST /api/v1/auth/impersonation/begin → { token, impersonationId, targetTenantId, expiresAtUtc }
 //        token.accessToken carries the signed `impersonated_tenant` claim.
 //   POST /api/v1/auth/impersonation/end   → a CLEAN TokenResponse (no claim).
@@ -11,8 +12,9 @@
 // through the session store so the added/cleared claim takes effect immediately
 // (the banner reads the claim off the live access token).
 
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import { listTenants } from '@/lib/backend';
 import {
   BeginImpersonationResultSchema,
   EndImpersonationResultSchema,
@@ -94,6 +96,36 @@ export function useEndImpersonation() {
     mutationFn: () => endImpersonation(),
     onSuccess: () => {
       // The impersonated tenant's data must not bleed into the restored session.
+      qc.clear();
+    },
+  });
+}
+
+export const tenantsQueryKey = ['tenants', 'list'] as const;
+
+/** Target-tenant options for the begin-impersonation picker. Cached for the
+ *  session (the list is stable); only fetched while the panel is open. */
+export function useTenants(enabled = true) {
+  return useQuery({
+    queryKey: tenantsQueryKey,
+    queryFn: listTenants,
+    enabled,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * Mutation behind the begin-impersonation panel's submit. Delegates to the
+ * `beginImpersonation` helper (POST /begin → store the impersonation token +
+ * linkage). On success the operator's OWN cached menus/permissions/lists are
+ * stale — drop them so the app re-bootstraps under the impersonated tenant's
+ * scope (and the claim-driven banner appears).
+ */
+export function useBeginImpersonation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Omit<BeginImpersonationRequest, 'refreshToken'>) => beginImpersonation(input),
+    onSuccess: () => {
       qc.clear();
     },
   });

@@ -1,6 +1,7 @@
 using mediq.Application.Abstractions;
 using mediq.Infrastructure.Persistence;
 using mediq.SharedDataModel.Docslot.Dashboard;
+using mediq.SharedDataModel.Docslot.Doctors;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -9,6 +10,22 @@ namespace mediq.Infrastructure.Docslot;
 /// <summary>Doctor + slot reads for the booking surface (tenant-scoped, active only).</summary>
 public sealed class DoctorReadService(PlatformDbContext db) : IDoctorReadService
 {
+    public async Task<bool> ExistsInTenantAsync(Guid doctorId, Guid tenantId, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<BoolRow>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM docslot.doctors
+                WHERE doctor_id = @p0 AND tenant_id = @p1 AND deleted_at IS NULL
+            ) AS "Value"
+            """,
+            new NpgsqlParameter("@p0", doctorId),
+            new NpgsqlParameter("@p1", tenantId)).ToListAsync(ct);
+        return rows.FirstOrDefault()?.Value ?? false;
+    }
+
+    private sealed record BoolRow(bool Value);
+
     public async Task<IReadOnlyList<DoctorDto>> ListAsync(Guid tenantId, CancellationToken ct)
     {
         // Directory cards: base doctor row + additive enrichment (department name, today's slot
@@ -101,6 +118,72 @@ public sealed class DoctorReadService(PlatformDbContext db) : IDoctorReadService
             .Select(s => new SlotDto(s.SlotId, s.DoctorId, s.SlotDate, s.StartTime, s.EndTime,
                 s.Status, s.CurrentCount, s.MaxCount))
             .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<ScheduleBlockDto>> GetSchedulesAsync(Guid doctorId, CancellationToken ct)
+    {
+        // Weekly recurring blocks for the doctor. TimeOnly / SMALLINT map natively in Npgsql. The cross-tenant
+        // guard runs in the handler (ExistsInTenantAsync) before this is reached; the projection joins on
+        // doctor_id only. NOT PHI — a doctor's own availability windows.
+        var rows = await db.Database.SqlQueryRaw<ScheduleRow>(
+                """
+                SELECT
+                    s.day_of_week            AS "DayOfWeek",
+                    s.start_time             AS "StartTime",
+                    s.end_time               AS "EndTime",
+                    s.slot_duration_minutes  AS "SlotDurationMinutes",
+                    s.max_patients_per_slot  AS "MaxPatientsPerSlot",
+                    s.break_start_time       AS "BreakStartTime",
+                    s.break_end_time         AS "BreakEndTime",
+                    s.is_active              AS "IsActive"
+                FROM docslot.doctor_schedules s
+                WHERE s.doctor_id = @p0 AND s.is_active = true
+                ORDER BY s.day_of_week, s.start_time
+                """,
+                new NpgsqlParameter("@p0", doctorId))
+            .ToListAsync(ct);
+
+        return rows.Select(r => new ScheduleBlockDto(
+            r.DayOfWeek, r.StartTime, r.EndTime, r.SlotDurationMinutes, r.MaxPatientsPerSlot,
+            r.BreakStartTime, r.BreakEndTime, r.IsActive)).ToList();
+    }
+
+    private sealed record ScheduleRow(
+        short DayOfWeek, TimeOnly StartTime, TimeOnly EndTime, short SlotDurationMinutes,
+        short MaxPatientsPerSlot, TimeOnly? BreakStartTime, TimeOnly? BreakEndTime, bool IsActive);
+
+    public async Task<IReadOnlyList<ScheduleOverrideDto>> GetOverridesAsync(Guid doctorId, DateOnly? from, CancellationToken ct)
+    {
+        // Date-specific overrides, optionally bounded below by `from` (inclusive). The untyped-NULL `from`
+        // filter is cast to ::date so PostgreSQL can plan the IS NULL OR >= comparison (the untyped-NULL
+        // gotcha noted in slice 08b — a bare @p1 with a NULL value otherwise fails to infer a type).
+        var rows = await db.Database.SqlQueryRaw<OverrideRow>(
+                """
+                SELECT
+                    o.override_id        AS "OverrideId",
+                    o.override_date      AS "OverrideDate",
+                    o.is_blocked         AS "IsBlocked",
+                    o.custom_start_time  AS "CustomStartTime",
+                    o.custom_end_time    AS "CustomEndTime",
+                    o.reason             AS "Reason"
+                FROM docslot.schedule_overrides o
+                WHERE o.doctor_id = @p0
+                  AND (@p1::date IS NULL OR o.override_date >= @p1::date)
+                  -- Exclude neutralized "deleted" tombstones (see DeleteOverrideAsync): the app role lacks
+                  -- DELETE on this table, so a delete neutralizes the row to a no-op marked reason='__deleted__'.
+                  AND NOT (o.is_blocked = false AND o.custom_start_time IS NULL AND o.reason = '__deleted__')
+                ORDER BY o.override_date
+                """,
+                new NpgsqlParameter("@p0", doctorId),
+                new NpgsqlParameter("@p1", (object?)from ?? DBNull.Value))
+            .ToListAsync(ct);
+
+        return rows.Select(r => new ScheduleOverrideDto(
+            r.OverrideId, r.OverrideDate, r.IsBlocked, r.CustomStartTime, r.CustomEndTime, r.Reason)).ToList();
+    }
+
+    private sealed record OverrideRow(
+        Guid OverrideId, DateOnly OverrideDate, bool IsBlocked,
+        TimeOnly? CustomStartTime, TimeOnly? CustomEndTime, string? Reason);
 }
 
 /// <summary>

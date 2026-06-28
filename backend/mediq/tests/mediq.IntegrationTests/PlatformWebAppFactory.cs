@@ -125,6 +125,14 @@ public sealed class PlatformWebAppFactory : WebApplicationFactory<Program>, IAsy
         // the seed user instead. We also null the impersonator/user FKs are not touched; audit history stays intact.
         await Exec(conn, "DELETE FROM platform.user_tenant_roles WHERE user_id = @uid", ("uid", SuperAdminUserId));
         await Exec(conn, "DELETE FROM platform.user_sessions WHERE user_id = @uid", ("uid", SuperAdminUserId));
+        // The Create_Custom_Role test mints a 'slice01_custom_*' role in this tenant via the API; sweep it
+        // (and any grants) so the suite leaves no role residue. roles carry no audit FK, so a hard delete is safe.
+        await Exec(conn,
+            "DELETE FROM platform.role_permissions WHERE role_id IN (SELECT role_id FROM platform.roles WHERE tenant_id = @tid AND role_key LIKE 'slice01_custom_%')",
+            ("tid", TenantId));
+        await Exec(conn,
+            "DELETE FROM platform.roles WHERE tenant_id = @tid AND role_key LIKE 'slice01_custom_%'",
+            ("tid", TenantId));
         await Exec(conn, "DELETE FROM platform.login_attempts WHERE email = @e", ("e", SuperAdminEmail));
         await Exec(conn,
             "UPDATE platform.users SET deleted_at = NOW(), is_active = false, email = @anon WHERE user_id = @uid",

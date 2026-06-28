@@ -12,6 +12,7 @@
 //  - idempotencyKey() helper that POST callers attach as `Idempotency-Key`.
 
 import { getSessionSnapshot, useSession } from '@/stores/session';
+import { emitSessionExpired } from '@/lib/auth-events';
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
 
@@ -31,6 +32,7 @@ async function refreshAccessToken(): Promise<string | null> {
     const { refreshToken, tenantId, setSession, clear } = useSession.getState();
     if (!refreshToken) {
       clear();
+      emitSessionExpired();
       return null;
     }
     try {
@@ -40,9 +42,13 @@ async function refreshAccessToken(): Promise<string | null> {
         body: JSON.stringify({ refreshToken }),
       });
       if (!res.ok) {
-        // Refresh token expired/revoked → session is over; the route guard
-        // redirects to /login on the next navigation.
+        // Refresh token expired/revoked → session is over. Clearing alone isn't
+        // enough: the route guard only re-runs on navigation, so a mounted shell
+        // would keep polling (e.g. useBadges every 60s) on a dead session and
+        // 401-storm. Emit so the app redirects to /login and clears the query
+        // cache NOW, stopping the polls.
         clear();
+        emitSessionExpired();
         return null;
       }
       const data = (await res.json()) as { accessToken: string; refreshToken: string };
@@ -50,6 +56,7 @@ async function refreshAccessToken(): Promise<string | null> {
       return data.accessToken;
     } catch {
       clear();
+      emitSessionExpired();
       return null;
     } finally {
       refreshInFlight = null;

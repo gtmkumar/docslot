@@ -7,13 +7,31 @@
 // createBooking / getAnalytics mocks live in lib/mock and are reused directly by
 // the facade — only the genuinely-new functions live here.
 
-import { BookingMutationResultSchema, type BookingMutationResult } from '@/lib/mock/contracts';
+import {
+  BookingMutationResultSchema,
+  TenantListItemSchema,
+  type BookingMutationResult,
+  type TenantListItem,
+} from '@/lib/mock/contracts';
 import { BOOKINGS } from '@/lib/data';
 import type { Booking } from '@/lib/types';
 
 const LATENCY = 180;
 function delay<T>(value: T): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), LATENCY));
+}
+
+// Mock target-tenant list for the begin-impersonation picker (live mode hits
+// GET /tenants, super_admin only). A handful of distinct tenants so the selector
+// is exercisable in mock mode.
+export function listTenantsMock(): Promise<TenantListItem[]> {
+  return delay(
+    TenantListItemSchema.array().parse([
+      { tenantId: '11111111-1111-1111-1111-111111111111', tenantCode: 'APOLLO-AND', displayName: 'Apollo Care · Andheri West', tenantType: 'hospital', status: 'active', country: 'IN', city: 'Mumbai' },
+      { tenantId: '22222222-2222-2222-2222-222222222222', tenantCode: 'CITYLAB-BLR', displayName: 'CityLab Diagnostics · Bengaluru', tenantType: 'diagnostic_lab', status: 'active', country: 'IN', city: 'Bengaluru' },
+      { tenantId: '33333333-3333-3333-3333-333333333333', tenantCode: 'SUNRISE-DEL', displayName: 'Sunrise Clinic · New Delhi', tenantType: 'clinic', status: 'active', country: 'IN', city: 'New Delhi' },
+    ]),
+  );
 }
 
 // Idempotent replay cache, mirroring the lib/mock withIdem helper.

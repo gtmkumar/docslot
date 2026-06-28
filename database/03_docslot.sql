@@ -976,6 +976,131 @@ CREATE TRIGGER trg_booking_status_log AFTER UPDATE ON docslot.bookings
     FOR EACH ROW EXECUTE FUNCTION docslot.log_booking_status_change();
 
 -- ============================================================================
+-- SLOT GENERATION (FR-BOOK-02) — materialize bookable time_slots from the
+-- doctor's recurring weekly schedule, honouring schedule_overrides (blocked
+-- dates skip; custom hours replace the window) and the per-block break window.
+-- ============================================================================
+-- SECURITY DEFINER so the nightly materializer + the staff "generate" endpoint
+-- can write slots regardless of RLS; tenant_id is derived from the doctor row
+-- (authoritative — never a caller-supplied value), and the calling endpoint is
+-- tenant-scoped + permission-gated. Idempotent: ON CONFLICT DO NOTHING never
+-- clobbers an existing (possibly already-booked) slot. Returns rows created.
+CREATE OR REPLACE FUNCTION docslot.generate_time_slots(
+    p_doctor_id UUID,
+    p_from_date DATE,
+    p_to_date   DATE
+) RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+DECLARE
+    v_tenant       UUID;
+    v_date         DATE;
+    v_dow          SMALLINT;
+    v_sched        RECORD;
+    v_ovr          docslot.schedule_overrides%ROWTYPE;
+    v_has_override BOOLEAN;
+    v_win_start    TIME;
+    v_win_end      TIME;
+    v_slot_start   TIME;
+    v_slot_end     TIME;
+    v_created      INT := 0;
+    v_n            INT;
+BEGIN
+    IF p_from_date IS NULL OR p_to_date IS NULL OR p_to_date < p_from_date THEN
+        RAISE EXCEPTION 'invalid date range';
+    END IF;
+    IF p_to_date - p_from_date > 92 THEN
+        RAISE EXCEPTION 'date range too large (max 92 days)';
+    END IF;
+
+    SELECT tenant_id INTO v_tenant
+    FROM docslot.doctors
+    WHERE doctor_id = p_doctor_id AND deleted_at IS NULL AND is_active = true;
+    IF v_tenant IS NULL THEN
+        RETURN 0;   -- unknown / inactive / deleted doctor: nothing to generate
+    END IF;
+
+    v_date := p_from_date;
+    WHILE v_date <= p_to_date LOOP
+        v_dow := EXTRACT(DOW FROM v_date)::SMALLINT;   -- 0=Sunday .. 6=Saturday
+
+        SELECT * INTO v_ovr FROM docslot.schedule_overrides
+            WHERE doctor_id = p_doctor_id AND override_date = v_date;
+        v_has_override := FOUND;
+
+        -- A blocked override (holiday/leave) skips the whole day.
+        IF v_has_override AND v_ovr.is_blocked THEN
+            v_date := v_date + 1;
+            CONTINUE;
+        END IF;
+
+        FOR v_sched IN
+            SELECT * FROM docslot.doctor_schedules
+            WHERE doctor_id = p_doctor_id AND day_of_week = v_dow AND is_active = true
+        LOOP
+            -- Custom override hours (if provided) replace the schedule's window for this date.
+            IF v_has_override AND v_ovr.custom_start_time IS NOT NULL THEN
+                v_win_start := v_ovr.custom_start_time;
+                v_win_end   := COALESCE(v_ovr.custom_end_time, v_sched.end_time);
+            ELSE
+                v_win_start := v_sched.start_time;
+                v_win_end   := v_sched.end_time;
+            END IF;
+
+            v_slot_start := v_win_start;
+            WHILE v_slot_start + make_interval(mins => v_sched.slot_duration_minutes) <= v_win_end LOOP
+                v_slot_end := v_slot_start + make_interval(mins => v_sched.slot_duration_minutes);
+
+                -- Skip any slot overlapping the break window.
+                IF v_sched.break_start_time IS NULL
+                   OR NOT (v_slot_start < v_sched.break_end_time AND v_slot_end > v_sched.break_start_time) THEN
+                    INSERT INTO docslot.time_slots
+                        (tenant_id, doctor_id, slot_date, start_time, end_time, status, current_count, max_count)
+                    VALUES
+                        (v_tenant, p_doctor_id, v_date, v_slot_start, v_slot_end, 'available', 0, v_sched.max_patients_per_slot)
+                    ON CONFLICT (doctor_id, slot_date, start_time) DO NOTHING;
+                    GET DIAGNOSTICS v_n = ROW_COUNT;
+                    v_created := v_created + v_n;
+                END IF;
+
+                v_slot_start := v_slot_end;
+            END LOOP;
+        END LOOP;
+
+        v_date := v_date + 1;
+    END LOOP;
+
+    RETURN v_created;
+END;
+$$;
+COMMENT ON FUNCTION docslot.generate_time_slots IS
+    'Materialize bookable time_slots for a doctor over [from,to] from doctor_schedules, honouring schedule_overrides + breaks. Idempotent (ON CONFLICT DO NOTHING). tenant_id derived from the doctor. Returns rows created.';
+
+-- Sweep stale live slot holds to 'expired'. SECURITY DEFINER so the maintenance worker
+-- (which has no per-request tenant context) can run it under RLS on slot_holds — a plain
+-- app-role UPDATE would match zero rows once app.tenant_id is unset. Returns rows swept.
+CREATE OR REPLACE FUNCTION docslot.expire_stale_slot_holds()
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+DECLARE
+    v_n INT;
+BEGIN
+    UPDATE docslot.slot_holds
+    SET status = 'expired'
+    WHERE status = 'held' AND expires_at < NOW();
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RETURN v_n;
+END;
+$$;
+COMMENT ON FUNCTION docslot.expire_stale_slot_holds IS
+    'Mark stale held slot_holds (expires_at < now) as expired. SECURITY DEFINER so the RLS-less maintenance worker can sweep across all tenants. Returns rows swept.';
+
+-- ============================================================================
 -- END OF DOCSLOT SCHEMA
 -- ============================================================================
 -- Tables: 26 (D1-D26)

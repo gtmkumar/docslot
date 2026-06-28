@@ -639,6 +639,54 @@ false),
 true);
 
 -- ============================================================================
+-- AI DATA-PLANE RLS (Phase-0 gap fix) — tenant isolation on the PHI-bearing ai.*
+-- tables, mirroring the PHI pattern in 05 (active tenant OR scoped impersonation;
+-- the super_admin god-flag is intentionally NOT honored). Defense-in-depth:
+-- TODAY the Python AI service connects as the DB owner (RLS-bypassing) and filters
+-- by tenant in code, so these policies are a BACKSTOP for the .NET app role
+-- (docslot_app, NOBYPASSRLS) and for the intended future state where the AI service
+-- connects as a least-privilege role and SET LOCAL app.tenant_id per request
+-- (see db/rls.py in the architecture note below).
+-- ============================================================================
+ALTER TABLE ai.embeddings              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai.ai_predictions          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai.ai_agent_runs           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai.ai_document_extractions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai.ai_agent_steps          ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_embeddings ON ai.embeddings
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_ai_predictions ON ai.ai_predictions
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_ai_agent_runs ON ai.ai_agent_runs
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_ai_document_extractions ON ai.ai_document_extractions
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+-- ai_agent_steps has no tenant_id; gate via the parent run.
+CREATE POLICY tenant_isolation_ai_agent_steps ON ai.ai_agent_steps
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM ai.ai_agent_runs r
+            WHERE r.run_id = ai_agent_steps.run_id
+              AND (r.tenant_id = platform.current_tenant_id()
+                   OR r.tenant_id = platform.current_impersonated_tenant())
+        )
+    );
+
+-- ============================================================================
 -- END OF AI SERVICES SCHEMA
 -- ============================================================================
 -- Tables: 10 (AI1-AI10)

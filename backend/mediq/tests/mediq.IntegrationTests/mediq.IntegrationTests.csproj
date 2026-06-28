@@ -20,6 +20,14 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!-- Cap parallelism: ~12 integration test classes each spin a WebApplicationFactory against a single
+       shared Postgres (max_connections=100). Running all at once on a 12-core box caused CPU/connection
+       contention that flaked timing-sensitive tests (webhook retry counts, registry-count queries under
+       load). 4 keeps throughput high while staying well under the connection ceiling. -->
+  <ItemGroup>
+    <None Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\mediq.Api\mediq.Api.csproj" />
     <ProjectReference Include="..\..\mediq.Infrastructure\mediq.Infrastructure.csproj" />

@@ -1,6 +1,10 @@
 // Invite/Add user slide-over. email + full name + optional phone + initial role.
 // react-hook-form + zod (dependency-free resolver). POST carries a stable
 // Idempotency-Key. Gated upstream by tenant.users.create.
+//
+// The initial role is REQUIRED: a role-less user gets no tenant membership and so
+// never appears in the Users list. We offer only tenant-scoped roles (platform
+// roles are a cross-tenant, super-only concern the DB would reject anyway).
 
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -10,13 +14,15 @@ import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
 import { FieldShell, Select, TextInput, labelClass } from '@/components/ui/Field';
 import { idempotencyKey } from '@/lib/api-client';
+import { toUserError } from '@/lib/backend';
 import { useCreateUser, useRoles } from '../api';
 
 const schema = z.object({
   email: z.string().trim().email('email'),
   fullName: z.string().trim().min(1, 'name'),
   phone: z.string().trim().optional().default(''),
-  initialRoleId: z.string().optional().default(''),
+  // Required — a role-less user has no membership and won't surface in the list.
+  initialRoleId: z.string().min(1, 'role'),
 });
 type InviteForm = z.infer<typeof schema>;
 
@@ -24,6 +30,9 @@ export function InviteUserPanel({ open, onClose }: { open: boolean; onClose: () 
   const { t } = useTranslation();
   const { data: roles } = useRoles();
   const createUser = useCreateUser();
+
+  // Only tenant-scoped roles are assignable from this tenant-admin surface.
+  const assignableRoles = roles?.filter((r) => r.scope === 'tenant') ?? [];
 
   const { register, handleSubmit, formState } = useForm<InviteForm>({
     defaultValues: { email: '', fullName: '', phone: '', initialRoleId: '' },
@@ -37,16 +46,25 @@ export function InviteUserPanel({ open, onClose }: { open: boolean; onClose: () 
   });
 
   const onSubmit = handleSubmit(async (values) => {
-    await createUser.mutateAsync({
-      email: values.email,
-      fullName: values.fullName,
-      phone: values.phone || null,
-      preferredLanguage: 'en',
-      initialRoleId: values.initialRoleId || null,
-      idempotencyKey: idempotencyKey(),
-    });
-    toast.success(t('team.invite.sent'));
-    onClose();
+    try {
+      const result = await createUser.mutateAsync({
+        email: values.email,
+        fullName: values.fullName,
+        phone: values.phone || null,
+        preferredLanguage: 'en',
+        initialRoleId: values.initialRoleId,
+        idempotencyKey: idempotencyKey(),
+      });
+      // Distinguish a fresh invite from a link to an existing global identity.
+      toast.success(
+        result.alreadyExisted
+          ? t('team.toast.linked', { email: values.email })
+          : t('team.toast.invited', { email: values.email }),
+      );
+      onClose();
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
   });
 
   const errKey = (k: keyof InviteForm) => {
@@ -89,15 +107,24 @@ export function InviteUserPanel({ open, onClose }: { open: boolean; onClose: () 
           <label htmlFor="iu-role" className={labelClass}>
             {t('team.invite.initialRole')}
           </label>
-          <Select id="iu-role" {...register('initialRoleId')}>
-            <option value="">{t('team.invite.noRole')}</option>
-            {roles?.map((r) => (
+          <Select id="iu-role" {...register('initialRoleId')} aria-invalid={Boolean(formState.errors.initialRoleId)}>
+            <option value="" disabled hidden>
+              {t('team.invite.selectRole')}
+            </option>
+            {assignableRoles.map((r) => (
               <option key={r.roleId} value={r.roleId}>
                 {r.name}
               </option>
             ))}
           </Select>
+          {errKey('initialRoleId') ? (
+            <p role="alert" className="mt-1 text-[12px] text-danger">
+              {errKey('initialRoleId')}
+            </p>
+          ) : null}
         </div>
+
+        <p className="text-[12px] text-muted">{t('team.invite.firstLoginNote')}</p>
       </form>
     </SlideOver>
   );

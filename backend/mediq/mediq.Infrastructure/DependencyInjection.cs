@@ -46,6 +46,7 @@ public static class InfrastructureRegistration
         // Read-side projections + provisioning.
         services.AddScoped<IUserDirectory, UserDirectory>();
         services.AddScoped<IUserProvisioning, UserProvisioning>();
+        services.AddScoped<IUserLifecycle, Persistence.Repositories.UserLifecycle>();
 
         // Security.
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
@@ -55,6 +56,7 @@ public static class InfrastructureRegistration
 
         // RBAC + audit + DURABLE idempotency (slice 03 — table-backed, survives restart/scale-out).
         services.AddScoped<IRbacQueryService, RbacQueryService>();
+        services.AddScoped<IIamReadService, IamReadService>();
         services.AddScoped<IAuditTrailWriter, AuditTrailWriter>();
         services.AddScoped<IIdempotencyStore, Idempotency.DurableIdempotencyStore>();
 
@@ -85,6 +87,7 @@ public static class InfrastructureRegistration
         services.AddScoped<ISettingsReadService, Docslot.SettingsReadService>();
         services.AddScoped<ISettingsRepository, Docslot.SettingsRepository>();
         services.AddScoped<ISlotHoldService, Docslot.SlotHoldService>();
+        services.AddScoped<ISlotGenerationService, Docslot.SlotGenerationService>();
         services.AddScoped<IOpdTokenService, Docslot.OpdTokenService>();
         services.AddScoped<IPurposeOfUseWriter, Docslot.PurposeOfUseWriter>();
         services.AddScoped<IBookingEventPublisher, Docslot.BookingEventPublisher>();

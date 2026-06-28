@@ -65,10 +65,12 @@ const panelSearchSchema = z.object({
   panel: z
     .enum([
       'conversation', 'manage', 'approve', 'newBooking', 'bookTime', 'addDoctor', 'addPatient',
-      'inviteUser', 'manageUser', 'roleView', 'createRole',
+      'inviteUser', 'manageUser', 'editUser', 'roleView', 'createRole',
+      'roleMatrix', 'duplicateRole', 'effectiveAccess', 'createModule', 'createPermission',
       'registerClient', 'manageClient', 'createWebhook', 'webhookForm', 'webhookDeliveries',
       'exportData', 'eraseData', 'reportBreach', 'breakGlass',
       'registerBroker', 'manageBroker', 'createCommissionRule', 'raiseDispute', 'resolveDispute',
+      'beginImpersonation',
     ])
     .optional(),
   id: z.string().optional(),

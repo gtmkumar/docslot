@@ -693,6 +693,59 @@ CREATE POLICY tenant_isolation_drug_alerts ON docslot.drug_alerts
 
 COMMENT ON POLICY tenant_isolation_medical_history ON docslot.patient_medical_history IS 'Defense-in-depth: blocks cross-tenant queries even if app code forgets WHERE tenant_id = ...';
 
+-- ----------------------------------------------------------------------------
+-- BOOKING DATA-PLANE RLS (Phase-0 gap fix) — tenant isolation on the operational
+-- booking tables, mirroring the PHI pattern above (active tenant OR scoped
+-- impersonation; the super_admin god-flag is intentionally NOT honored).
+-- ----------------------------------------------------------------------------
+-- App writes run in the per-request UnitOfWork transaction that SET LOCAL
+-- app.tenant_id (authenticated requests from the JWT; the WhatsApp webhook via
+-- ITenantScopeOverride). Slot materialization runs through the SECURITY DEFINER
+-- docslot.generate_time_slots (bypasses RLS), so the nightly worker — which has no
+-- request tenant context — is unaffected.
+-- EXCLUDED: docslot.patients (cross-tenant by design — no tenant_id; isolation is
+-- via patient_tenant_links) and docslot.doctors (non-PHI directory data, already
+-- tenant-filtered in code; RLS there would block the worker's context-less doctor
+-- scan during materialization).
+ALTER TABLE docslot.bookings              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docslot.time_slots            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docslot.slot_holds            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docslot.opd_tokens            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docslot.booking_status_history ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_bookings ON docslot.bookings
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_time_slots ON docslot.time_slots
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_slot_holds ON docslot.slot_holds
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+CREATE POLICY tenant_isolation_opd_tokens ON docslot.opd_tokens
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+-- booking_status_history has no tenant_id; gate via the parent booking (the status
+-- trigger inserts during a booking UPDATE inside the same tenant-scoped transaction).
+CREATE POLICY tenant_isolation_booking_status_history ON docslot.booking_status_history
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM docslot.bookings b
+            WHERE b.booking_id = booking_status_history.booking_id
+              AND (b.tenant_id = platform.current_tenant_id()
+                   OR b.tenant_id = platform.current_impersonated_tenant())
+        )
+    );
+
 -- ============================================================================
 -- LAYER 6: PII MASKING FUNCTIONS (for unauthorized access display)
 -- ============================================================================

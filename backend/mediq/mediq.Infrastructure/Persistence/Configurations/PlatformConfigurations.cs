@@ -158,6 +158,65 @@ public sealed class PermissionConfiguration : IEntityTypeConfiguration<Permissio
     }
 }
 
+public sealed class RolePermissionConfiguration : IEntityTypeConfiguration<RolePermission>
+{
+    public void Configure(EntityTypeBuilder<RolePermission> b)
+    {
+        b.ToTable("role_permissions", "platform");
+        b.HasKey(rp => new { rp.RoleId, rp.PermissionId });
+        b.Property(rp => rp.RoleId).HasColumnName("role_id");
+        b.Property(rp => rp.PermissionId).HasColumnName("permission_id");
+        b.Property(rp => rp.IsGrantable).HasColumnName("is_grantable");
+        b.Property(rp => rp.GrantedAt).HasColumnName("granted_at");
+    }
+}
+
+public sealed class ResourceTypeConfiguration : IEntityTypeConfiguration<ResourceType>
+{
+    public void Configure(EntityTypeBuilder<ResourceType> b)
+    {
+        b.ToTable("resource_types", "platform");
+        b.HasKey(r => r.ResourceTypeId);
+        b.Property(r => r.ResourceTypeId).HasColumnName("resource_type_id");
+        b.Property(r => r.ResourceKey).HasColumnName("resource_key");
+        b.Property(r => r.ResourceName).HasColumnName("resource_name");
+        b.Property(r => r.ProductId).HasColumnName("product_id");
+        b.Property(r => r.Description).HasColumnName("description");
+        b.Property(r => r.DisplayOrder).HasColumnName("display_order");
+        b.Property(r => r.IsActive).HasColumnName("is_active");
+    }
+}
+
+public sealed class ActionTypeConfiguration : IEntityTypeConfiguration<ActionType>
+{
+    public void Configure(EntityTypeBuilder<ActionType> b)
+    {
+        b.ToTable("action_types", "platform");
+        b.HasKey(a => a.ActionTypeId);
+        b.Property(a => a.ActionTypeId).HasColumnName("action_type_id");
+        b.Property(a => a.ActionKey).HasColumnName("action_key");
+        b.Property(a => a.ActionName).HasColumnName("action_name");
+        b.Property(a => a.Description).HasColumnName("description");
+        b.Property(a => a.IsDangerous).HasColumnName("is_dangerous");
+        b.Property(a => a.DisplayOrder).HasColumnName("display_order");
+        b.Property(a => a.IsActive).HasColumnName("is_active");
+    }
+}
+
+public sealed class TenantModuleEntitlementConfiguration : IEntityTypeConfiguration<TenantModuleEntitlement>
+{
+    public void Configure(EntityTypeBuilder<TenantModuleEntitlement> b)
+    {
+        b.ToTable("tenant_module_entitlements", "platform");
+        b.HasKey(e => e.EntitlementId);
+        b.Property(e => e.EntitlementId).HasColumnName("entitlement_id");
+        b.Property(e => e.TenantId).HasColumnName("tenant_id");
+        b.Property(e => e.ResourceTypeId).HasColumnName("resource_type_id");
+        b.Property(e => e.IsLicensed).HasColumnName("is_licensed");
+        b.Property(e => e.Reason).HasColumnName("reason");
+    }
+}
+
 public sealed class UserSessionConfiguration : IEntityTypeConfiguration<UserSession>
 {
     public void Configure(EntityTypeBuilder<UserSession> b)

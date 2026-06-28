@@ -6,7 +6,7 @@
 // Every action stays permission-gated via in-memory can() — no role checks.
 
 import { useEffect, useRef, useState } from 'react';
-import { Calendar, Clock, MoreHorizontal, Plus } from 'lucide-react';
+import { Calendar, Clock, MoreHorizontal, Plus, UserCog } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { usePermissions } from '@/lib/permissions';
@@ -21,6 +21,10 @@ export function TopbarActions() {
 
   const canCalendar = can('docslot.slot.read');
   const canCreate = can('docslot.booking.create');
+  // Support impersonation (issue #3) — only a platform actor holding
+  // `platform.users.impersonate` sees the trigger. In-memory can(), never a role
+  // check. The API independently enforces 403 if this is ever shown wrongly.
+  const canImpersonate = can('platform.users.impersonate');
 
   useEffect(() => {
     if (!moreOpen) return;
@@ -93,6 +97,21 @@ export function TopbarActions() {
             </div>
           ) : null}
         </div>
+      ) : null}
+
+      {/* Begin impersonation — platform-admin only. Icon button with a labelled
+          accessible name; opens the begin slide-over. */}
+      {canImpersonate ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => openPanel({ type: 'beginImpersonation' })}
+          aria-label={t('topbar.impersonate')}
+          title={t('topbar.impersonate')}
+        >
+          <UserCog size={15} aria-hidden="true" />
+          <span className="hidden lg:inline">{t('topbar.impersonate')}</span>
+        </Button>
       ) : null}
 
       {canCreate ? (

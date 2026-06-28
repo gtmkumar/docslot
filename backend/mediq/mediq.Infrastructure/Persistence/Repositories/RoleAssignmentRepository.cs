@@ -24,6 +24,7 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
 {
     private const string SqlStateInsufficientPrivilege = "42501"; // grant-option / escalation guard
     private const string SqlStateIntegrityConstraint    = "23000"; // SoD role_incompatibility trigger
+    private const string SqlStateUniqueViolation        = "23505"; // duplicate catalog key (module/permission)
 
     // ---- Reads -------------------------------------------------------------------------------------
 
@@ -100,6 +101,96 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
             new NpgsqlParameter("@p6", (object?)effectiveFrom ?? DBNull.Value),
             new NpgsqlParameter("@p7", (object?)expiresAt ?? DBNull.Value));
 
+    public Task GrantPermissionToRoleAsync(
+        Guid actorUserId, Guid roleId, Guid permissionId, Guid? tenantId, bool grantable, CancellationToken ct) =>
+        ExecAsync(
+            "SELECT platform.grant_permission_to_role(@p0, @p1, @p2, @p3, @p4)",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", roleId),
+            new NpgsqlParameter("@p2", permissionId),
+            new NpgsqlParameter("@p3", (object?)tenantId ?? DBNull.Value),
+            new NpgsqlParameter("@p4", grantable));
+
+    public Task<bool> RevokePermissionFromRoleAsync(
+        Guid actorUserId, Guid roleId, Guid permissionId, Guid? tenantId, CancellationToken ct) =>
+        ScalarAsync<bool>(
+            "SELECT platform.revoke_permission_from_role(@p0, @p1, @p2, @p3) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", roleId),
+            new NpgsqlParameter("@p2", permissionId),
+            new NpgsqlParameter("@p3", (object?)tenantId ?? DBNull.Value));
+
+    public Task<Guid> DuplicateRoleAsync(
+        Guid actorUserId, Guid sourceRoleId, string newRoleKey, string newName, string? description, Guid? tenantId, CancellationToken ct) =>
+        ScalarAsync<Guid>(
+            "SELECT platform.duplicate_role(@p0, @p1, @p2, @p3, @p4, @p5) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", sourceRoleId),
+            new NpgsqlParameter("@p2", newRoleKey),
+            new NpgsqlParameter("@p3", newName),
+            new NpgsqlParameter("@p4", (object?)description ?? DBNull.Value),
+            new NpgsqlParameter("@p5", (object?)tenantId ?? DBNull.Value));
+
+    public Task<Guid> CreateResourceTypeAsync(
+        Guid actorUserId, string resourceKey, string name, string? description, int displayOrder, CancellationToken ct) =>
+        ScalarAsync<Guid>(
+            "SELECT platform.create_resource_type(@p0, @p1, @p2, @p3, @p4) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", resourceKey),
+            new NpgsqlParameter("@p2", name),
+            new NpgsqlParameter("@p3", (object?)description ?? DBNull.Value),
+            new NpgsqlParameter("@p4", displayOrder));
+
+    public Task<Guid> CreatePermissionAsync(
+        Guid actorUserId, string permissionKey, string resource, string action, string scope, string description,
+        bool isDangerous, CancellationToken ct) =>
+        ScalarAsync<Guid>(
+            "SELECT platform.create_permission(@p0, @p1, @p2, @p3, @p4, @p5, @p6) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", permissionKey),
+            new NpgsqlParameter("@p2", resource),
+            new NpgsqlParameter("@p3", action),
+            new NpgsqlParameter("@p4", scope),
+            new NpgsqlParameter("@p5", description),
+            new NpgsqlParameter("@p6", isDangerous));
+
+    public Task<Guid> SetModuleLicenseAsync(
+        Guid actorUserId, Guid tenantId, Guid resourceTypeId, bool isLicensed, string? reason, CancellationToken ct) =>
+        ScalarAsync<Guid>(
+            "SELECT platform.set_module_license(@p0, @p1, @p2, @p3, @p4) AS \"Value\"",
+            ct,
+            new NpgsqlParameter("@p0", actorUserId),
+            new NpgsqlParameter("@p1", tenantId),
+            new NpgsqlParameter("@p2", resourceTypeId),
+            new NpgsqlParameter("@p3", isLicensed),
+            new NpgsqlParameter("@p4", (object?)reason ?? DBNull.Value));
+
+    /// <summary>
+    /// Runs a SECURITY DEFINER function that returns void (e.g. grant_permission_to_role) on the DbContext
+    /// connection (enlisted in the ambient UoW transaction), translating the privilege/SoD SQLSTATEs the
+    /// same way as <see cref="ScalarAsync{T}"/>.
+    /// </summary>
+    private async Task ExecAsync(string sql, CancellationToken ct, params NpgsqlParameter[] parameters)
+    {
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(sql, parameters, ct);
+        }
+        catch (PostgresException pg) when (pg.SqlState == SqlStateInsufficientPrivilege)
+        {
+            throw new ForbiddenException(pg.MessageText, pg);
+        }
+        catch (PostgresException pg) when (pg.SqlState is SqlStateIntegrityConstraint or SqlStateUniqueViolation)
+        {
+            throw new ConflictException(pg.MessageText, pg);
+        }
+    }
+
     /// <summary>
     /// Runs a single-row, single-column function SELECT on the DbContext connection (enlisted in the ambient
     /// UoW transaction) and returns the scalar. Translates the privilege/SoD SQLSTATEs into house exceptions
@@ -117,9 +208,10 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
             // Grant-option / privilege-escalation guard inside the SECURITY DEFINER function → 403.
             throw new ForbiddenException(pg.MessageText, pg);
         }
-        catch (PostgresException pg) when (pg.SqlState == SqlStateIntegrityConstraint)
+        catch (PostgresException pg) when (pg.SqlState is SqlStateIntegrityConstraint or SqlStateUniqueViolation)
         {
-            // Separation-of-duties (role_incompatibility) trigger → 409 with the DB's explanatory message.
+            // SoD (role_incompatibility) trigger OR a duplicate catalog key (module/permission already
+            // exists) → 409 with the DB's explanatory message.
             throw new ConflictException(pg.MessageText, pg);
         }
     }

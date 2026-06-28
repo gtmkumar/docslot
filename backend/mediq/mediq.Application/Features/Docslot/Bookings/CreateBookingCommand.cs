@@ -72,8 +72,9 @@ public sealed class CreateBookingCommandHandler(
         if (!await patients.IsLinkedToTenantAsync(patientId, command.TenantId, ct))
             await patients.LinkToTenantAsync(patientId, command.TenantId, now, ct);
 
-        // Hold the slot for 5 minutes (atomic capacity reservation; throws if unavailable).
-        var hold = await slotHolds.HoldAsync(command.TenantId, req.SlotId, HoldTtl, now, ct);
+        // Hold the slot for 5 minutes (atomic capacity reservation; throws if unavailable or if the slot
+        // doesn't belong to req.DoctorId — the (slot,doctor) consistency guard).
+        var hold = await slotHolds.HoldAsync(command.TenantId, req.SlotId, req.DoctorId, HoldTtl, now, ct);
 
         var booking = Booking.Create(
             command.TenantId, req.SlotId, patientId, req.DoctorId, req.DepartmentId,

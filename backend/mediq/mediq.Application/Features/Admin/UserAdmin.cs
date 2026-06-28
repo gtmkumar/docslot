@@ -32,25 +32,41 @@ public sealed class CreateUserValidator : AbstractValidator<CreateUserCommand>
         RuleFor(x => x.TenantId).NotEmpty();
         RuleFor(x => x.Request.Email).NotEmpty().EmailAddress();
         RuleFor(x => x.Request.FullName).NotEmpty().MaximumLength(200);
-        RuleFor(x => x.Request.Password)
-            .MinimumLength(8).When(x => !string.IsNullOrEmpty(x.Request.Password));
+        // No password rule: a password is never accepted from the admin (the invite seeds a server-generated
+        // temp credential + must-change-password). Any supplied Password is ignored by the provisioner.
     }
 }
 
 public sealed class CreateUserCommandHandler(
-    IUserProvisioning provisioning, IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    IUserProvisioning provisioning, IRoleAssignmentRepository roles,
+    IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
     : ICommandHandler<CreateUserCommand, CreateUserResult>
 {
     public async Task<CreateUserResult> Handle(CreateUserCommand command, CancellationToken ct)
     {
-        var userId = await provisioning.CreateAsync(command.TenantId, command.Request, clock.UtcNow, ct);
+        var (userId, alreadyExisted) = await provisioning.CreateAsync(command.Request, clock.UtcNow, ct);
 
         await audit.RecordAsync(new AuditEntry(
-            "create", "user", userId, command.Request.Email, ctx.UserId, command.TenantId,
+            alreadyExisted ? "link_user" : "create", "user", userId, command.Request.Email, ctx.UserId, command.TenantId,
             ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
-            ChangeSummary: $"Created user {command.Request.Email} in tenant {command.TenantId}"), ct);
+            ChangeSummary: alreadyExisted
+                ? $"Linked existing user {command.Request.Email} to tenant {command.TenantId}"
+                : $"Created user {command.Request.Email} in tenant {command.TenantId}"), ct);
 
-        return new CreateUserResult(userId);
+        // Initial-role assignment routes through the SAME escalation-safe definer path that
+        // AssignRoleCommandHandler uses (no-escalation + SoD guards), INSIDE this command's UoW transaction —
+        // so a 403 here rolls the whole create back (no orphan auth-less user). Closes the escalation-by-proxy
+        // hole where the previous raw INSERT let tenant.users.create alone mint a user holding any role.
+        if (command.Request.InitialRoleId is { } roleId)
+        {
+            var userTenantRoleId = await roles.AssignRoleAsync(ctx.UserId!.Value, userId, roleId, command.TenantId, ct);
+            await audit.RecordAsync(new AuditEntry(
+                "assign_role", "user_tenant_role", userTenantRoleId, null, ctx.UserId, command.TenantId,
+                ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+                ChangeSummary: $"Assigned initial role {roleId} to user {userId}"), ct);
+        }
+
+        return new CreateUserResult(userId, alreadyExisted);
     }
 }
 
@@ -133,5 +149,118 @@ public sealed class SetOverrideCommandHandler(
             ChangeSummary: $"{(req.IsAllowed ? "GRANT" : "DENY")} {req.PermissionKey} to user {req.UserId}: {req.Reason}"), ct);
 
         return new SetOverrideResult(overrideId);
+    }
+}
+
+// ---- Set user status — deactivate / reactivate within a tenant (command) -------------------------
+
+public sealed record SetUserStatusCommand(Guid TenantId, Guid UserId, SetUserStatusRequest Request)
+    : ICommand<SetUserStatusResult>;
+
+public sealed class SetUserStatusValidator : AbstractValidator<SetUserStatusCommand>
+{
+    public SetUserStatusValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.UserId).NotEmpty();
+        // A reason is mandatory to DEACTIVATE (the DB enforces it for both directions; the handler supplies a
+        // default for reactivate so the client need not type one to re-enable a user).
+        RuleFor(x => x.Request.Reason).NotEmpty().When(x => !x.Request.IsActive)
+            .WithMessage("A reason is required to deactivate a user.");
+    }
+}
+
+public sealed class SetUserStatusCommandHandler(
+    IUserLifecycle lifecycle, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<SetUserStatusCommand, SetUserStatusResult>
+{
+    public async Task<SetUserStatusResult> Handle(SetUserStatusCommand command, CancellationToken ct)
+    {
+        var req = command.Request;
+        var reason = string.IsNullOrWhiteSpace(req.Reason)
+            ? (req.IsActive ? "Reactivated from Team & roles" : "Deactivated from Team & roles")
+            : req.Reason.Trim();
+
+        // Definer fn enforces permission re-check, tenant-membership scoping, self-guard, last-admin guard.
+        // Actor is the authenticated principal — never a body field.
+        await lifecycle.SetActiveAsync(ctx.UserId!.Value, command.UserId, command.TenantId, req.IsActive, reason, ct);
+
+        await audit.RecordAsync(new AuditEntry(
+            req.IsActive ? "reactivate" : "deactivate", "user", command.UserId, null, ctx.UserId, command.TenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"{(req.IsActive ? "Reactivated" : "Deactivated")} user {command.UserId} in tenant {command.TenantId}: {reason}"), ct);
+
+        return new SetUserStatusResult(command.UserId, req.IsActive);
+    }
+}
+
+// ---- Update user profile (command) ---------------------------------------------------------------
+
+public sealed record UpdateUserProfileCommand(Guid TenantId, Guid UserId, UpdateUserProfileRequest Request)
+    : ICommand<UpdateUserProfileResult>;
+
+public sealed class UpdateUserProfileValidator : AbstractValidator<UpdateUserProfileCommand>
+{
+    public UpdateUserProfileValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.UserId).NotEmpty();
+        RuleFor(x => x.Request.FullName).NotEmpty().MaximumLength(200);
+        RuleFor(x => x.Request.PreferredLanguage).Must(l => l is "en" or "hi")
+            .WithMessage("Preferred language must be en or hi.");
+        RuleFor(x => x.Request.Phone).MaximumLength(15).When(x => !string.IsNullOrEmpty(x.Request.Phone));
+    }
+}
+
+public sealed class UpdateUserProfileCommandHandler(
+    IUserLifecycle lifecycle, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<UpdateUserProfileCommand, UpdateUserProfileResult>
+{
+    public async Task<UpdateUserProfileResult> Handle(UpdateUserProfileCommand command, CancellationToken ct)
+    {
+        var req = command.Request;
+        await lifecycle.UpdateProfileAsync(
+            ctx.UserId!.Value, command.UserId, command.TenantId, req.FullName, req.Phone, req.PreferredLanguage, ct);
+
+        // PHI: log CHANGED-FIELD NAMES only — never the phone value (it would land in the hash-chained audit_log).
+        await audit.RecordAsync(new AuditEntry(
+            "update", "user", command.UserId, null, ctx.UserId, command.TenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Updated profile (name, phone, language) for user {command.UserId}"), ct);
+
+        return new UpdateUserProfileResult(command.UserId);
+    }
+}
+
+// ---- Reset user access — force password change + clear lockout (command) -------------------------
+
+public sealed record ResetAccessCommand(Guid TenantId, Guid UserId, ResetAccessRequest Request)
+    : ICommand<ResetAccessResult>;
+
+public sealed class ResetAccessValidator : AbstractValidator<ResetAccessCommand>
+{
+    public ResetAccessValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.UserId).NotEmpty();
+        RuleFor(x => x.Request.Reason).NotEmpty().WithMessage("A reason is required to reset access.");
+    }
+}
+
+public sealed class ResetAccessCommandHandler(
+    IUserLifecycle lifecycle, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<ResetAccessCommand, ResetAccessResult>
+{
+    public async Task<ResetAccessResult> Handle(ResetAccessCommand command, CancellationToken ct)
+    {
+        // Flags only — no plaintext generated/returned/stored. Definer self-guards (no self-reset).
+        await lifecycle.ResetAccessAsync(ctx.UserId!.Value, command.UserId, command.TenantId, command.Request.Reason.Trim(), ct);
+
+        await audit.RecordAsync(new AuditEntry(
+            "reset_access", "user", command.UserId, null, ctx.UserId, command.TenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Reset access (force password change + unlock) for user {command.UserId}: {command.Request.Reason.Trim()}"), ct);
+
+        return new ResetAccessResult(command.UserId);
     }
 }

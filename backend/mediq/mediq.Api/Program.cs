@@ -39,6 +39,11 @@ var whatsAppSection = builder.Configuration.GetSection(WhatsAppOptions.SectionNa
 if (whatsAppSection.GetValue("OutboxWorkerEnabled", true))
     builder.Services.AddHostedService<mediq.Api.Workers.OutboxDrainWorker>();
 
+// --- Booking maintenance worker: materializes a rolling horizon of bookable time_slots from doctor
+// schedules + sweeps stale slot holds. Enabled by default; toggle via Booking:MaintenanceWorkerEnabled=false. ---
+if (builder.Configuration.GetValue("Booking:MaintenanceWorkerEnabled", true))
+    builder.Services.AddHostedService<mediq.Api.Workers.BookingMaintenanceWorker>();
+
 // --- Cross-cutting / web ---
 builder.Services.AddRequestContext();
 builder.Services.AddPlatformJwtAuth(builder.Configuration);

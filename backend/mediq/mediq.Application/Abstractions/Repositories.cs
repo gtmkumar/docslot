@@ -64,4 +64,29 @@ public interface IRoleAssignmentRepository
     Task<Guid> SetPermissionOverrideAsync(
         Guid actorUserId, Guid userId, Guid permissionId, Guid? tenantId, bool isAllowed, string reason,
         DateTime? effectiveFrom, DateTime? expiresAt, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.grant_permission_to_role</c> (the matrix checkbox ON). Idempotent upsert.</summary>
+    Task GrantPermissionToRoleAsync(
+        Guid actorUserId, Guid roleId, Guid permissionId, Guid? tenantId, bool grantable, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.revoke_permission_from_role</c> (the matrix checkbox OFF); false when it was not granted.</summary>
+    Task<bool> RevokePermissionFromRoleAsync(
+        Guid actorUserId, Guid roleId, Guid permissionId, Guid? tenantId, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.duplicate_role</c>; clones a role into a new custom role, copying grants. Returns the new role_id.</summary>
+    Task<Guid> DuplicateRoleAsync(
+        Guid actorUserId, Guid sourceRoleId, string newRoleKey, string newName, string? description, Guid? tenantId, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.create_resource_type</c> (catalog: add a module). Returns the resource_type_id.</summary>
+    Task<Guid> CreateResourceTypeAsync(
+        Guid actorUserId, string resourceKey, string name, string? description, int displayOrder, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.create_permission</c> (catalog: add a permission). Returns the permission_id.</summary>
+    Task<Guid> CreatePermissionAsync(
+        Guid actorUserId, string permissionKey, string resource, string action, string scope, string description,
+        bool isDangerous, CancellationToken ct);
+
+    /// <summary>Calls <c>platform.set_module_license</c> (commercial display gate). Returns the entitlement_id.</summary>
+    Task<Guid> SetModuleLicenseAsync(
+        Guid actorUserId, Guid tenantId, Guid resourceTypeId, bool isLicensed, string? reason, CancellationToken ct);
 }
