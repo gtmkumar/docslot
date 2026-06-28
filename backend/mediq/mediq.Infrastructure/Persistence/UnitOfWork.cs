@@ -37,6 +37,18 @@ public sealed class UnitOfWork(PlatformDbContext db, ICurrentUserContext current
 {
     public Task<int> SaveChangesAsync(CancellationToken ct = default) => db.SaveChangesAsync(ct);
 
+    public async Task CreateSavepointAsync(string name, CancellationToken ct = default)
+    {
+        var tx = db.Database.CurrentTransaction;
+        if (tx is not null) await tx.CreateSavepointAsync(name, ct);
+    }
+
+    public async Task RollbackToSavepointAsync(string name, CancellationToken ct = default)
+    {
+        var tx = db.Database.CurrentTransaction;
+        if (tx is not null) await tx.RollbackToSavepointAsync(name, ct);
+    }
+
     public async Task<ITenantScope> BeginTenantScopeAsync(Guid? tenantId, CancellationToken ct = default)
     {
         // Reuse the ambient EF transaction if one already exists (e.g. nested call within a command), so we

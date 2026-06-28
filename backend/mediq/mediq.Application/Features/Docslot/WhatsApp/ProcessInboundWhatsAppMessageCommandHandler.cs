@@ -27,7 +27,9 @@ public sealed class ProcessInboundWhatsAppMessageCommandHandler(
     IOutboxMessageEnqueuer outbox,
     IPatientConsentService consent,
     IPostHocClaimService claims,
+    IReferralLinkRepository referralLinks,
     ICommandDispatcher commands,
+    IUnitOfWork uow,
     IAmbientIdempotencyKey ambientIdempotencyKey,
     ICurrentUserContext ctx,
     IClock clock,
@@ -89,9 +91,14 @@ public sealed class ProcessInboundWhatsAppMessageCommandHandler(
                 BookingId: claimResult.BookingId, BookingNumber: null);
         }
 
+        // 4c) Referral-link detection: a patient who arrived via /ref/{code} sends a prefilled message carrying
+        // the broker's code (the WhatsApp-first attribution mechanism — no shared web session). Resolve it once;
+        // it's stashed on a NEW conversation and consumed at booking confirm to attribute + mark the click converted.
+        var referral = await TryResolveReferralAsync(reply, now, ct);
+
         // 5) Advance the booking state machine → produce the next outbound text (and, on confirm, a booking).
         var flow = new Flow(tenantId, phone, lang, tenantName, profile);
-        var outcome = await AdvanceAsync(flow, conversation, reply, command.SenderDisplayName, now, ct);
+        var outcome = await AdvanceAsync(flow, conversation, reply, command.SenderDisplayName, referral, now, ct);
 
         // 6) Enqueue the outbound prompt (stubbed send via outbox) + log the outbound leg.
         if (outcome.OutboundText is not null)
@@ -117,11 +124,12 @@ public sealed class ProcessInboundWhatsAppMessageCommandHandler(
     // ---- state machine -------------------------------------------------------------------------------
 
     private async Task<Outcome> AdvanceAsync(
-        Flow flow, ConversationState? conversation, string reply, string? senderName, DateTime now, CancellationToken ct)
+        Flow flow, ConversationState? conversation, string reply, string? senderName,
+        (Guid LinkId, Guid BrokerId)? referral, DateTime now, CancellationToken ct)
     {
-        // No active conversation → greet and start.
+        // No active conversation → greet and start (capturing any referral the first message carried).
         if (conversation is null)
-            return await StartNewAsync(flow, senderName, now, ct);
+            return await StartNewAsync(flow, senderName, referral, now, ct);
 
         var context = ConversationContext.FromJson(conversation.ContextJson);
 
@@ -135,13 +143,18 @@ public sealed class ProcessInboundWhatsAppMessageCommandHandler(
             ConversationSteps.ChooseSlot => await HandleSlotAsync(flow, conversation, context, reply, now, ct),
             ConversationSteps.Confirm => await HandleConfirmAsync(flow, conversation, context, reply, now, ct),
             // 'done' or unknown → start a fresh conversation.
-            _ => await StartNewAsync(flow, senderName, now, ct),
+            _ => await StartNewAsync(flow, senderName, referral, now, ct),
         };
     }
 
-    private async Task<Outcome> StartNewAsync(Flow flow, string? senderName, DateTime now, CancellationToken ct)
+    private async Task<Outcome> StartNewAsync(Flow flow, string? senderName, (Guid LinkId, Guid BrokerId)? referral, DateTime now, CancellationToken ct)
     {
-        var context = new ConversationContext { DisplayName = senderName };
+        var context = new ConversationContext
+        {
+            DisplayName = senderName,
+            ReferralLinkId = referral?.LinkId,
+            ReferralBrokerId = referral?.BrokerId,
+        };
         var conversationId = await conversations.CreateAsync(
             flow.TenantId, flow.Phone, ConversationSteps.WhoFor, context.ToJson(), detectedLanguage: flow.Lang, now, ct);
         return Outcome.Prompt(conversationId, ConversationSteps.WhoFor, WhatsAppTemplates.Greeting(flow.Lang, flow.TenantName), "booking_prompt");
@@ -319,6 +332,37 @@ public sealed class ProcessInboundWhatsAppMessageCommandHandler(
 
         await conversations.UpdateAsync(conv.ConversationId, ConversationSteps.Done, context.ToJson(), isActive: false, now, ct);
 
+        // Referral attribution: the patient arrived via a broker's /ref link → attribute this booking to the
+        // broker (referral_link ⇒ auto_verified, earns on completion) + mark the click converted. BEST-EFFORT:
+        // a referral failure (already-attributed, broker not linked, self-referral, etc.) must NOT break the
+        // patient's booking — referral bookings carry no discount, so the insert can't poison the tx.
+        if (context.ReferralLinkId is { } refLinkId && context.ReferralBrokerId is { } refBrokerId)
+        {
+            // Best-effort + ISOLATED: a SAVEPOINT around the nested attribution so even an UNANTICIPATED DB error
+            // (e.g. a UNIQUE(booking_id, broker_id) race) rolls back ONLY the attribution — the C# catch alone
+            // cannot un-abort a PostgreSQL transaction, so without this a referral failure could destroy the
+            // patient's already-created booking. The booking + click-conversion outside the savepoint survive.
+            await uow.CreateSavepointAsync("ref_attr", ct);
+            try
+            {
+                // Give the attribution dispatch its OWN idempotency slot. The CreateBookingCommand we just
+                // dispatched (idempotent) populated the ambient slot keyed by this endpoint + the booking key;
+                // a second nested dispatch on the SAME slot returns the cached BOOKING result and SKIPS the
+                // attribution handler. A distinct key per (booking) keeps the attribution dispatch independent.
+                ambientIdempotencyKey.Set($"wa-ref-attr-{booking.BookingId:N}");
+                await commands.Send(new Commission.CreateAttributionCommand(
+                    flow.TenantId, new SharedDataModel.Docslot.Commission.CreateAttributionRequest(
+                        booking.BookingId, refBrokerId, "referral_link", refLinkId, null)), ct);
+                await referralLinks.MarkConvertedAsync(refLinkId, booking.BookingId, now, ct);
+            }
+            catch (Exception ex)
+            {
+                await uow.RollbackToSavepointAsync("ref_attr", ct);   // un-abort the tx; the booking stays committable
+                logger.LogWarning(ex, "Referral attribution failed for booking {BookingId} (link {LinkId}); booking proceeds.",
+                    booking.BookingId, refLinkId);
+            }
+        }
+
         if (isBehalf)
         {
             // DPDP: do NOT confirm yet. Send the patient an OTP; the booking stays pending until they approve.
@@ -340,6 +384,20 @@ public sealed class ProcessInboundWhatsAppMessageCommandHandler(
     }
 
     // ---- helpers -------------------------------------------------------------------------------------
+
+    /// <summary>The public referral short-code format minted by ReferralLinkRepository: BRK- + 8 hex chars.</summary>
+    private static readonly System.Text.RegularExpressions.Regex ReferralCode = new(
+        @"\bBRK-[0-9A-Fa-f]{8}\b",
+        System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>If the message carries a broker referral code that resolves to an active link, return (link, broker).</summary>
+    private async Task<(Guid LinkId, Guid BrokerId)?> TryResolveReferralAsync(string reply, DateTime now, CancellationToken ct)
+    {
+        var m = ReferralCode.Match(reply);
+        if (!m.Success) return null;
+        var link = await referralLinks.ResolveActiveByShortCodeAsync(m.Value.ToUpperInvariant(), now, ct);
+        return link is null ? null : (link.LinkId, link.BrokerId);
+    }
 
     private static bool IsBehalf(ConversationContext context) =>
         context.Relation is not null && context.Relation != "self";

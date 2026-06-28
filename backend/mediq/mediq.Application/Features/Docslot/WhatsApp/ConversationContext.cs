@@ -37,6 +37,11 @@ public sealed record ConversationContext
     [JsonPropertyName("slotId")] public Guid? SlotId { get; init; }
     [JsonPropertyName("slotLabel")] public string? SlotLabel { get; init; }
 
+    /// <summary>Referral attribution carried from a /ref/{code} click → prefilled WhatsApp message: the link the
+    /// patient arrived through + the broker who earns. Set when the code is detected; consumed at booking confirm.</summary>
+    [JsonPropertyName("referralLinkId")] public Guid? ReferralLinkId { get; init; }
+    [JsonPropertyName("referralBrokerId")] public Guid? ReferralBrokerId { get; init; }
+
     /// <summary>Option lists last presented (index → id), so a numbered reply resolves deterministically.</summary>
     [JsonPropertyName("departmentOptions")] public List<OptionEntry> DepartmentOptions { get; init; } = [];
     [JsonPropertyName("doctorOptions")] public List<OptionEntry> DoctorOptions { get; init; } = [];
