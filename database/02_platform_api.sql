@@ -279,6 +279,8 @@ CREATE TABLE platform_api.api_event_types (
 INSERT INTO platform_api.api_event_types (event_type, resource, action, description, requires_scope) VALUES
 ('docslot.booking.created', 'booking', 'created', 'New booking created', 'docslot.bookings.read'),
 ('docslot.booking.approved', 'booking', 'approved', 'Booking approved', 'docslot.bookings.read'),
+('docslot.booking.checked_in', 'booking', 'checked_in', 'Patient checked in at the front desk', 'docslot.bookings.read'),
+('docslot.booking.rescheduled', 'booking', 'rescheduled', 'Booking moved to a new slot', 'docslot.bookings.read'),
 ('docslot.booking.cancelled', 'booking', 'cancelled', 'Booking cancelled', 'docslot.bookings.read'),
 ('docslot.booking.completed', 'booking', 'completed', 'Booking marked complete', 'docslot.bookings.read'),
 ('docslot.booking.no_show', 'booking', 'no_show', 'Patient did not show up', 'docslot.bookings.read'),

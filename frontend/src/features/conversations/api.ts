@@ -3,7 +3,9 @@
 // lives under bookings but reads through this hook via the public api surface).
 
 import { useQuery } from '@tanstack/react-query';
-import { getConversation } from '@/lib/mock';
+// Wired to the LIVE read API behind VITE_USE_REAL_API: real hits
+// GET /bookings/{id}/conversation; mock serves the prototype thread (flag off).
+import { getConversation } from '@/lib/backend';
 
 export function useConversation(bookingId: string | undefined) {
   return useQuery({

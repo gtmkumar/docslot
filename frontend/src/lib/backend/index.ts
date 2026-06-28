@@ -15,10 +15,12 @@ import {
   addDoctorMock,
   addPatientMock,
   approveRuleMock,
+  checkInBookingMock,
   completeBookingMock,
   getBookingMock,
   listTenantsMock,
   noShowBookingMock,
+  rescheduleBookingMock,
 } from './mutations-mock';
 import type { Analytics } from '@/lib/mock/contracts';
 
@@ -49,6 +51,11 @@ export const getDashboardSummary = USE_REAL_API ? real.getDashboardSummary : moc
 // manage/approve slide-overs open for a REAL booking id.
 export const getBooking = USE_REAL_API ? real.getBooking : getBookingMock;
 
+// CONVERSATION THREAD — real hits GET /bookings/{id}/conversation (the live read
+// endpoint) and adapts ConversationMessageDto[] into the app-facing ChatMessage[]
+// the WhatsApp-mirrored thread renders; mock serves the prototype thread.
+export const getConversation = USE_REAL_API ? real.getConversation : mock.getConversation;
+
 // NEW-BOOKING WIZARD — real hits GET /doctors (filtered by department) and
 // GET /doctors/{id}/slots?date= (available only, carrying slotId); mock serves the
 // prototype practitioners/slots. The wizard's collected fields map onto
@@ -74,7 +81,13 @@ export const approveBooking = USE_REAL_API ? real.approveBooking : mock.approveB
 export const cancelBooking = USE_REAL_API ? real.cancelBooking : mock.cancelBooking;
 export const completeBooking = USE_REAL_API ? real.completeBooking : completeBookingMock;
 export const noShowBooking = USE_REAL_API ? real.noShowBooking : noShowBookingMock;
+// CHECK-IN (confirmed → checked_in) — real POSTs to /bookings/{id}/check-in with
+// an Idempotency-Key; mock returns the de-duped result shape.
+export const checkInBooking = USE_REAL_API ? real.checkInBooking : checkInBookingMock;
 export const createBooking = USE_REAL_API ? real.createBooking : mock.createBooking;
+// RESCHEDULE — real POSTs to /bookings/{id}/reschedule (Idempotency-Key) with the
+// chosen new slot (+ optional doctor/reason); mock returns the same result shape.
+export const rescheduleBooking = USE_REAL_API ? real.rescheduleBooking : rescheduleBookingMock;
 
 // ADD PATIENT — real POSTs to /patients; the mock is a no-op returning a synthetic
 // id (the prior mock panel just toasted + closed). Idempotency-Key on the POST.

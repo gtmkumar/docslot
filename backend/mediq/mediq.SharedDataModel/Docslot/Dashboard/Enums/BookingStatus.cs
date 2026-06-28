@@ -31,6 +31,10 @@ public enum BookingStatus
     [EnumMember(Value = "confirmed")]
     Confirmed,
 
+    /// <summary>Patient has arrived at the front desk (confirmed → checked_in).</summary>
+    [EnumMember(Value = "checked_in")]
+    CheckedIn,
+
     /// <summary>Cancelled (carries <c>cancellation_reason</c> / <c>cancelled_at</c>).</summary>
     [EnumMember(Value = "cancelled")]
     Cancelled,

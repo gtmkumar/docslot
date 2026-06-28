@@ -99,6 +99,22 @@ public sealed class SlotHoldService(PlatformDbContext db) : ISlotHoldService
 
     private sealed record IntResult(int Value);
 
+    public async Task<DateTime?> GetSlotStartUtcAsync(Guid slotId, CancellationToken ct)
+    {
+        // (slot_date + start_time) is wall-clock Asia/Kolkata; AT TIME ZONE converts it to the UTC instant.
+        var rows = await db.Database.SqlQueryRaw<TimeResult>(
+                """
+                SELECT ((slot_date + start_time) AT TIME ZONE 'Asia/Kolkata') AS "Value"
+                FROM docslot.time_slots WHERE slot_id = @p0
+                """,
+                new NpgsqlParameter("@p0", slotId))
+            .ToListAsync(ct);
+        var v = rows.FirstOrDefault()?.Value;
+        return v is null ? null : DateTime.SpecifyKind(v.Value, DateTimeKind.Utc);
+    }
+
+    private sealed record TimeResult(DateTime? Value);
+
     public async Task<bool> IsLiveAsync(Guid holdId, DateTime nowUtc, CancellationToken ct)
     {
         var rows = await db.Database.SqlQueryRaw<BoolResult>(

@@ -16,6 +16,8 @@ public static class BookingEventTypes
 {
     public const string Created = "docslot.booking.created";
     public const string Confirmed = "docslot.booking.approved";   // schema seeds 'approved'; we map confirmed→approved
+    public const string CheckedIn = "docslot.booking.checked_in";
+    public const string Rescheduled = "docslot.booking.rescheduled";
     public const string Cancelled = "docslot.booking.cancelled";
     public const string Completed = "docslot.booking.completed";
     public const string NoShow = "docslot.booking.no_show";

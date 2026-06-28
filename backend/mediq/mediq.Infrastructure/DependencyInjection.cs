@@ -88,6 +88,7 @@ public static class InfrastructureRegistration
         services.AddScoped<ISettingsRepository, Docslot.SettingsRepository>();
         services.AddScoped<ISlotHoldService, Docslot.SlotHoldService>();
         services.AddScoped<ISlotGenerationService, Docslot.SlotGenerationService>();
+        services.AddScoped<Application.Features.Docslot.Bookings.IBookingCreationService, Application.Features.Docslot.Bookings.BookingCreationService>();
         services.AddScoped<IOpdTokenService, Docslot.OpdTokenService>();
         services.AddScoped<IPurposeOfUseWriter, Docslot.PurposeOfUseWriter>();
         services.AddScoped<IBookingEventPublisher, Docslot.BookingEventPublisher>();
@@ -113,6 +114,10 @@ public static class InfrastructureRegistration
         services.AddScoped<IWaContactProfileRepository, Docslot.WhatsApp.WaContactProfileRepository>();
         services.AddScoped<IConversationRepository, Docslot.WhatsApp.ConversationRepository>();
         services.AddScoped<IWhatsAppCatalogReadService, Docslot.WhatsApp.WhatsAppCatalogReadService>();
+
+        // Behalf-booking patient OTP consent (DPDP). Store = infra; service = application orchestration.
+        services.AddScoped<IConsentOtpStore, Docslot.WhatsApp.ConsentOtpStore>();
+        services.AddScoped<IPatientConsentService, Application.Features.Docslot.WhatsApp.PatientConsentService>();
 
         // WhatsApp OUTBOUND drain: the store claims/transitions docslot.outbox_messages; the sender delivers.
         services.AddScoped<IOutboxDrainStore, Docslot.WhatsApp.OutboxDrainStore>();

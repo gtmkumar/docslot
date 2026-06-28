@@ -85,11 +85,29 @@ public sealed class BookingsController(
     public Task<ActionResult<BookingActionResultDto>> NoShow(Guid bookingId, CancellationToken ct)
         => ActAsync(bookingId, BookingActionType.MarkNoShow, null, ct);
 
-    /// <summary>Mark a confirmed booking complete. Gated by docslot.booking.complete.</summary>
+    /// <summary>Check a confirmed booking in at the front desk (confirmed → checked_in). Gated by docslot.booking.complete.</summary>
+    [HttpPost("bookings/{bookingId:guid}/check-in")]
+    [RequirePermission("docslot.booking.complete")]
+    public Task<ActionResult<BookingActionResultDto>> CheckIn(Guid bookingId, CancellationToken ct)
+        => ActAsync(bookingId, BookingActionType.CheckIn, null, ct);
+
+    /// <summary>Mark a confirmed/checked-in booking complete. Gated by docslot.booking.complete.</summary>
     [HttpPost("bookings/{bookingId:guid}/complete")]
     [RequirePermission("docslot.booking.complete")]
     public Task<ActionResult<BookingActionResultDto>> Complete(Guid bookingId, CancellationToken ct)
         => ActAsync(bookingId, BookingActionType.Complete, null, ct);
+
+    /// <summary>Reschedule a booking to a new slot (mints a new booking, terminates the old). Gated by docslot.booking.reschedule.</summary>
+    [HttpPost("bookings/{bookingId:guid}/reschedule")]
+    [RequirePermission("docslot.booking.reschedule")]
+    [ProducesResponseType<RescheduleBookingResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<RescheduleBookingResult>> Reschedule(
+        Guid bookingId, [FromBody] RescheduleBody body, CancellationToken ct)
+    {
+        var request = new RescheduleBookingRequest(bookingId, body.NewSlotId, body.NewDoctorId, body.Reason, idempotency.Key);
+        var result = await commands.Send(new RescheduleBookingCommand(RequireTenant(), request), ct);
+        return Ok(result);
+    }
 
     private async Task<ActionResult<BookingActionResultDto>> ActAsync(
         Guid bookingId, BookingActionType action, string? reason, CancellationToken ct)
@@ -108,4 +126,5 @@ public sealed class BookingsController(
         currentUser.TenantId ?? throw new mediq.Utilities.Exceptions.ForbiddenException("No active tenant for this session.");
 
     public sealed record ReasonBody(string Reason);
+    public sealed record RescheduleBody(Guid NewSlotId, Guid? NewDoctorId, string? Reason);
 }

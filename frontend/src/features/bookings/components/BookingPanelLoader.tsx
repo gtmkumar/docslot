@@ -22,6 +22,7 @@ import { useBookingDetail } from '../api';
 import { ManageAppointmentPanel } from './ManageAppointmentPanel';
 import { ApproveCollectPanel } from './ApproveCollectPanel';
 import { ConversationPanel } from './ConversationPanel';
+import { ReschedulePanel } from './ReschedulePanel';
 
 interface InnerPanelProps {
   booking: Booking;
@@ -112,5 +113,19 @@ export function ConversationPanelLoader({
 }) {
   return (
     <BookingPanelShell bookingId={bookingId} eyebrowKey="panel.conversation" Inner={ConversationPanel} open={open} onClose={onClose} />
+  );
+}
+
+export function ReschedulePanelLoader({
+  bookingId,
+  open,
+  onClose,
+}: {
+  bookingId: string;
+  open: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <BookingPanelShell bookingId={bookingId} eyebrowKey="panel.reschedule" Inner={ReschedulePanel} open={open} onClose={onClose} />
   );
 }

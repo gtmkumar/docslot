@@ -17,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   approveBooking,
   cancelBooking,
+  checkInBooking,
   completeBooking,
   createBooking,
   getBooking,
@@ -24,6 +25,7 @@ import {
   listPractitioners,
   listSlots,
   noShowBooking,
+  rescheduleBooking,
 } from '@/lib/backend';
 import { sendPaymentLink } from '@/lib/mock';
 import type { BookingRow } from '@/lib/mock/contracts';
@@ -200,6 +202,32 @@ export function useNoShowBooking() {
   });
 }
 
+/** Check a CONFIRMED patient in at the desk (confirmed → checked_in). Optimistic. */
+export interface CheckInBookingInput {
+  bookingId: string;
+  idempotencyKey: string;
+}
+
+export function useCheckInBooking() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ bookingId, idempotencyKey }: CheckInBookingInput) =>
+      checkInBooking(bookingId, idempotencyKey),
+    onMutate: async ({ bookingId }) => {
+      await qc.cancelQueries({ queryKey: bookingsQueryKey });
+      const prev = qc.getQueryData<BookingRow[]>(bookingsQueryKey);
+      qc.setQueryData<BookingRow[]>(bookingsQueryKey, (rows) =>
+        rows?.map((b) => (b.id === bookingId ? { ...b, status: 'checked_in' } : b)),
+      );
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(bookingsQueryKey, ctx.prev);
+    },
+    onSettled: () => invalidateBookingViews(qc),
+  });
+}
+
 export interface CreateBookingInput {
   phone: string;
   name: string;
@@ -217,6 +245,35 @@ export function useCreateBooking() {
   return useMutation({
     mutationFn: ({ idempotencyKey, ...draft }: CreateBookingInput) => createBooking(draft, idempotencyKey),
     onSuccess: () => invalidateBookingViews(qc),
+  });
+}
+
+/**
+ * Reschedule a booking onto a new slot (and optionally a new doctor / with a
+ * reason). A reschedule supersedes the old booking with a NEW one (lineage), so
+ * we don't optimistically mutate a single row's status — we invalidate the
+ * booking views on success/settle so the list/detail refetch the lineage. The
+ * Idempotency-Key is generated ONCE by the caller and reused on retry.
+ */
+export interface RescheduleBookingInput {
+  bookingId: string;
+  newSlotId: string;
+  newDoctorId?: string;
+  reason?: string;
+  idempotencyKey: string;
+}
+
+export function useRescheduleBooking() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ bookingId, newSlotId, newDoctorId, reason, idempotencyKey }: RescheduleBookingInput) =>
+      rescheduleBooking(bookingId, { newSlotId, newDoctorId, reason }, idempotencyKey),
+    onSettled: (_data, _err, { bookingId }) => {
+      invalidateBookingViews(qc);
+      // The superseded booking's detail must refetch (its status changes to
+      // rescheduled) so any open manage panel reflects the lineage.
+      void qc.invalidateQueries({ queryKey: ['bookings', 'detail', bookingId] });
+    },
   });
 }
 

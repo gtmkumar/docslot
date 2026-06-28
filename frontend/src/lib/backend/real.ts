@@ -26,10 +26,15 @@ import {
   AuditAnchorSchema,
   AuditChainVerifySchema,
   BadgesResponseSchema,
+  BehalfRelationSchema,
+  BookedByTypeSchema,
   BookingActionResultDtoSchema,
   BookingListItemDtoSchema,
   BookingRowSchema,
   BreachSchema,
+  ConversationMessageDtoSchema,
+  PatientConsentStatusSchema,
+  RescheduleResultDtoSchema,
   BrokerSchema,
   CalendarGridSchema,
   CommissionCreatedSchema,
@@ -141,7 +146,16 @@ import {
   type TokenResponse,
   type WebhookSubscription,
 } from '@/lib/mock/contracts';
-import type { Booking, BookingSource, BookingStatus, Lang } from '@/lib/types';
+import type {
+  BehalfRelation,
+  BookedByType,
+  Booking,
+  BookingSource,
+  BookingStatus,
+  ChatMessage,
+  Lang,
+  PatientConsentStatus,
+} from '@/lib/types';
 
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
@@ -292,6 +306,26 @@ function asString<T extends string>(value: number | string, fallback: T): T {
   return typeof value === 'string' ? (value as T) : fallback;
 }
 
+// ── Behalf / consent mapping (Phase 1) ───────────────────────────────────────
+// The wire tokens are the canonical snake_case strings; absent/unknown values
+// fall back to a `self` / `not_required` booking so a pre-Phase-1 row stays safe.
+// We parse through the zod enums so an unexpected token degrades to the default
+// rather than mis-gating the Approve action.
+function asBookedByType(value: number | string | null | undefined): BookedByType {
+  const parsed = typeof value === 'string' ? BookedByTypeSchema.safeParse(value) : null;
+  return parsed?.success ? parsed.data : 'self';
+}
+
+function asBehalfRelation(value: number | string | null | undefined): BehalfRelation | null {
+  const parsed = typeof value === 'string' ? BehalfRelationSchema.safeParse(value) : null;
+  return parsed?.success ? parsed.data : null;
+}
+
+function asConsentStatus(value: number | string | null | undefined): PatientConsentStatus {
+  const parsed = typeof value === 'string' ? PatientConsentStatusSchema.safeParse(value) : null;
+  return parsed?.success ? parsed.data : 'not_required';
+}
+
 export async function listBookings(): Promise<BookingRow[]> {
   const raw = await apiFetch<unknown[]>('/bookings');
   const dtos = BookingListItemDtoSchema.array().parse(raw);
@@ -310,6 +344,9 @@ export async function listBookings(): Promise<BookingRow[]> {
       source: asString(d.source, BOOKING_SOURCE_FALLBACK),
       note: d.note ?? '',
       createdAgo: d.createdAt,
+      bookedByType: asBookedByType(d.bookedByType),
+      behalfRelation: asBehalfRelation(d.behalfRelation),
+      patientConsentStatus: asConsentStatus(d.patientConsentStatus),
     }),
   );
 }
@@ -348,10 +385,8 @@ export async function getBooking(bookingId: string): Promise<Booking> {
     phone: d.maskedPhone ?? '+91 ····· ·····',
     age: d.age ?? 0,
     gender: asGenderCode(d.gender),
-    // The list/detail DTO carries no doctorId; the panels only need it for the
-    // (mock) conversation link, not for the live approve/cancel actions (which key
-    // off the booking id), so an empty id is safe here.
-    doctorId: '',
+    // The booking's doctor — used by the reschedule slide-over to list this doctor's open slots.
+    doctorId: d.doctorId ?? '',
     doctorName: d.doctorName ?? '—',
     dept: d.departmentName ?? '—',
     date: d.slotStart,
@@ -362,7 +397,34 @@ export async function getBooking(bookingId: string): Promise<Booking> {
     note: d.note ?? '',
     createdAgo: d.createdAt,
     lang: asLang(d.language),
+    // Behalf / consent (Phase 1, read-only) — the manage panel surfaces these and
+    // gates Approve on patientConsentStatus.
+    bookedByType: asBookedByType(d.bookedByType),
+    behalfRelation: asBehalfRelation(d.behalfRelation),
+    patientConsentStatus: asConsentStatus(d.patientConsentStatus),
   };
+}
+
+// ── CONVERSATION THREAD (WhatsApp-mirrored, Phase 1) ─────────────────────────────
+// `GET /api/v1/bookings/{bookingId}/conversation` → ConversationMessageDto[] (from
+// wa_message_log). We adapt each into the app-facing ChatMessage the thread renders:
+//   - direction 'inbound'  → from 'patient' (left bubble)
+//   - direction 'outbound' → from 'bot'     (right WhatsApp-tinted bubble)
+//   - `content` is the message body (null for non-text types → a typed placeholder)
+//   - `at` is the HH:mm send time in Asia/Kolkata.
+// The live feed has no interactive-chip / system-line metadata, so those stay
+// undefined (the thread renders a plain bubble). NO extra PHI — only the message
+// body the patient sent over WhatsApp.
+export async function getConversation(bookingId: string): Promise<ChatMessage[]> {
+  const raw = await apiFetch<unknown[]>(`/bookings/${bookingId}/conversation`);
+  const dtos = ConversationMessageDtoSchema.array().parse(raw);
+  return dtos.map((m) => ({
+    from: m.direction === 'inbound' ? ('patient' as const) : ('bot' as const),
+    // A non-text message (image/template/etc.) has null content; show its type so
+    // the thread isn't a blank bubble.
+    text: m.content ?? `[${m.messageType}]`,
+    at: toClockTime(m.sentAt),
+  }));
 }
 
 // ── DOCTOR SLOTS (NewBooking wizard Slot step) ───────────────────────────────────
@@ -544,7 +606,10 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     confirmedToday: num(dto.confirmedTodayCount),
     revenueToday: num(dto.todayRevenue),
     noShowRate: noShowPct,
-    // No active-conversations metric in the live summary yet (flagged) — 0.
+    // The conversation THREAD is now wired (getConversation → GET
+    // /bookings/{id}/conversation), but the summary endpoint still has no
+    // active-conversations COUNT metric (a live WhatsApp-thread tally), so this
+    // card stays 0 until /dashboard/summary emits it.
     activeConversations: 0,
   };
 }
@@ -643,7 +708,7 @@ function actionStatus(
 
 async function bookingAction(
   bookingId: string,
-  action: 'approve' | 'cancel' | 'complete' | 'no-show',
+  action: 'approve' | 'cancel' | 'complete' | 'no-show' | 'check-in',
   idempotencyKey: string,
   optimistic: BookingRow['status'],
   body?: unknown,
@@ -677,12 +742,48 @@ export function noShowBooking(bookingId: string, idempotencyKey: string): Promis
   return bookingAction(bookingId, 'no-show', idempotencyKey, 'no_show');
 }
 
+/** Check a CONFIRMED patient in at the desk (confirmed → checked_in). */
+export function checkInBooking(bookingId: string, idempotencyKey: string): Promise<BookingMutationResult> {
+  return bookingAction(bookingId, 'check-in', idempotencyKey, 'checked_in');
+}
+
+// ── RESCHEDULE BOOKING (Phase 1) ──────────────────────────────────────────────
+// POST /bookings/{bookingId}/reschedule (Idempotency-Key). A reschedule supersedes
+// the old booking with a NEW one at the chosen slot (lineage), optionally on a new
+// doctor, with an optional reason. The result carries both ids + the new booking
+// number + token. The new slotId is the GUID from the (already-wired) slots
+// listing. The Idempotency-Key is generated ONCE by the caller and reused on retry.
+export async function rescheduleBooking(
+  bookingId: string,
+  input: { newSlotId: string; newDoctorId?: string; reason?: string },
+  idempotencyKey: string,
+): Promise<{ oldBookingId: string; newBookingId: string; newBookingNumber: string | null; tokenNumber: number | null }> {
+  const raw = await apiFetch<unknown>(`/bookings/${bookingId}/reschedule`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      newSlotId: input.newSlotId,
+      newDoctorId: input.newDoctorId ?? null,
+      reason: input.reason ?? null,
+    },
+  });
+  const dto = RescheduleResultDtoSchema.parse(raw);
+  return {
+    oldBookingId: dto.oldBookingId,
+    newBookingId: dto.newBookingId,
+    newBookingNumber: dto.newBookingNumber,
+    tokenNumber: dto.tokenNumber,
+  };
+}
+
 // ── CREATE BOOKING ────────────────────────────────────────────────────────────
 // POST /bookings (CreateBookingRequest). The wizard collects patient + doctor +
-// slot. NOTE: the live slots/practitioners endpoints aren't wired yet, so the
-// wizard's doctor/slot ids are mock placeholders — a live create will surface the
-// server's validation error gracefully (via toUserError) rather than crash. When
-// the slot endpoints land this sends real GUIDs and succeeds.
+// slot. The slots/practitioners endpoints ARE wired (GET /doctors +
+// GET /doctors/{id}/slots), so the wizard sends real doctor/slot GUIDs and a live
+// create succeeds; a server validation error still surfaces gracefully via
+// toUserError. The staff create path is always a `self` walk-in/dashboard booking
+// (no patient OTP) — behalf+OTP is WhatsApp-only this phase, so no behalf fields
+// are sent here and CreateBookingRequest's new behalf fields default server-side.
 const SEX_TO_GENDER: Record<string, string> = { F: 'female', M: 'male', O: 'other' };
 
 export async function createBooking(
@@ -717,10 +818,10 @@ export async function createBooking(
     },
   });
   const dto = CreateBookingResultDtoSchema.parse(raw);
-  // The app-facing CreateBookingResult requires a numeric token + 'confirmed'
-  // literal; a new booking is 'pending' server-side and the token may be null,
-  // so we present the token (0 when absent) and the optimistic 'confirmed'.
-  return { id: dto.bookingId, token: dto.tokenNumber ?? 0, status: 'confirmed' };
+  // A new booking is 'pending' server-side (it still needs approval) and the
+  // token may be null. Report the status FAITHFULLY as 'pending' — the earlier
+  // 'confirmed' coercion mis-stated the booking; consumers read only the token.
+  return { id: dto.bookingId, token: dto.tokenNumber ?? 0, status: 'pending' };
 }
 
 // ── ADD PATIENT ───────────────────────────────────────────────────────────────

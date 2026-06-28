@@ -55,6 +55,29 @@ export function noShowBookingMock(bookingId: string, idempotencyKey: string): Pr
   );
 }
 
+/** Mock check-in (confirmed → checked_in). Mirrors the approve/cancel mock shape. */
+export function checkInBookingMock(bookingId: string, idempotencyKey: string): Promise<BookingMutationResult> {
+  return withIdem(idempotencyKey, () =>
+    BookingMutationResultSchema.parse({ id: bookingId, status: 'checked_in' }),
+  );
+}
+
+/** Mock reschedule: no server call (the prototype has no slot-supersede engine).
+ *  Returns the same result shape the live endpoint does so the panel + hook are
+ *  mode-blind (toast + invalidate + close); the mock list re-renders unchanged. */
+export function rescheduleBookingMock(
+  bookingId: string,
+  _input: { newSlotId: string; newDoctorId?: string; reason?: string },
+  idempotencyKey: string,
+): Promise<{ oldBookingId: string; newBookingId: string; newBookingNumber: string | null; tokenNumber: number | null }> {
+  return withIdem(idempotencyKey, () => ({
+    oldBookingId: bookingId,
+    newBookingId: `B-mock-${Date.now()}`,
+    newBookingNumber: null,
+    tokenNumber: null,
+  }));
+}
+
 /** Mock booking-detail: resolve the full Booking from the prototype seam by id,
  *  matching the prior `BOOKINGS.find` behavior the screens used inline. Rejects on
  *  an unknown id so the panel surfaces an error state (parity with the live 404). */

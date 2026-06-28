@@ -90,4 +90,11 @@ public sealed record BookingListItemDto(
     BookingSource Source,
     string? Note,
     DateTimeOffset CreatedAt,
-    Language? Language);
+    Language? Language,
+    // Behalf-booking identity + DPDP consent state (lets the desk see why a WhatsApp behalf booking can't be
+    // approved yet). 'self' bookings: BookedByType='self', BehalfRelation=null, PatientConsentStatus='not_required'.
+    string BookedByType = "self",
+    string? BehalfRelation = null,
+    string PatientConsentStatus = "not_required",
+    // The booking's doctor — the reschedule slide-over lists this doctor's open slots.
+    Guid DoctorId = default);
