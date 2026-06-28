@@ -99,6 +99,58 @@ COMMENT ON COLUMN docslot.bookings.patient_consent_status IS 'Behalf bookings re
 COMMENT ON COLUMN docslot.bookings.direct_discount_inr IS 'Direct-patient discount funded from commission pool. Mutually exclusive with broker attribution (enforced by trigger).';
 
 -- ============================================================================
+-- TABLE I2: BOOKING_CONSENT_OTPS (behalf-booking patient OTP consent)
+-- ============================================================================
+-- DPDP fake-patient loophole closure: when a number books FOR SOMEONE ELSE we do
+-- not silently create a patient record. We create the booking in 'pending' with
+-- patient_consent_status='pending' and send a one-time code to the PATIENT's
+-- WhatsApp number naming the booker + claimed relation. The patient replies with
+-- the code to grant consent (status→confirmed) or declines (denied); unanswered
+-- codes expire (sweeper cancels the booking + frees the slot).
+--
+-- The code is NEVER stored in plaintext — only a per-row salted SHA-256 digest.
+-- Verification is attempt-limited. tenant_id + RLS keep one tenant's pending
+-- consents invisible to another (the patient's reply is tenant-scoped via the
+-- phone_number_id → tenant resolution at the webhook edge).
+CREATE TABLE docslot.booking_consent_otps (
+    consent_otp_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    booking_id          UUID NOT NULL REFERENCES docslot.bookings(booking_id) ON DELETE CASCADE,
+    patient_phone       VARCHAR(15) NOT NULL,                  -- the number that must consent
+    booker_phone        VARCHAR(15) NOT NULL,                  -- the number that typed the booking
+    relation            VARCHAR(20) NOT NULL
+        CHECK (relation IN ('family', 'friend', 'neighbour', 'care_partner', 'other')),
+    code_salt           TEXT NOT NULL,                         -- per-row random salt (base64)
+    code_hash           TEXT NOT NULL,                         -- base64( sha256(salt || code) ) — never plaintext
+    status              VARCHAR(15) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'denied', 'expired', 'failed')),
+    attempts            SMALLINT NOT NULL DEFAULT 0,
+    max_attempts        SMALLINT NOT NULL DEFAULT 5,
+    expires_at          TIMESTAMPTZ NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    verified_at         TIMESTAMPTZ
+);
+
+-- One live (pending) consent per patient number per tenant — a new behalf booking
+-- for a number with a pending consent supersedes the old (the sweeper expires it).
+CREATE INDEX idx_consent_otps_pending ON docslot.booking_consent_otps(tenant_id, patient_phone)
+    WHERE status = 'pending';
+CREATE INDEX idx_consent_otps_booking ON docslot.booking_consent_otps(booking_id);
+CREATE INDEX idx_consent_otps_expiry ON docslot.booking_consent_otps(expires_at) WHERE status = 'pending';
+
+-- RLS: tenant isolation, mirroring the booking-table policies (file 05). The
+-- patient's OTP reply is processed in a tenant-scoped UoW (app.tenant_id set from
+-- the webhook's phone_number_id → tenant map), so a pending consent is only ever
+-- visible to its own tenant. No god-flag bypass (super_admin is not honored here).
+ALTER TABLE docslot.booking_consent_otps ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_booking_consent_otps ON docslot.booking_consent_otps
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+COMMENT ON TABLE docslot.booking_consent_otps IS 'Behalf-booking patient consent OTPs (DPDP). Salted-hash codes, attempt-limited, tenant-isolated by RLS. Unanswered codes expire and cancel the awaiting booking.';
+
+-- ============================================================================
 -- ALTER: COMMISSION_RULES — the two new knobs
 -- ============================================================================
 ALTER TABLE commission.commission_rules
@@ -162,7 +214,7 @@ COMMENT ON VIEW docslot.v_suspected_care_partners IS 'Hidden-broker detection: h
 -- ============================================================================
 -- END OF CHAT IDENTITY SCHEMA
 -- ============================================================================
--- New table: 1 (docslot.wa_contact_profiles)  → platform total: 113 tables
+-- New tables: 2 (docslot.wa_contact_profiles, docslot.booking_consent_otps)  → platform total: 114 tables
 -- Altered: docslot.bookings (+7 cols), commission.commission_rules (+2 cols)
 -- Trigger: anti-double-dip (attribution blocked on discounted bookings)
 -- View: v_suspected_care_partners (hidden-broker conversion funnel)

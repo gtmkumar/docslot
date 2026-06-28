@@ -93,12 +93,26 @@ export type DashboardSummary = z.infer<typeof DashboardSummarySchema>;
 export const BookingStatusSchema = z.enum([
   'pending',
   'confirmed',
+  // checked_in (Phase 1): a confirmed patient who has arrived at the desk.
+  'checked_in',
   'cancelled',
   'completed',
   'no_show',
   'rescheduled',
 ]);
 export const BookingSourceSchema = z.enum(['whatsapp', 'dashboard', 'api', 'walk_in', 'phone_call']);
+
+// Behalf / consent wire enums (Phase 1) — mirror the SQL CHECK constraints. Human
+// display labels live in i18n (behalf.* / consent.*), never here.
+export const BookedByTypeSchema = z.enum(['self', 'behalf']);
+export const BehalfRelationSchema = z.enum(['family', 'friend', 'neighbour', 'care_partner', 'other']);
+export const PatientConsentStatusSchema = z.enum([
+  'not_required',
+  'pending',
+  'confirmed',
+  'denied',
+  'expired',
+]);
 
 /** Minimal booking row the list endpoint returns (mirrors Booking domain type).
  *  PHI: phone is NEVER sent raw in a list/aggregate payload (DPDP). The list
@@ -117,6 +131,12 @@ export const BookingRowSchema = z.object({
   source: BookingSourceSchema,
   note: z.string(),
   createdAgo: z.string(),
+  // Behalf / consent (Phase 1, read-only). Optional with safe defaults so a
+  // pre-Phase-1 row (or the mock, which omits them) still parses — a `self`
+  // booking with no consent requirement.
+  bookedByType: BookedByTypeSchema.default('self'),
+  behalfRelation: BehalfRelationSchema.nullable().default(null),
+  patientConsentStatus: PatientConsentStatusSchema.default('not_required'),
 });
 export type BookingRow = z.infer<typeof BookingRowSchema>;
 
@@ -128,6 +148,22 @@ export const ChatMessageSchema = z.object({
   system: z.boolean().optional(),
 });
 export type ChatMessageDTO = z.infer<typeof ChatMessageSchema>;
+
+/** `GET /api/v1/bookings/{bookingId}/conversation` row. Mirrors
+ *  ConversationMessageDto (from wa_message_log). `direction` is inbound (from the
+ *  patient) / outbound (from the bot/tenant); `content` is the message text (may
+ *  be null for non-text message types). lib/backend adapts each into the
+ *  app-facing ChatMessage the WhatsApp-mirrored thread consumes. NO PHI beyond the
+ *  message body the patient themselves sent over WhatsApp. */
+export const ConversationMessageDtoSchema = z.object({
+  logId: z.string(),
+  direction: z.enum(['inbound', 'outbound']),
+  messageType: z.string(),
+  content: z.string().nullable(),
+  status: z.string().nullable(),
+  sentAt: z.string(),
+});
+export type ConversationMessageDto = z.infer<typeof ConversationMessageDtoSchema>;
 
 // ── WhatsApp agent panel ─────────────────────────────────────────────────────
 export const AgentPanelSchema = z.object({
@@ -205,7 +241,11 @@ export type BookingMutationResult = z.infer<typeof BookingMutationResultSchema>;
 export const CreateBookingResultSchema = z.object({
   id: z.string(),
   token: z.number(),
-  status: z.literal('confirmed'),
+  // A newly-created booking is 'pending' server-side (it still needs approval),
+  // so this is the full status enum — NOT a 'confirmed' literal. The earlier
+  // literal mis-reported every fresh booking as confirmed; consumers only read
+  // the token, so widening to the enum keeps them working while telling the truth.
+  status: BookingStatusSchema,
 });
 export type CreateBookingResult = z.infer<typeof CreateBookingResultSchema>;
 
@@ -1405,6 +1445,16 @@ export const BookingListItemDtoSchema = z.object({
   note: z.string().nullable(),
   createdAt: z.string(),
   language: z.union([z.number(), z.string()]).nullable(),
+  // Behalf / consent (Phase 1). ADDITIVE + tolerant: the tokens serialize as the
+  // canonical snake_case strings; absent (older payloads) → adapter defaults to a
+  // `self`/`not_required` booking. string|number kept for the int-enum regression
+  // guard already applied to status/source/gender/language above.
+  bookedByType: z.union([z.number(), z.string()]).nullable().optional(),
+  behalfRelation: z.union([z.number(), z.string()]).nullable().optional(),
+  patientConsentStatus: z.union([z.number(), z.string()]).nullable().optional(),
+  // The booking's doctor — the reschedule slide-over lists this doctor's open slots.
+  // Optional/nullable so older payloads (pre-Phase-1) still parse.
+  doctorId: z.string().nullable().optional(),
 });
 export type BookingListItemDto = z.infer<typeof BookingListItemDtoSchema>;
 
@@ -1532,6 +1582,17 @@ export const BookingActionResultDtoSchema = z
   })
   .passthrough();
 export type BookingActionResultDto = z.infer<typeof BookingActionResultDtoSchema>;
+
+/** `POST /api/v1/bookings/{bookingId}/reschedule` result. Mirrors
+ *  RescheduleBookingResult — a reschedule supersedes the old booking with a NEW
+ *  one (lineage), returning both ids + the new booking number + token. */
+export const RescheduleResultDtoSchema = z.object({
+  oldBookingId: z.string(),
+  newBookingId: z.string(),
+  newBookingNumber: z.string().nullable(),
+  tokenNumber: z.number().nullable(),
+});
+export type RescheduleResultDto = z.infer<typeof RescheduleResultDtoSchema>;
 
 /** `POST /api/v1/doctors` result. Mirrors CreateDoctorResult (201). */
 export const CreateDoctorResultDtoSchema = z.object({

@@ -17,6 +17,10 @@ export type Panel =
   | { type: 'conversation'; bookingId: string }
   | { type: 'manage'; bookingId: string }
   | { type: 'approve'; bookingId: string }
+  // Reschedule (Phase 1): carries the booking id; the panel fetches the booking +
+  // its doctor's available slots, lets staff pick a new slot, and POSTs the
+  // reschedule. URL-restorable via ?panel=reschedule&id=.
+  | { type: 'reschedule'; bookingId: string }
   | { type: 'newBooking' }
   | { type: 'bookTime'; booking?: Booking | null }
   | { type: 'addDoctor' }

@@ -31,6 +31,12 @@ public interface ISlotHoldService
     /// <summary>Sweeps stale live holds (expires_at &lt; now) to 'expired'. Returns rows swept.</summary>
     Task<int> ExpireStaleHoldsAsync(DateTime nowUtc, CancellationToken ct);
 
+    /// <summary>
+    /// The slot's start instant in UTC (computed from <c>slot_date + start_time</c> at Asia/Kolkata), or null
+    /// if the slot does not exist. Used to enforce the tenant's booking cutoff on create/reschedule.
+    /// </summary>
+    Task<DateTime?> GetSlotStartUtcAsync(Guid slotId, CancellationToken ct);
+
     /// <summary>True if the hold exists and has not expired.</summary>
     Task<bool> IsLiveAsync(Guid holdId, DateTime nowUtc, CancellationToken ct);
 }

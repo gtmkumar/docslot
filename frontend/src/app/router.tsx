@@ -64,7 +64,7 @@ const AnalyticsScreen = lazy(() =>
 const panelSearchSchema = z.object({
   panel: z
     .enum([
-      'conversation', 'manage', 'approve', 'newBooking', 'bookTime', 'addDoctor', 'addPatient',
+      'conversation', 'manage', 'approve', 'reschedule', 'newBooking', 'bookTime', 'addDoctor', 'addPatient',
       'inviteUser', 'manageUser', 'editUser', 'roleView', 'createRole',
       'roleMatrix', 'duplicateRole', 'effectiveAccess', 'createModule', 'createPermission',
       'registerClient', 'manageClient', 'createWebhook', 'webhookForm', 'webhookDeliveries',

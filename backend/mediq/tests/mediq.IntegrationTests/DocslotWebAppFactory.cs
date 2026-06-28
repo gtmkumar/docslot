@@ -27,7 +27,10 @@ public sealed class DocslotWebAppFactory : WebApplicationFactory<Program>, IAsyn
     public Guid PatientId { get; } = Guid.NewGuid();
     public string AdminEmail { get; } = $"slice03.admin+{Guid.NewGuid():N}@docslot.test";
     public string PatientPhone { get; } = $"+9198{Random.Shared.Next(10000000, 99999999)}";
-    public static readonly DateOnly SlotDate = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+    // 3 days out so seeded slots clear the tenant's booking cutoff (default 2h) — a same-day 10:00 slot is
+    // past/too-soon for most of the run window. Dashboard "today" metrics key on booked_at/confirmed_at (now),
+    // not slot_date, so a future appointment date doesn't affect those assertions.
+    public static readonly DateOnly SlotDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(3));
 
     public static readonly RecordingWebhookPublisher Publisher = new();
 

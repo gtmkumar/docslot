@@ -326,7 +326,7 @@ CREATE TABLE docslot.bookings (
     booking_type        VARCHAR(20) NOT NULL DEFAULT 'consultation'
         CHECK (booking_type IN ('consultation', 'follow_up', 'test', 'home_collection', 'procedure', 'tele_consultation')),
     status              VARCHAR(20) NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'confirmed', 'cancelled', 'completed', 'no_show', 'rescheduled')),
+        CHECK (status IN ('pending', 'confirmed', 'checked_in', 'cancelled', 'completed', 'no_show', 'rescheduled')),
 
     -- Patient info snapshot (in case patient data changes later)
     patient_name_at_booking VARCHAR(200),
@@ -352,9 +352,15 @@ CREATE TABLE docslot.bookings (
     -- Timestamps
     booked_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     confirmed_at        TIMESTAMPTZ,
+    checked_in_at       TIMESTAMPTZ,                             -- front-desk arrival (confirmed → checked_in)
     cancelled_at        TIMESTAMPTZ,
     completed_at        TIMESTAMPTZ,
     no_show_at          TIMESTAMPTZ,
+    rescheduled_at      TIMESTAMPTZ,                             -- when this booking was superseded by a reschedule
+
+    -- Reschedule lineage: a reschedule TERMINATES this row (status 'rescheduled') and mints a NEW booking
+    -- on the new slot. The new row points back here so the move is auditable end-to-end.
+    rescheduled_from_booking_id UUID REFERENCES docslot.bookings(booking_id),
 
     -- Audit
     created_by_user_id  UUID REFERENCES platform.users(user_id),
@@ -630,7 +636,11 @@ CREATE TABLE docslot.wa_message_log (
     message_type        VARCHAR(20) NOT NULL,                  -- 'text', 'template', 'interactive', 'audio', 'image', 'document'
     template_name       VARCHAR(100),
     content             JSONB,
-    status              VARCHAR(20),                            -- 'sent', 'delivered', 'read', 'failed'
+    -- Canonical message-log status vocabulary across BOTH legs:
+    --   inbound  : 'received'
+    --   outbound : 'queued' → 'sent' → 'delivered' → 'read'  (or 'failed' on any leg)
+    status              VARCHAR(20)
+        CHECK (status IS NULL OR status IN ('received', 'queued', 'sent', 'delivered', 'read', 'failed')),
     error_code          VARCHAR(50),
     cost_usd            DECIMAL(10,4),
     sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1099,6 +1109,165 @@ END;
 $$;
 COMMENT ON FUNCTION docslot.expire_stale_slot_holds IS
     'Mark stale held slot_holds (expires_at < now) as expired. SECURITY DEFINER so the RLS-less maintenance worker can sweep across all tenants. Returns rows swept.';
+
+-- ----------------------------------------------------------------------------
+-- requeue_stranded_outbox(p_older_than) — outbox 'processing' reaper
+-- ----------------------------------------------------------------------------
+-- If the drain worker dies mid-send (or a clean shutdown interrupts a send), the
+-- claimed row is left in 'processing' and the claim query (status='pending') will
+-- never pick it up again → silent message loss. This reaper requeues any row stuck
+-- in 'processing' beyond p_older_than back to 'pending' (due now), so the next
+-- drain re-attempts it. SECURITY DEFINER: the maintenance worker has no per-request
+-- tenant context, so a plain app-role UPDATE would match zero rows under outbox RLS.
+CREATE OR REPLACE FUNCTION docslot.requeue_stranded_outbox(p_older_than INTERVAL DEFAULT INTERVAL '5 minutes')
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+DECLARE
+    v_n INT;
+BEGIN
+    UPDATE docslot.outbox_messages
+    SET status = 'pending', next_retry_at = NOW()
+    WHERE status = 'processing'
+      AND created_at < NOW() - p_older_than;
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RETURN v_n;
+END;
+$$;
+COMMENT ON FUNCTION docslot.requeue_stranded_outbox IS
+    'Requeue outbox rows stuck in processing (worker died mid-send) back to pending. SECURITY DEFINER for the RLS-less maintenance worker. Returns rows requeued.';
+
+-- ----------------------------------------------------------------------------
+-- expire_stale_consent_otps() — behalf-booking consent OTP expiry
+-- ----------------------------------------------------------------------------
+-- A behalf booking is created in 'pending' with patient_consent_status='pending'
+-- and an OTP sent to the patient. If the patient never approves before the OTP
+-- expires, the OTP is marked 'expired', the booking's consent is flipped to
+-- 'expired', the booking is cancelled, and the slot capacity it held is freed
+-- (decrement current_count, re-open a 'booked' slot) so it can be rebooked.
+-- SECURITY DEFINER: runs in the RLS-less maintenance worker across all tenants.
+CREATE OR REPLACE FUNCTION docslot.expire_stale_consent_otps()
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+DECLARE
+    v_n INT;
+BEGIN
+    WITH expired AS (
+        UPDATE docslot.booking_consent_otps o
+        SET status = 'expired'
+        WHERE o.status = 'pending' AND o.expires_at < NOW()
+        RETURNING o.booking_id
+    ),
+    cancelled AS (
+        UPDATE docslot.bookings b
+        SET status = 'cancelled',
+            patient_consent_status = 'expired',
+            cancellation_reason = COALESCE(b.cancellation_reason, 'Patient consent OTP expired'),
+            cancelled_at = NOW()
+        FROM expired e
+        WHERE b.booking_id = e.booking_id
+          AND b.status IN ('pending', 'confirmed')
+          AND b.patient_consent_status = 'pending'
+        RETURNING b.slot_id
+    )
+    UPDATE docslot.time_slots s
+    SET current_count = GREATEST(s.current_count - 1, 0),
+        status = CASE WHEN s.status = 'booked' THEN 'available' ELSE s.status END
+    FROM cancelled c
+    WHERE s.slot_id = c.slot_id;
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RETURN v_n;
+END;
+$$;
+COMMENT ON FUNCTION docslot.expire_stale_consent_otps IS
+    'Expire behalf-booking consent OTPs past expiry: mark OTP expired, cancel the awaiting booking, free its slot capacity. SECURITY DEFINER for the RLS-less maintenance worker. Returns slots freed.';
+
+-- ----------------------------------------------------------------------------
+-- Outbox drain functions (SECURITY DEFINER) — RLS bypass for the context-less worker
+-- ----------------------------------------------------------------------------
+-- outbox_messages is RLS-protected (file 05), but the drain worker is cross-tenant
+-- by design and runs with NO app.tenant_id set — a plain app-role query would match
+-- zero rows. These definer functions let the worker claim/mark across all tenants
+-- (the same pattern as expire_stale_slot_holds / requeue_stranded_outbox). Enqueue
+-- and the conversation read still go through RLS with a tenant context.
+CREATE OR REPLACE FUNCTION docslot.claim_due_outbox(p_batch INT)
+RETURNS TABLE(outbox_id UUID, tenant_id UUID, patient_id UUID, message_intent TEXT,
+              to_phone TEXT, body TEXT, correlation_id TEXT, attempt_count INT, max_attempts INT)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+BEGIN
+    RETURN QUERY
+    WITH due AS (
+        SELECT o.outbox_id
+        FROM docslot.outbox_messages o
+        WHERE o.status = 'pending'
+          AND (o.next_retry_at IS NULL OR o.next_retry_at <= now())
+        ORDER BY o.created_at
+        FOR UPDATE SKIP LOCKED
+        LIMIT p_batch
+    )
+    UPDATE docslot.outbox_messages o
+    SET status = 'processing'
+    FROM due
+    WHERE o.outbox_id = due.outbox_id
+    RETURNING o.outbox_id, o.tenant_id, o.patient_id, o.message_intent::text,
+              o.payload->>'to', o.payload->>'text', o.correlation_id,
+              o.attempt_count::int, o.max_attempts::int;
+END;
+$$;
+COMMENT ON FUNCTION docslot.claim_due_outbox IS 'Atomically claim due pending outbox rows (→processing) across tenants. SECURITY DEFINER for the RLS-less drain worker.';
+
+CREATE OR REPLACE FUNCTION docslot.mark_outbox_sent(p_outbox_id UUID, p_provider_id TEXT, p_now TIMESTAMPTZ)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+BEGIN
+    -- Mark delivered AND scrub the message body for consent OTPs so the live code does not linger in the
+    -- queue after delivery (DPDP — the code is a one-time secret; the consent row keeps only a salted hash).
+    UPDATE docslot.outbox_messages
+    SET status = 'sent',
+        sent_at = p_now,
+        whatsapp_message_id = p_provider_id,
+        last_error = NULL,
+        payload = CASE WHEN message_intent = 'consent_otp'
+                       THEN jsonb_set(payload, '{text}', '"[redacted after send]"'::jsonb)
+                       ELSE payload END
+    WHERE outbox_id = p_outbox_id;
+END;
+$$;
+COMMENT ON FUNCTION docslot.mark_outbox_sent IS 'Mark an outbox row sent (scrubs the consent-OTP body post-delivery). SECURITY DEFINER for the RLS-less drain worker.';
+
+CREATE OR REPLACE FUNCTION docslot.mark_outbox_failed(p_outbox_id UUID, p_error TEXT, p_next_retry_at TIMESTAMPTZ)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = docslot, pg_temp
+AS $$
+BEGIN
+    -- Increment attempt; terminal 'abandoned' at max_attempts, else back to 'pending' with the backoff. On
+    -- TERMINAL abandon, scrub the consent-OTP body so the one-time code doesn't linger in a dead-lettered row
+    -- (auditor F4). A retry (→pending) must KEEP the real text — it is the message still being delivered.
+    UPDATE docslot.outbox_messages
+    SET attempt_count = attempt_count + 1,
+        last_error = p_error,
+        status = CASE WHEN attempt_count + 1 >= max_attempts THEN 'abandoned' ELSE 'pending' END,
+        next_retry_at = CASE WHEN attempt_count + 1 >= max_attempts THEN next_retry_at ELSE p_next_retry_at END,
+        payload = CASE WHEN attempt_count + 1 >= max_attempts AND message_intent = 'consent_otp'
+                       THEN jsonb_set(payload, '{text}', '"[redacted after send]"'::jsonb)
+                       ELSE payload END
+    WHERE outbox_id = p_outbox_id;
+END;
+$$;
+COMMENT ON FUNCTION docslot.mark_outbox_failed IS 'Record a failed outbox send (retry/backoff or abandon; scrubs consent-OTP body on terminal abandon). SECURITY DEFINER for the RLS-less drain worker.';
 
 -- ============================================================================
 -- END OF DOCSLOT SCHEMA

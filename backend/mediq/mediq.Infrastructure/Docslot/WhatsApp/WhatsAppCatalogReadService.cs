@@ -13,6 +13,16 @@ namespace mediq.Infrastructure.Docslot.WhatsApp;
 /// </summary>
 public sealed class WhatsAppCatalogReadService(PlatformDbContext db) : IWhatsAppCatalogReadService
 {
+    public async Task<string?> GetTenantDisplayNameAsync(Guid tenantId, CancellationToken ct)
+    {
+        // platform.tenants is not RLS-gated by app.tenant_id (tenants ARE the tenant table); scope by id.
+        var rows = await db.Database.SqlQueryRaw<NameRow>(
+                "SELECT display_name AS \"Name\" FROM platform.tenants WHERE tenant_id = @p0",
+                new NpgsqlParameter("@p0", tenantId))
+            .ToListAsync(ct);
+        return rows.FirstOrDefault()?.Name;
+    }
+
     public async Task<IReadOnlyList<WaDepartment>> ListDepartmentsAsync(Guid tenantId, CancellationToken ct)
     {
         var rows = await db.Database.SqlQueryRaw<DeptRow>(
@@ -62,6 +72,7 @@ public sealed class WhatsAppCatalogReadService(PlatformDbContext db) : IWhatsApp
         return rows.Select(r => new WaSlot(r.SlotId, r.SlotDate, r.StartTime)).ToList();
     }
 
+    private sealed record NameRow(string? Name);
     private sealed record DeptRow(Guid DepartmentId, string Name);
     private sealed record DoctorRow(Guid DoctorId, string FullName, decimal? ConsultationFee);
     private sealed record SlotRow(Guid SlotId, DateOnly SlotDate, TimeOnly StartTime);

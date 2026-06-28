@@ -24,6 +24,9 @@ const NewBookingPanel = lazy(() => import('@/features/bookings/components/NewBoo
 const ManageAppointmentPanel = lazy(() => import('@/features/bookings/components/BookingPanelLoader').then((m) => ({ default: m.ManageAppointmentPanelLoader })));
 const ConversationPanel = lazy(() => import('@/features/bookings/components/BookingPanelLoader').then((m) => ({ default: m.ConversationPanelLoader })));
 const ApproveCollectPanel = lazy(() => import('@/features/bookings/components/BookingPanelLoader').then((m) => ({ default: m.ApproveCollectPanelLoader })));
+// Reschedule is opened by booking id; the loader wrapper fetches the booking first
+// (same pattern as manage/approve) so it works for a REAL booking + URL-restores.
+const ReschedulePanel = lazy(() => import('@/features/bookings/components/BookingPanelLoader').then((m) => ({ default: m.ReschedulePanelLoader })));
 const BookTimePanel = lazy(() => import('@/features/bookings/components/BookTimePanel').then((m) => ({ default: m.BookTimePanel })));
 const AddDoctorPanel = lazy(() => import('@/features/doctors/components/AddDoctorPanel').then((m) => ({ default: m.AddDoctorPanel })));
 const AddPatientPanel = lazy(() => import('@/features/patients/components/AddPatientPanel').then((m) => ({ default: m.AddPatientPanel })));
@@ -125,7 +128,7 @@ function searchToPanel(type: PanelType | undefined, id: string | undefined): Pan
   // Booking detail panels restore from the URL by id alone — the panel re-fetches
   // the full booking (no BOOKINGS.find), so a deep link / refresh works for a REAL
   // booking, not just the prototype rows.
-  if (type === 'conversation' || type === 'manage' || type === 'approve') {
+  if (type === 'conversation' || type === 'manage' || type === 'approve' || type === 'reschedule') {
     return id ? { type, bookingId: id } : null;
   }
   if (type === 'bookTime') {
@@ -222,6 +225,8 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <ConversationPanel bookingId={panel.bookingId} open onClose={closePanel} />;
     case 'approve':
       return <ApproveCollectPanel bookingId={panel.bookingId} open onClose={closePanel} />;
+    case 'reschedule':
+      return <ReschedulePanel bookingId={panel.bookingId} open onClose={closePanel} />;
     case 'bookTime':
       return <BookTimePanel open onClose={closePanel} />;
     case 'addDoctor':

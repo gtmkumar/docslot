@@ -16,3 +16,4 @@
 - [Module Licensing Slice](module_licensing_slice.md) — display-only entitlement gate; cleared, posture + why-not-cross-tenant
 - [User Management Lifecycle](user-management-lifecycle.md) — deactivate/reactivate/edit/reset + invite escalation fix; CLEARED PASS (all 4 findings fixed & re-verified live)
 - [Phase-0 Booking Data-Plane RLS](backend-phase0-booking-dataplane-rls.md) — RLS on 5 booking + 5 ai tables + generate_time_slots definer; PASS-WITH-CONDITIONS: worker hold-sweep silently no-ops under RLS (MEDIUM) + RLS test gap
+- [Phase-1 Booking + DPDP Consent OTP](backend-phase1-booking-consent.md) — FINAL PASS: both findings remediated & live-verified (journal redacted, outbox scrubbed on send, RLS on both tables); LOW residual = mark_outbox_failed doesn't scrub abandoned consent_otp
