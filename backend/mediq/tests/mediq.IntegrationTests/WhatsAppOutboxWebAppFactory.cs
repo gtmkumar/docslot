@@ -138,7 +138,7 @@ public sealed class WhatsAppOutboxWebAppFactory : WebApplicationFactory<Program>
     }
 
     /// <summary>Enqueue a 'pending' outbox row directly (bypassing the conversation flow) for drain tests.</summary>
-    public async Task<Guid> EnqueuePendingAsync(string toPhone, string text, int maxAttempts = 5)
+    public async Task<Guid> EnqueuePendingAsync(string toPhone, string text, int maxAttempts = 5, string? correlationId = null)
     {
         var outboxId = Guid.NewGuid();
         await using var conn = new NpgsqlConnection(ConnectionString);
@@ -146,14 +146,15 @@ public sealed class WhatsAppOutboxWebAppFactory : WebApplicationFactory<Program>
         await using var cmd = new NpgsqlCommand(
             """
             INSERT INTO docslot.outbox_messages
-                (outbox_id, tenant_id, message_intent, payload, status, attempt_count, max_attempts, next_retry_at, created_at)
-            VALUES (@id, @tid, 'test_message', @payload::jsonb, 'pending', 0, @max, NOW(), NOW())
+                (outbox_id, tenant_id, message_intent, payload, status, attempt_count, max_attempts, correlation_id, next_retry_at, created_at)
+            VALUES (@id, @tid, 'test_message', @payload::jsonb, 'pending', 0, @max, @corr, NOW(), NOW())
             """, conn);
         cmd.Parameters.AddWithValue("id", outboxId);
         cmd.Parameters.AddWithValue("tid", TenantId);
         cmd.Parameters.AddWithValue("payload",
             System.Text.Json.JsonSerializer.Serialize(new { to = toPhone, text }));
         cmd.Parameters.AddWithValue("max", maxAttempts);
+        cmd.Parameters.AddWithValue("corr", (object?)correlationId ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
         return outboxId;
     }
