@@ -62,7 +62,7 @@ public sealed class CommissionRuleRepository(PlatformDbContext db) : ICommission
                        percentage AS "Percentage", min_commission_inr AS "MinCommissionInr", max_commission_inr AS "MaxCommissionInr",
                        max_monthly_per_broker_inr AS "MaxMonthlyPerBrokerInr", priority AS "Priority",
                        excludes_pndt AS "ExcludesPndt", first_booking_only AS "FirstBookingOnly",
-                       tiered_table::text AS "TieredTableJson"
+                       tiered_table::text AS "TieredTableJson", direct_discount_pct AS "DirectDiscountPct"
                 FROM commission.commission_rules
                 WHERE tenant_id=@p0 AND is_active=true AND effective_from <= NOW()
                   AND (effective_until IS NULL OR effective_until > NOW())
@@ -74,7 +74,7 @@ public sealed class CommissionRuleRepository(PlatformDbContext db) : ICommission
             r.RuleId, r.TenantId, r.RuleName, r.AppliesToBrokerTier, r.AppliesToBrokerType, r.AppliesToServiceType,
             r.MinBookingValueInr, r.MaxBookingValueInr, r.CalcType, r.FlatAmountInr, r.Percentage,
             r.MinCommissionInr, r.MaxCommissionInr, r.MaxMonthlyPerBrokerInr, r.Priority, r.ExcludesPndt, r.FirstBookingOnly,
-            r.TieredTableJson)).ToList();
+            r.TieredTableJson, r.DirectDiscountPct)).ToList();
     }
 
     private static object[] P(params (string Name, object Value)[] ps) => ps.Select(p => (object)new NpgsqlParameter(p.Name, p.Value)).ToArray();
@@ -82,7 +82,7 @@ public sealed class CommissionRuleRepository(PlatformDbContext db) : ICommission
     private sealed record RuleRow(Guid RuleId, Guid TenantId, string RuleName, string[]? AppliesToBrokerTier, string[]? AppliesToBrokerType,
         string[]? AppliesToServiceType, decimal? MinBookingValueInr, decimal? MaxBookingValueInr, string CalcType, decimal? FlatAmountInr,
         decimal? Percentage, decimal? MinCommissionInr, decimal? MaxCommissionInr, decimal? MaxMonthlyPerBrokerInr, int Priority, bool ExcludesPndt, bool FirstBookingOnly,
-        string? TieredTableJson);
+        string? TieredTableJson, decimal DirectDiscountPct);
 }
 
 /// <summary>Payout batches. approve and execute are separate operations (gated by distinct permissions at the API).</summary>

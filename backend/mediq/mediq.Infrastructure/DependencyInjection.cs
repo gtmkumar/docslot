@@ -140,6 +140,7 @@ public static class InfrastructureRegistration
         services.AddScoped<IBrokerEventPublisher, Commission.BrokerEventPublisher>();
         services.AddScoped<IBrokerIdentityResolver, Commission.BrokerIdentityResolver>();
         services.AddScoped<ICommissionLifecycleService, Application.Features.Commission.CommissionLifecycleService>();
+        services.AddScoped<IDirectDiscountService, Application.Features.Commission.DirectDiscountService>();
         // Payout rail: dev = honest dry-run stub. A real adapter (RazorpayX/Cashfree) is selected by config
         // when credentials are present (same pattern as the WhatsApp sender) — not wired until then.
         services.AddScoped<IPayoutGateway, Commission.StubPayoutGateway>();
