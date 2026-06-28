@@ -117,8 +117,15 @@ public interface IPayoutRepository
     /// winner; false if the payout was not 'approved' (already executing/paid). Caller must early-return on false.
     /// </summary>
     Task<bool> TryClaimForExecutionAsync(Guid payoutId, Guid tenantId, DateTime nowUtc, CancellationToken ct);
-    Task MarkPaidAsync(Guid payoutId, string paymentReference, string paymentGateway, DateTime nowUtc, CancellationToken ct);
-    Task MarkFailedAsync(Guid payoutId, DateTime nowUtc, CancellationToken ct);
+    /// <summary>
+    /// Finalizes a disbursed payout (processing → paid + reference/gateway). Returns true only for the single
+    /// caller that actually performed the transition (conditional <c>WHERE status='processing'</c> matched one
+    /// row); false if another concurrent finalizer already moved it to 'paid'. The winner — and ONLY the winner —
+    /// applies the wallet + attribution side effects, so a concurrent crash-resume can never double-credit.
+    /// </summary>
+    Task<bool> MarkPaidAsync(Guid payoutId, string paymentReference, string paymentGateway, DateTime nowUtc, CancellationToken ct);
+    /// <summary>Finalizes a rejected payout (processing → failed). Returns true only for the single caller that performed the transition.</summary>
+    Task<bool> MarkFailedAsync(Guid payoutId, DateTime nowUtc, CancellationToken ct);
     Task<IReadOnlyList<PayoutDto>> ListByTenantAsync(Guid tenantId, int skip, int take, CancellationToken ct);
 }
 
@@ -199,7 +206,12 @@ public interface IPayoutGateway
     Task<PayoutGatewayResult> SendAsync(PayoutInstruction instruction, CancellationToken ct);
 }
 
-public sealed record PayoutInstruction(Guid PayoutId, Guid BrokerId, decimal NetAmountInr, string PaymentMethod, string? UpiId);
+/// <param name="IdempotencyKey">
+/// The dedupe key the live adapter MUST forward to the gateway (RazorpayX <c>payout_idempotency</c> header /
+/// Cashfree <c>transferId</c>) so a retry after a mid-flight crash re-sends the SAME key and the gateway returns
+/// the ORIGINAL transfer instead of disbursing again. Set to the payout id (one disbursement per batch).
+/// </param>
+public sealed record PayoutInstruction(Guid PayoutId, Guid BrokerId, decimal NetAmountInr, string PaymentMethod, string? UpiId, string IdempotencyKey);
 
 public sealed record PayoutGatewayResult(bool Success, string Reference, string GatewayName, bool IsDryRun, string? Error)
 {

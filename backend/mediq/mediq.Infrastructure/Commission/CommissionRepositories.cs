@@ -137,17 +137,21 @@ public sealed class PayoutRepository(PlatformDbContext db) : IPayoutRepository
         return affected == 1;
     }
 
-    public Task MarkPaidAsync(Guid payoutId, string reference, string gateway, DateTime nowUtc, CancellationToken ct) =>
-        db.Database.ExecuteSqlRawAsync(
+    public async Task<bool> MarkPaidAsync(Guid payoutId, string reference, string gateway, DateTime nowUtc, CancellationToken ct) =>
+        // Single-winner finalize: the conditional UPDATE matches one row only for the caller that transitions
+        // processing → paid. A concurrent crash-resume that lost the race matches 0 rows → false → skips the
+        // wallet/attribution side effects, so the disbursement is recorded (and credited) exactly once.
+        await db.Database.ExecuteSqlRawAsync(
             "UPDATE commission.payouts SET status='paid', payment_reference=@p1, payment_gateway=@p3, completed_at=@p2 WHERE payout_id=@p0 AND status='processing'",
-            P(("@p0", payoutId), ("@p1", reference), ("@p2", nowUtc), ("@p3", gateway)));
+            P(("@p0", payoutId), ("@p1", reference), ("@p2", nowUtc), ("@p3", gateway))) == 1;
 
-    public Task MarkFailedAsync(Guid payoutId, DateTime nowUtc, CancellationToken ct) =>
-        // Gateway rejected the transfer — the batch returns to a terminal 'failed' (re-issue is a new batch).
-        // The failure detail is captured in the audit log (no money moved; attributions stay ready_to_pay).
-        db.Database.ExecuteSqlRawAsync(
+    public async Task<bool> MarkFailedAsync(Guid payoutId, DateTime nowUtc, CancellationToken ct) =>
+        // Gateway DEFINITIVELY rejected the transfer (no money moved) — the batch goes to terminal 'failed'
+        // (re-issue is a new batch). The failure detail is in the audit log; attributions stay ready_to_pay.
+        // Single-winner like MarkPaid: true only for the caller that performed the transition.
+        await db.Database.ExecuteSqlRawAsync(
             "UPDATE commission.payouts SET status='failed', completed_at=@p1 WHERE payout_id=@p0 AND status='processing'",
-            P(("@p0", payoutId), ("@p1", nowUtc)));
+            P(("@p0", payoutId), ("@p1", nowUtc))) == 1;
 
     public async Task<IReadOnlyList<PayoutDto>> ListByTenantAsync(Guid tenantId, int skip, int take, CancellationToken ct) =>
         (await db.Database.SqlQueryRaw<PayoutListRow>(

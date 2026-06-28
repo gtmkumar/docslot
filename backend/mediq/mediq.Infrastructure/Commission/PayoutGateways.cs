@@ -14,5 +14,8 @@ public sealed class StubPayoutGateway : IPayoutGateway
     public string Name => "stub_dryrun";
 
     public Task<PayoutGatewayResult> SendAsync(PayoutInstruction instruction, CancellationToken ct) =>
-        Task.FromResult(PayoutGatewayResult.Ok($"DRYRUN-{Guid.CreateVersion7():N}"[..18], Name, isDryRun: true));
+        // Reference is DERIVED from the idempotency key (payout id), not random, so a crash-resume re-call returns
+        // the SAME DRYRUN-… reference — modelling a real gateway's idempotent dedupe (and proving the resume path
+        // never invents a second "transfer"). No real money moves.
+        Task.FromResult(PayoutGatewayResult.Ok($"DRYRUN-{instruction.IdempotencyKey.Replace("-", "")}"[..18], Name, isDryRun: true));
 }

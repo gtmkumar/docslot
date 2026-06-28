@@ -97,61 +97,128 @@ public sealed class ApprovePayoutCommandHandler(
 /// Triggers the actual disbursement through <see cref="IPayoutGateway"/>. REQUIRES the payout to be 'approved'
 /// (approval≠execution: the two steps are gated by DISTINCT permission keys at the API). The gateway is the
 /// dev <c>StubPayoutGateway</c> (honest DRY RUN — a labelled <c>DRYRUN-…</c> reference, never a fabricated UTR)
-/// until real credentials wire a live adapter. On gateway success the batch + its attributions go 'paid' and
-/// the wallet moves ready_to_pay→lifetime_paid; on failure the batch goes 'failed' and NO money/wallet moves.
+/// until real credentials wire a live adapter.
+/// <para>
+/// <b>Two-phase, gateway-outside-the-transaction (auditor gateway-go-live F2 + the ExecutePayout-idempotency
+/// HIGH).</b> The disbursement is an EXTERNAL side effect, so it must not run inside a DB transaction:
+/// </para>
+/// <list type="number">
+///   <item><b>Phase 1 (own committed tx):</b> atomically claim approved → 'processing' and COMMIT, so the intent
+///   is DURABLE and no payout row lock is held across the network call. Resolves replays (already 'paid' →
+///   return the recorded reference, no second gateway call) and crash-recovery (already 'processing' → resume).</item>
+///   <item><b>Phase 2 (NO tx):</b> call the gateway with the payout id as the idempotency key. A retry after a
+///   mid-flight crash re-sends the SAME key, so a correct gateway returns the original transfer — the money moves
+///   at most once. An ambiguous failure (exception) leaves the payout 'processing' for a later resume; it is NOT
+///   marked failed (that would release it for a fresh disbursement and risk a double-pay).</item>
+///   <item><b>Phase 3 (own committed tx):</b> SINGLE-WINNER finalize — only the caller whose conditional
+///   processing→paid (or →failed) UPDATE matched a row applies the wallet + attribution side effects, so even a
+///   concurrent resume credits exactly once.</item>
+/// </list>
+/// Marked <see cref="ISelfManagedTransaction"/> so the UnitOfWork behavior does NOT wrap it in one ambient tx.
 /// </summary>
-public sealed record ExecutePayoutCommand(Guid TenantId, Guid PayoutId) : ICommand<PayoutActionResult>;
+public sealed record ExecutePayoutCommand(Guid TenantId, Guid PayoutId) : ICommand<PayoutActionResult>, ISelfManagedTransaction;
 
 public sealed class ExecutePayoutCommandHandler(
     IPayoutRepository payouts, IAttributionRepository attributions, IBrokerWalletRepository wallets,
-    IPayoutGateway gateway, IBrokerEventPublisher events, IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    IPayoutGateway gateway, IBrokerEventPublisher events, IAuditTrailWriter audit, ICurrentUserContext ctx,
+    IClock clock, IUnitOfWork uow)
     : ICommandHandler<ExecutePayoutCommand, PayoutActionResult>
 {
     public async Task<PayoutActionResult> Handle(ExecutePayoutCommand command, CancellationToken ct)
     {
         var userId = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
-        var payout = await payouts.GetByIdAsync(command.PayoutId, command.TenantId, ct)
-            ?? throw new KeyNotFoundException("Payout not found.");
 
-        // Approval is a precondition for execution.
-        if (!payout.CanExecute)
-            throw new BusinessRuleException($"Payout must be approved before execution (current: {payout.Status}).");
-
-        // Atomically claim the payout (approved → processing) BEFORE touching the gateway. A concurrent second
-        // execute loses the claim and is rejected here — so the gateway is called once and the wallet credited
-        // once (auditor P2 Finding 1: execute must be concurrency-safe / not double-disburse).
-        if (!await payouts.TryClaimForExecutionAsync(payout.PayoutId, command.TenantId, clock.UtcNow, ct))
-            throw new BusinessRuleException("Payout is not approved or is already being executed.");
-
-        // Disburse via the configured gateway (dev = honest dry-run; never a fake "paid").
-        var result = await gateway.SendAsync(
-            new PayoutInstruction(payout.PayoutId, payout.BrokerId, payout.NetAmountInr, payout.PaymentMethod, UpiId: null), ct);
-
-        if (!result.Success)
+        // ── Phase 1 — durably claim approved → 'processing' (or short-circuit on a replay/resume) in its OWN
+        //    committed transaction, releasing the row lock before the external gateway call below.
+        Payout payout;
+        await using (var claim = await uow.BeginTenantScopeAsync(command.TenantId, ct))
         {
-            await payouts.MarkFailedAsync(payout.PayoutId, clock.UtcNow, ct);
+            payout = await payouts.GetByIdAsync(command.PayoutId, command.TenantId, ct)
+                ?? throw new KeyNotFoundException("Payout not found.");
+
+            switch (payout.Status)
+            {
+                case "paid":
+                    // Idempotent replay — the disbursement already completed. Return the recorded reference; do
+                    // NOT call the gateway again, do NOT re-credit the wallet.
+                    await claim.CommitAsync(ct);
+                    return new PayoutActionResult(payout.PayoutId, "paid", payout.PaymentReference);
+
+                case "processing":
+                    // Crash-recovery RESUME: a prior execution already claimed it and may have already reached the
+                    // gateway. Re-call the gateway below with the same idempotency key (dedupes → at most one
+                    // disbursement). No re-claim — it is no longer 'approved'.
+                    await claim.CommitAsync(ct);
+                    break;
+
+                case "approved":
+                    // Atomic single-winner claim: a concurrent second execute matches 0 rows here and is rejected.
+                    if (!await payouts.TryClaimForExecutionAsync(payout.PayoutId, command.TenantId, clock.UtcNow, ct))
+                        throw new BusinessRuleException("Payout is already being executed.");
+                    await claim.CommitAsync(ct);   // 'processing' is now durable; lock released
+                    break;
+
+                default:
+                    throw new BusinessRuleException($"Payout must be approved before execution (current: {payout.Status}).");
+            }
+        }
+
+        // ── Phase 2 — disburse via the gateway OUTSIDE any DB transaction (no lock held across network I/O). The
+        //    payout id is the idempotency key so a resumed retry never double-disburses. Dev = honest dry-run.
+        PayoutGatewayResult result;
+        try
+        {
+            result = await gateway.SendAsync(
+                new PayoutInstruction(payout.PayoutId, payout.BrokerId, payout.NetAmountInr, payout.PaymentMethod,
+                    UpiId: null, IdempotencyKey: payout.PayoutId.ToString()), ct);
+        }
+        catch (Exception ex)
+        {
+            // Ambiguous outcome (network/timeout): the transfer MAY have happened. Leave the payout 'processing'
+            // (a later execute resumes via the idempotency key) — do NOT mark failed. Audit the ambiguous attempt.
+            await using var amb = await uow.BeginTenantScopeAsync(command.TenantId, ct);
             await audit.RecordAsync(new AuditEntry(
                 "execute_payout", "payout", payout.PayoutId, null, userId, command.TenantId,
                 ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: false,
-                ChangeSummary: $"Payout FAILED via {result.GatewayName}: {result.Error}"), ct);
-            return new PayoutActionResult(payout.PayoutId, "failed", null);
+                ChangeSummary: $"Payout gateway call did not return a definite result (left 'processing' for retry): {ex.Message}"), ct);
+            await amb.CommitAsync(ct);
+            throw;
         }
 
-        await payouts.MarkPaidAsync(payout.PayoutId, result.Reference, result.GatewayName, clock.UtcNow, ct);
+        // ── Phase 3 — record the outcome in a fresh committed transaction; the conditional UPDATE is the
+        //    single-winner gate that guards the wallet/attribution side effects against a concurrent resume.
+        await using (var settle = await uow.BeginTenantScopeAsync(command.TenantId, ct))
+        {
+            if (!result.Success)
+            {
+                if (await payouts.MarkFailedAsync(payout.PayoutId, clock.UtcNow, ct))
+                    await audit.RecordAsync(new AuditEntry(
+                        "execute_payout", "payout", payout.PayoutId, null, userId, command.TenantId,
+                        ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: false,
+                        ChangeSummary: $"Payout FAILED via {result.GatewayName}: {result.Error}"), ct);
+                await settle.CommitAsync(ct);
+                return new PayoutActionResult(payout.PayoutId, "failed", null);
+            }
 
-        // Mark the batch's attributions paid + apply the broker wallet transition (gross moves to lifetime_paid).
-        var attributionIds = await attributions.ReadyToPayAttributionIdsAsync(command.TenantId, payout.BrokerId, ct);
-        await attributions.MarkPaidAsync(attributionIds, payout.PayoutId, clock.UtcNow, ct);
-        await wallets.ApplyPaidAsync(payout.BrokerId, payout.GrossAmountInr, clock.UtcNow, ct);
+            // Only the finalize winner applies the money movement (processing → paid matched a row).
+            if (await payouts.MarkPaidAsync(payout.PayoutId, result.Reference, result.GatewayName, clock.UtcNow, ct))
+            {
+                var attributionIds = await attributions.ReadyToPayAttributionIdsAsync(command.TenantId, payout.BrokerId, ct);
+                await attributions.MarkPaidAsync(attributionIds, payout.PayoutId, clock.UtcNow, ct);
+                await wallets.ApplyPaidAsync(payout.BrokerId, payout.GrossAmountInr, clock.UtcNow, ct);
 
-        await audit.RecordAsync(new AuditEntry(
-            "execute_payout", "payout", payout.PayoutId, result.Reference, userId, command.TenantId,
-            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
-            ChangeSummary: $"Payout executed via {result.GatewayName}{(result.IsDryRun ? " (DRY RUN)" : "")}: net ₹{payout.NetAmountInr} → {result.Reference}"), ct);
+                await audit.RecordAsync(new AuditEntry(
+                    "execute_payout", "payout", payout.PayoutId, result.Reference, userId, command.TenantId,
+                    ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+                    ChangeSummary: $"Payout executed via {result.GatewayName}{(result.IsDryRun ? " (DRY RUN)" : "")}: net ₹{payout.NetAmountInr} → {result.Reference}"), ct);
 
-        // Integration event — IDs + amount ONLY, no PHI.
-        await events.PublishAsync("commission.payout.paid", command.TenantId,
-            new { payout_id = payout.PayoutId, broker_id = payout.BrokerId, net_inr = payout.NetAmountInr, reference = result.Reference, dry_run = result.IsDryRun }, ct);
+                // Integration event — IDs + amount ONLY, no PHI.
+                await events.PublishAsync("commission.payout.paid", command.TenantId,
+                    new { payout_id = payout.PayoutId, broker_id = payout.BrokerId, net_inr = payout.NetAmountInr, reference = result.Reference, dry_run = result.IsDryRun }, ct);
+            }
+
+            await settle.CommitAsync(ct);
+        }
 
         return new PayoutActionResult(payout.PayoutId, "paid", result.Reference);
     }

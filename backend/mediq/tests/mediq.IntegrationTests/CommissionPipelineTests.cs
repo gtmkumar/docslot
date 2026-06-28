@@ -1,8 +1,12 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using mediq.Application.Abstractions;
 using mediq.SharedDataModel.Docslot.Auth;
 using mediq.SharedDataModel.Docslot.Commission;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Xunit;
 
@@ -149,11 +153,14 @@ public sealed class CommissionPipelineTests(CommissionPipelineWebAppFactory fact
     // ---- 3b. DOUBLE-EXECUTE GUARD: execute is atomic-claim; a repeat execute is rejected, no double-credit -
 
     [Fact]
-    public async Task Payout_DoubleExecute_CreditsWalletOnce_AndSecondExecuteIsRejected()
+    public async Task Payout_DoubleExecute_CreditsWalletOnce_AndSecondExecuteIsIdempotent()
     {
-        // Regression for auditor P2 Finding 1 (HIGH): ExecutePayoutCommand atomically CLAIMS the payout
-        // (approved → 'processing') before the gateway, so a repeat execute cannot double-disburse or
-        // double-credit the wallet. A second execute sees status 'paid' (not 'approved') → BusinessRuleException → 422.
+        // Regression for auditor P2 Finding 1 (HIGH) + the gateway-go-live F2 / ExecutePayout-idempotency fix:
+        // execute is two-phase (durable approved→'processing' claim, gateway OUTSIDE the tx, single-winner
+        // finalize), so a repeat execute cannot double-disburse or double-credit the wallet. A second execute
+        // on the already-'paid' batch is an IDEMPOTENT replay → 200 'paid' with the SAME recorded reference, and
+        // the wallet/attributions are untouched (NOT a 422 — a retried money op that already succeeded must
+        // report success, not an error).
         var super = await ClientAsync(factory.SuperEmail);
         var finance = await ClientAsync(factory.FinanceEmail);
         await ResetWalletAsync();
@@ -186,11 +193,16 @@ public sealed class CommissionPipelineTests(CommissionPipelineWebAppFactory fact
             Assert.Equal(0m, readyAfter1);                               // ...to zero
             Assert.Equal("paid", await AttrStatusAsync(bookingId));
 
-            // SECOND execute on the SAME payout: REJECTED (status is 'paid', not 'approved') → 422.
-            var exec2 = await super.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/execute", new { });
-            Assert.Equal(HttpStatusCode.UnprocessableEntity, exec2.StatusCode);
+            var ref1 = (await PayoutRefAndGatewayAsync(payout.PayoutId)).Reference;
 
-            // No double-credit: lifetime_paid + ready_to_pay are UNCHANGED by the rejected second call, the
+            // SECOND execute on the SAME 'paid' payout: IDEMPOTENT replay → 200 'paid' with the same reference.
+            var exec2 = await super.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/execute", new { });
+            Assert.Equal(HttpStatusCode.OK, exec2.StatusCode);
+            var replay = await exec2.Content.ReadFromJsonAsync<PayoutActionResult>();
+            Assert.Equal("paid", replay!.Status);
+            Assert.Equal(ref1, replay.PaymentReference);   // the recorded reference, not a freshly-minted one
+
+            // No double-credit: lifetime_paid + ready_to_pay are UNCHANGED by the replayed second call, the
             // attributions are still 'paid' (not re-processed), and the payout stays 'paid'.
             Assert.Equal(paidAfter1, await WalletAsync("lifetime_paid_inr"));
             Assert.Equal(readyAfter1, await WalletAsync("ready_to_pay_inr"));
@@ -198,6 +210,100 @@ public sealed class CommissionPipelineTests(CommissionPipelineWebAppFactory fact
             Assert.Equal("paid", await PayoutStatusAsync(payout.PayoutId));
         }
         finally { await CleanBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task Payout_ResumeFromProcessing_FinalizesExactlyOnce()
+    {
+        // Crash-recovery (gateway-go-live F2 / idempotency HIGH): simulates a crash AFTER Phase 1 durably claimed
+        // the payout (approved → 'processing') but BEFORE Phase 3 finalized. The next execute must RESUME — re-call
+        // the gateway (idempotent) and finalize, crediting the wallet EXACTLY ONCE (not skipped, not doubled).
+        var super = await ClientAsync(factory.SuperEmail);
+        var finance = await ClientAsync(factory.FinanceEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        try
+        {
+            await EarnAsync(super, bookingId);
+            await SettleAsync();
+            var ready0 = await WalletAsync("ready_to_pay_inr");
+            var paid0 = await WalletAsync("lifetime_paid_inr");
+
+            var batchResp = await finance.PostAsJsonAsync("/api/v1/commission/payouts/batch",
+                new CreatePayoutBatchRequest(factory.BrokerId,
+                    DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-7)), DateOnly.FromDateTime(DateTime.UtcNow)));
+            var payout = await batchResp.Content.ReadFromJsonAsync<PayoutDto>();
+            await finance.PostAsJsonAsync($"/api/v1/commission/payouts/{payout!.PayoutId}/approve", new { });
+
+            // The durable claim that survived a crash: approved → 'processing', finalize never ran.
+            await ExecAsync("UPDATE commission.payouts SET status='processing' WHERE payout_id=@p", ("p", payout.PayoutId));
+
+            // RESUME via a normal execute: finalizes (does not reject the non-'approved' state, does not double).
+            var resume = await super.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/execute", new { });
+            Assert.Equal(HttpStatusCode.OK, resume.StatusCode);
+            Assert.Equal("paid", (await resume.Content.ReadFromJsonAsync<PayoutActionResult>())!.Status);
+
+            Assert.Equal("paid", await PayoutStatusAsync(payout.PayoutId));
+            Assert.Equal("paid", await AttrStatusAsync(bookingId));
+            Assert.Equal(paid0 + payout.GrossAmountInr, await WalletAsync("lifetime_paid_inr"));   // credited once
+            Assert.Equal(ready0 - payout.GrossAmountInr, await WalletAsync("ready_to_pay_inr"));    // drained once
+        }
+        finally { await CleanBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task Payout_GatewayThrows_LeavesProcessing_NotFailed_AndResumeFinalizesOnce()
+    {
+        // The gateway raising (network/timeout) is AMBIGUOUS — the transfer may have happened. The handler must
+        // leave the payout 'processing' (so a later execute resumes via the idempotency key) and must NOT mark it
+        // 'failed' (which would release it for a fresh disbursement → double-pay) nor credit the wallet. A later
+        // execute through a healthy gateway then finalizes exactly once.
+        var finance = await ClientAsync(factory.FinanceEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        try
+        {
+            await EarnAsync(await ClientAsync(factory.SuperEmail), bookingId);
+            await SettleAsync();
+            var ready0 = await WalletAsync("ready_to_pay_inr");
+            var paid0 = await WalletAsync("lifetime_paid_inr");
+
+            var batchResp = await finance.PostAsJsonAsync("/api/v1/commission/payouts/batch",
+                new CreatePayoutBatchRequest(factory.BrokerId,
+                    DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-7)), DateOnly.FromDateTime(DateTime.UtcNow)));
+            var payout = await batchResp.Content.ReadFromJsonAsync<PayoutDto>();
+            await finance.PostAsJsonAsync($"/api/v1/commission/payouts/{payout!.PayoutId}/approve", new { });
+
+            // A derived app whose payout gateway THROWS, over the SAME seeded DB.
+            using var throwingApp = factory.WithWebHostBuilder(b =>
+                b.ConfigureTestServices(s => s.AddScoped<IPayoutGateway, ThrowingPayoutGateway>()));
+            var superThrows = await BearerClientAsync(throwingApp, factory.SuperEmail);
+
+            // Execute → gateway throws → 500, but the claim is durable: status stays 'processing', no money moves.
+            var exec = await superThrows.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/execute", new { });
+            Assert.Equal(HttpStatusCode.InternalServerError, exec.StatusCode);
+            Assert.Equal("processing", await PayoutStatusAsync(payout.PayoutId));   // NOT 'failed'
+            Assert.Equal(ready0, await WalletAsync("ready_to_pay_inr"));            // ready_to_pay preserved
+            Assert.Equal(paid0, await WalletAsync("lifetime_paid_inr"));            // not credited
+            Assert.Equal("ready_to_pay", await AttrStatusAsync(bookingId));        // attribution not marked paid
+
+            // RESUME through the healthy (stub) gateway → finalizes exactly once.
+            var super = await ClientAsync(factory.SuperEmail);
+            var resume = await super.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/execute", new { });
+            Assert.Equal(HttpStatusCode.OK, resume.StatusCode);
+            Assert.Equal("paid", await PayoutStatusAsync(payout.PayoutId));
+            Assert.Equal(paid0 + payout.GrossAmountInr, await WalletAsync("lifetime_paid_inr"));   // credited once
+            Assert.Equal(ready0 - payout.GrossAmountInr, await WalletAsync("ready_to_pay_inr"));
+        }
+        finally { await CleanBookingAsync(bookingId, slotId); }
+    }
+
+    /// <summary>A payout gateway that always throws — models an ambiguous network/timeout failure mid-disbursement.</summary>
+    private sealed class ThrowingPayoutGateway : IPayoutGateway
+    {
+        public string Name => "throwing_test";
+        public Task<PayoutGatewayResult> SendAsync(PayoutInstruction instruction, CancellationToken ct) =>
+            throw new InvalidOperationException("simulated gateway timeout");
     }
 
     // ---- 4. REVERSAL ON CANCEL/NO-SHOW: a pending attribution is reversed; wallet pending debited ---
@@ -359,9 +465,12 @@ public sealed class CommissionPipelineTests(CommissionPipelineWebAppFactory fact
 
     // ================================ helpers ======================================================
 
-    private async Task<HttpClient> ClientAsync(string email)
+    private Task<HttpClient> ClientAsync(string email) => BearerClientAsync(factory, email);
+
+    /// <summary>Logs in against the given app (the base fixture, or a WithWebHostBuilder-derived variant) and returns a bearer client.</summary>
+    private async Task<HttpClient> BearerClientAsync(WebApplicationFactory<Program> app, string email)
     {
-        var client = factory.CreateClient();
+        var client = app.CreateClient();
         var resp = await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest(email, CommissionPipelineWebAppFactory.Password, factory.TenantId));
         resp.EnsureSuccessStatusCode();
         var token = await resp.Content.ReadFromJsonAsync<TokenResponse>();

@@ -159,8 +159,19 @@ public interface IIdempotencyReplayMarker
 public interface IRequireIdempotency;
 
 /// <summary>
+/// Marker for commands that manage their OWN transaction boundaries — the <see cref="UnitOfWorkBehavior{TRequest,TResponse}"/>
+/// must NOT wrap them in a single ambient transaction. Used when the handler performs an EXTERNAL side effect that
+/// must happen OUTSIDE any open DB transaction (e.g. a payout gateway disbursement): wrapping it would hold a row
+/// lock across network I/O AND let a crash after the external call roll the durable state back, risking a re-run that
+/// double-applies the side effect. Such handlers open their own <see cref="IUnitOfWork.BeginTenantScopeAsync"/> scopes
+/// (one committed phase before the external call, one after) so each phase is durable on its own.
+/// </summary>
+public interface ISelfManagedTransaction;
+
+/// <summary>
 /// Unit-of-Work commit + tenant scoping. Commands only. Sets <c>app.tenant_id</c> for RLS, runs the
-/// handler, then commits once so all writes land atomically.
+/// handler, then commits once so all writes land atomically. Commands marked <see cref="ISelfManagedTransaction"/>
+/// opt OUT of the single wrapping transaction and own their commit boundaries (see the interface docs).
 /// </summary>
 public sealed class UnitOfWorkBehavior<TRequest, TResponse>(
     IUnitOfWork uow, ICurrentUserContext currentUser)
@@ -168,6 +179,11 @@ public sealed class UnitOfWorkBehavior<TRequest, TResponse>(
 {
     public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)
     {
+        // A self-managed command opens (and commits) its own tenant scopes — most importantly so an external
+        // side effect (the payout gateway call) runs with NO DB transaction open and no row lock held across it.
+        if (request is ISelfManagedTransaction)
+            return await next();
+
         // Open a tenant-scoped transaction (SET LOCAL app.tenant_id), run the handler, persist, then commit.
         // The scope's transaction wraps the handler's writes so RLS applies and the GUC clears on commit.
         await using var scope = await uow.BeginTenantScopeAsync(currentUser.TenantId, ct);
