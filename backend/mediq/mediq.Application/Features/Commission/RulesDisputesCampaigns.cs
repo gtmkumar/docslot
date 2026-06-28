@@ -89,16 +89,34 @@ public sealed class RaiseDisputeCommandHandler(
 public sealed record ResolveDisputeCommand(Guid TenantId, ResolveDisputeRequest Request) : ICommand<Unit>;
 
 public sealed class ResolveDisputeCommandHandler(
-    ICommissionAdminRepository admin, IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    ICommissionAdminRepository admin, IAttributionRepository attributions, IBrokerWalletRepository wallets,
+    IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
     : ICommandHandler<ResolveDisputeCommand>
 {
     public async Task<Unit> Handle(ResolveDisputeCommand command, CancellationToken ct)
     {
         var userId = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
-        await admin.ResolveDisputeAsync(command.Request.DisputeId, command.Request, userId, clock.UtcNow, ct);
+        var now = clock.UtcNow;
+        var req = command.Request;
+
+        var attributionId = await admin.ResolveDisputeAsync(req.DisputeId, req, userId, now, ct);
+
+        // Clawback: when the tenant wins (or a negative adjustment is recorded), reverse the disputed
+        // attribution and debit the broker wallet bucket it was sitting in (idempotent — a paid attribution
+        // records lifetime_reversed without driving a live bucket negative).
+        var isClawback = req.Status == "resolved_tenant_wins"
+                         || (req.AmountAdjustmentInr is { } adj && adj < 0m);
+        if (isClawback && attributionId != Guid.Empty)
+        {
+            var reversed = await attributions.ReverseOneAsync(attributionId, command.TenantId, now, ct);
+            if (reversed is { Amount: > 0m } rv)
+                await wallets.ApplyReversedAsync(rv.BrokerId, rv.Amount, rv.FromStatus, now, ct);
+        }
+
         await audit.RecordAsync(new AuditEntry(
-            "resolve_dispute", "attribution_dispute", command.Request.DisputeId, null, userId, command.TenantId,
-            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true, ChangeSummary: $"Resolved: {command.Request.Status}"), ct);
+            "resolve_dispute", "attribution_dispute", req.DisputeId, null, userId, command.TenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Resolved: {req.Status}{(isClawback ? " (clawback)" : "")}"), ct);
         return Unit.Value;
     }
 }

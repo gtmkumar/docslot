@@ -17,3 +17,4 @@
 - [User Management Lifecycle](user-management-lifecycle.md) — deactivate/reactivate/edit/reset + invite escalation fix; CLEARED PASS (all 4 findings fixed & re-verified live)
 - [Phase-0 Booking Data-Plane RLS](backend-phase0-booking-dataplane-rls.md) — RLS on 5 booking + 5 ai tables + generate_time_slots definer; PASS-WITH-CONDITIONS: worker hold-sweep silently no-ops under RLS (MEDIUM) + RLS test gap
 - [Phase-1 Booking + DPDP Consent OTP](backend-phase1-booking-consent.md) — FINAL PASS: both findings remediated & live-verified (journal redacted, outbox scrubbed on send, RLS on both tables); LOW residual = mark_outbox_failed doesn't scrub abandoned consent_otp
+- [Phase-2 Commission Money-Pipeline](backend-phase2-commission-pipeline.md) — PASS-WITH-CONDITIONS: RLS/settle-definer/wallet/payout-dryrun/authz-fix/clawback/PCPNDT all sound; HIGH = ExecutePayout not idempotent (concurrent double-execute double-credits lifetime_paid + double-calls gateway)

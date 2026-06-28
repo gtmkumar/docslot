@@ -105,7 +105,7 @@ Cross-cutting: large swaths of the polished React SPA are **mock-only despite li
 
 ## 5. Roadmap (sequenced to the PRD acceptance gates)
 
-> **Progress** — Phase 0 ✅ done (2026-06-24) · Phase 1 ✅ done (2026-06-28, auditor PASS, 149/149 tests). Phases 2–4 pending.
+> **Progress** — Phase 0 ✅ done (2026-06-24) · Phase 1 ✅ done (2026-06-28, auditor PASS, 149/149) · Phase 2 CORE ✅ done (2026-06-28, auditor PASS-with-conditions, 163/163); Phase-2 remainder + Phases 3–4 pending.
 
 **Phase 0 — Unblock the production data plane** ✅ DONE *(prerequisite)*
 Make the live API usable at all: bookable inventory, slot reconciliation, DB-level isolation backstop.
@@ -114,8 +114,9 @@ Make the live API usable at all: bookable inventory, slot reconciliation, DB-lev
 **Phase 1 — One WhatsApp booking end-to-end with OTP consent** ✅ DONE *(PRD gate 1)*
 Delivered: behalf OTP consent flow (`docslot.booking_consent_otps`, salted-hash codes, attempt-limited, RLS; DPDP approval gate blocks un-consented behalf bookings) · reschedule end-to-end (terminate-old/mint-new with lineage) + cutoff enforcement (create+reschedule) · fully bilingual templates + per-contact language + tenant `display_name` (dropped hardcoded "Apollo Care") · `checked_in` lifecycle state · live conversation read API wired in the SPA · all 5 relations · canonical `wa_message_log` statuses (CHECK) · outbox `processing` reaper + consent-OTP expiry sweep · RLS added to `wa_message_log` + `outbox_messages` (drain via SECURITY DEFINER fns) · OTP code redacted from journal + scrubbed from queue post-send (auditor F1) · check-in/reschedule/consent surfaced in the SPA with consent-gated Approve.
 
-**Phase 2 — Commission attribution + payout dry-run** *(PRD gate 2)*
-Earning→settlement pipeline (complete-hook + settlement job + wallet credit) · fix attribution write authz · compute/write direct discount · 3 real attribution paths · hidden-partner nightly job + nudge · reconcile ₹100 net/gross + tiered_table + campaign bonuses · dispute clawback + invoice/Form 16A · broker self-service portal.
+**Phase 2 — Commission attribution + payout dry-run** *(PRD gate 2)* — CORE ✅ DONE (auditor PASS-with-conditions)
+Delivered (the money pipeline is alive end-to-end): booking-complete hook earns attributions (pending→earned + wallet) · settlement-window job earned→ready_to_pay (SECURITY DEFINER) · payout batches now non-empty → approve → execute via `IPayoutGateway`/`StubPayoutGateway` **honest dry-run** (`DRYRUN-` ref + `payment_gateway='stub_dryrun'`; gateway-failure→'failed', no wallet move) · concurrency-safe execute (atomic approved→processing claim) · cancel/no-show reversal + dispute tenant-wins clawback (reverse + wallet debit) · attribution write authz read→`commission.attribution.override` · `tiered_table` parsing · ₹100 floor reconciled to GROSS (matches `v_ready_payouts`) · RLS on the 6 tenant-scoped commission tables.
+REMAINDER (Phase-2 follow-on): compute/write the direct-booking discount onto bookings · the 3 real attribution paths (referral-link click→convert · broker-portal booking · post-hoc OTP claim verify/deny) · hidden-partner nightly job + Care-Partner nudge · campaign bonuses · invoice numbering + Form 16A PDFs · broker self-service portal (frontend) + admin UI for earned/settled/reversed states · gateway-go-live follow-ups (auditor F2: move gateway call outside the UoW txn; F3: reverse phantom `pending_inr` on patient_denied/no_response) — both before wiring a REAL payout adapter.
 
 **Phase 3 — ABDM sandbox + clinical live-wiring + PHI hardening** *(PRD gate 3)*
 Wire clinical/ABDM frontend to live API · break-glass that bypasses consent denial · ABDM gateway (ABHA/HFR/HPR/FHIR/consent) · medical-history CRUD + prescription amend + lab-report blobs + drug alerts · encrypt AI embeddings/OCR at rest · fix RAG consent + read-that-writes + cross-space embedding + stale model cache.

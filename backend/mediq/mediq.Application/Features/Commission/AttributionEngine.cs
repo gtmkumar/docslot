@@ -100,6 +100,14 @@ public sealed class CreateAttributionCommandHandler(
         // Persist — the DB exclusivity trigger throws (translated by the repo) for discounted bookings.
         await attributions.AddAsync(attribution, ct);
 
+        // Credit the broker's PENDING wallet bucket (commission_status 'pending'); it moves to earned when the
+        // booking completes (ICommissionLifecycleService), then to ready_to_pay at settlement, then paid.
+        if (commission > 0m)
+        {
+            await wallets.EnsureExistsAsync(req.BrokerId, ct);
+            await wallets.ApplyAttributedAsync(req.BrokerId, commission, now, ct);
+        }
+
         await audit.RecordAsync(new AuditEntry(
             "attribute", "attribution", attribution.AttributionId, null, ctx.UserId, command.TenantId,
             ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,

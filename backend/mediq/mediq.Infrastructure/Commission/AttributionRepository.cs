@@ -2,6 +2,7 @@ using mediq.Application.Abstractions;
 using mediq.Domain.Commission;
 using mediq.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 
 namespace mediq.Infrastructure.Commission;
@@ -111,6 +112,72 @@ public sealed class AttributionRepository(PlatformDbContext db) : IAttributionRe
             P(("@p0", attributionIds.ToArray()), ("@p1", nowUtc), ("@p2", payoutId)));
     }
 
+    public async Task<IReadOnlyList<EarnedAttribution>> MarkEarnedForBookingAsync(Guid tenantId, Guid bookingId, DateTime now, CancellationToken ct)
+    {
+        // pending → earned, but ONLY for attributions whose verification has cleared (auto/confirmed/override).
+        // A post-hoc claim awaiting patient confirmation stays 'pending' until verified. RLS-scoped by tenant.
+        var rows = await db.Database.SqlQueryRaw<EarnRow>(
+                """
+                UPDATE commission.attributions
+                SET commission_status='earned', earned_at=@p2, updated_at=@p2
+                WHERE tenant_id=@p0 AND booking_id=@p1 AND commission_status='pending'
+                  AND verification_status IN ('auto_verified','patient_confirmed','admin_override')
+                RETURNING broker_id AS "BrokerId", COALESCE(commission_amount_inr,0)::numeric AS "Amount"
+                """,
+                P(("@p0", tenantId), ("@p1", bookingId), ("@p2", now)))
+            .ToListAsync(ct);
+        return rows.Select(r => new EarnedAttribution(r.BrokerId, r.Amount)).ToList();
+    }
+
+    public async Task<IReadOnlyList<ReversedAttribution>> MarkReversedForBookingAsync(Guid tenantId, Guid bookingId, DateTime now, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<ReverseRow>(
+                """
+                WITH affected AS (
+                    SELECT attribution_id, broker_id, COALESCE(commission_amount_inr,0) AS amt, commission_status AS prev
+                    FROM commission.attributions
+                    WHERE tenant_id=@p0 AND booking_id=@p1 AND commission_status IN ('pending','earned','ready_to_pay')
+                    FOR UPDATE
+                )
+                UPDATE commission.attributions a SET commission_status='reversed', updated_at=@p2
+                FROM affected WHERE a.attribution_id = affected.attribution_id
+                RETURNING affected.broker_id AS "BrokerId", affected.amt::numeric AS "Amount", affected.prev AS "FromStatus"
+                """,
+                P(("@p0", tenantId), ("@p1", bookingId), ("@p2", now)))
+            .ToListAsync(ct);
+        return rows.Select(r => new ReversedAttribution(r.BrokerId, r.Amount, r.FromStatus)).ToList();
+    }
+
+    public async Task<ReversedAttribution?> ReverseOneAsync(Guid attributionId, Guid tenantId, DateTime now, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<ReverseRow>(
+                """
+                WITH affected AS (
+                    SELECT attribution_id, broker_id, COALESCE(commission_amount_inr,0) AS amt, commission_status AS prev
+                    FROM commission.attributions
+                    WHERE attribution_id=@p0 AND tenant_id=@p1 AND commission_status IN ('pending','earned','ready_to_pay','paid')
+                    FOR UPDATE
+                )
+                UPDATE commission.attributions a SET commission_status='reversed', updated_at=@p2
+                FROM affected WHERE a.attribution_id = affected.attribution_id
+                RETURNING affected.broker_id AS "BrokerId", affected.amt::numeric AS "Amount", affected.prev AS "FromStatus"
+                """,
+                P(("@p0", attributionId), ("@p1", tenantId), ("@p2", now)))
+            .ToListAsync(ct);
+        var r = rows.FirstOrDefault();
+        return r is null ? null : new ReversedAttribution(r.BrokerId, r.Amount, r.FromStatus);
+    }
+
+    public Task<int> SettleEarnedAsync(TimeSpan window, CancellationToken ct) =>
+        // SECURITY DEFINER fn (cross-tenant; the settlement worker has no app.tenant_id).
+        db.Database.SqlQueryRaw<int>(
+                "SELECT commission.settle_earned_attributions(make_interval(secs => @p0)) AS \"Value\"",
+                new NpgsqlParameter("@p0", (int)window.TotalSeconds))
+            .FirstAsync(ct);
+
+    private sealed record EarnRow(Guid BrokerId, decimal Amount);
+    private sealed record ReverseRow(Guid BrokerId, decimal Amount, string FromStatus);
+
     public async Task<IReadOnlyList<SharedDataModel.Docslot.Commission.AttributionListItemDto>> ListByTenantAsync(
         Guid tenantId, int skip, int take, CancellationToken ct)
     {
@@ -131,6 +198,9 @@ public sealed class AttributionRepository(PlatformDbContext db) : IAttributionRe
             WHERE a.tenant_id = @p0
             ORDER BY a.created_at DESC OFFSET @p1 LIMIT @p2
             """, conn);
+        // Enlist the current EF (tenant-scoped) transaction so the SET LOCAL app.tenant_id GUC is in scope —
+        // otherwise this raw command runs outside the tx and RLS on commission.attributions returns 0 rows.
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
         cmd.Parameters.AddWithValue("@p0", tenantId);
         cmd.Parameters.AddWithValue("@p1", skip);
         cmd.Parameters.AddWithValue("@p2", take);
