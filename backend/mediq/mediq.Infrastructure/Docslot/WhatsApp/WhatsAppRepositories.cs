@@ -236,3 +236,17 @@ public sealed class ConversationRepository(PlatformDbContext db) : IConversation
         Guid ConversationId, Guid TenantId, Guid? PatientId, string Phone, string CurrentStep,
         string? ContextJson, string? DetectedLanguage, bool IsActive);
 }
+
+/// <summary>
+/// Drives the hidden-Care-Partner conversion sweep via the SECURITY DEFINER fn
+/// <c>docslot.run_partner_nudge_sweep</c> (cross-tenant; recompute funnel + enqueue bilingual nudges + record).
+/// </summary>
+public sealed class PartnerNudgeStore(PlatformDbContext db) : IPartnerNudgeStore
+{
+    public Task<int> RunSweepAsync(int minDistinctPatients, TimeSpan cooldown, CancellationToken ct) =>
+        db.Database.SqlQueryRaw<int>(
+                "SELECT docslot.run_partner_nudge_sweep(@p0, make_interval(secs => @p1)) AS \"Value\"",
+                new NpgsqlParameter("@p0", minDistinctPatients),
+                new NpgsqlParameter("@p1", (int)cooldown.TotalSeconds))
+            .FirstAsync(ct);
+}

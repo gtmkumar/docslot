@@ -18,6 +18,7 @@ public sealed class BookingMaintenanceWorker(
     ILogger<BookingMaintenanceWorker> logger) : BackgroundService
 {
     private DateTime _lastMaterializeUtc = DateTime.MinValue;
+    private DateTime _lastNudgeUtc = DateTime.MinValue;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -91,6 +92,25 @@ public sealed class BookingMaintenanceWorker(
             var created = await gen.GenerateRollingHorizonAsync(DateOnly.FromDateTime(now), horizonDays, ct);
             _lastMaterializeUtc = now;
             logger.LogInformation("BookingMaintenance: materialized {Count} slots (horizon {Days}d).", created, horizonDays);
+        }
+
+        // Hidden-Care-Partner conversion nudge (carrot, not stick) — recompute the behalf-booking funnel + nudge
+        // eligible numbers via the outbox, on a slow cadence (default daily) with a per-number cooldown so it
+        // never nags. DISABLED BY DEFAULT: a PROACTIVE WhatsApp promotional message requires a Meta-APPROVED
+        // TEMPLATE (not free-form text) and a recorded DPDP opt-in + honored STOP/opt-out before the live Meta
+        // sender may carry it (auditor F1/F2 — pre-production gates). Enabling this flag is the deliberate act
+        // that must be paired with those. The dev StubWhatsAppSender only logs, so dev/test is unaffected.
+        var nudgeEnabled = config.GetValue("Commission:PartnerNudgeEnabled", false);
+        var nudgeEvery = TimeSpan.FromHours(Math.Max(1, config.GetValue("Commission:PartnerNudgeIntervalHours", 24)));
+        if (nudgeEnabled && now - _lastNudgeUtc >= nudgeEvery)
+        {
+            var nudge = scope.ServiceProvider.GetRequiredService<IPartnerNudgeStore>();
+            var minPatients = Math.Max(1, config.GetValue("Commission:PartnerNudgeMinPatients", 3));
+            var cooldown = TimeSpan.FromDays(Math.Max(1, config.GetValue("Commission:PartnerNudgeCooldownDays", 30)));
+            var nudged = await nudge.RunSweepAsync(minPatients, cooldown, ct);
+            _lastNudgeUtc = now;
+            if (nudged > 0)
+                logger.LogInformation("BookingMaintenance: sent {Count} hidden-Care-Partner conversion nudges.", nudged);
         }
     }
 }
