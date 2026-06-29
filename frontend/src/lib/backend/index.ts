@@ -121,6 +121,27 @@ export const resolveDispute = USE_REAL_API ? real.resolveDispute : mock.resolveD
 // exposes it.
 export const approveRule = USE_REAL_API ? real.approveRule : approveRuleMock;
 
+// Campaigns (admin, commission.campaign.manage). List + create; create returns an
+// { id } (the list refetches after invalidation). Mock parity in lib/mock/commission.
+export const listCampaigns = USE_REAL_API ? real.listCampaigns : mock.listCampaigns;
+export const createCampaign = USE_REAL_API ? real.createCampaign : mock.createCampaign;
+
+// Form 16A (TDS 194H, commission.tds.issue). Issue returns the cert DTO (PAN last-4
+// only); getForm16ADocumentUrl returns the same-origin doc path (full PAN, text/html)
+// that the UI opens in a new tab WITH auth headers — never logged/cached/in state.
+export const issueForm16A = USE_REAL_API ? real.issueForm16A : mock.issueForm16A;
+export const getForm16ADocumentUrl = USE_REAL_API ? real.getForm16ADocumentUrl : mock.getForm16ADocumentUrl;
+export const openForm16ADocument = USE_REAL_API ? real.openForm16ADocument : mock.openForm16ADocument;
+
+// ── BROKER SELF-SERVICE PORTAL (/commission/me) ───────────────────────────────
+// The Care Partner's OWN data; the server resolves broker_id from the JWT (no id
+// in any path). Reads are pass-throughs; book-on-behalf carries an Idempotency-Key
+// and its result status is 'awaiting_patient_consent' (patient WhatsApp OTP, DPDP).
+export const getBrokerWallet = USE_REAL_API ? real.getBrokerWallet : mock.getBrokerWallet;
+export const listReferralLinks = USE_REAL_API ? real.listReferralLinks : mock.listReferralLinks;
+export const createReferralLink = USE_REAL_API ? real.createReferralLink : mock.createReferralLink;
+export const createPortalBooking = USE_REAL_API ? real.createPortalBooking : mock.createPortalBooking;
+
 // ── CALENDAR (/calendar) — week capacity heatmap ──────────────────────────────
 // Real builds the grid from GET /doctors + GET /doctors/{id}/slots?date= (rolled
 // up per day×time row). Mock serves the prototype deterministic grid unchanged.

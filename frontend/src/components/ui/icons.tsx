@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   Stethoscope,
   Users,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -30,6 +31,7 @@ const ICONS: Record<string, LucideIcon> = {
   'shield-check': ShieldCheck,
   code: Code,
   handshake: Handshake,
+  wallet: Wallet,
   flask: FlaskConical,
   gear: SettingsGear,
 };

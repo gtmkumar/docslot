@@ -58,8 +58,11 @@ const AbdmDetailPanel = lazy(() => import('@/features/patients/components/AbdmDe
 const RegisterBrokerPanel = lazy(() => import('@/features/commission/components/RegisterBrokerPanel').then((m) => ({ default: m.RegisterBrokerPanel })));
 const ManageBrokerPanel = lazy(() => import('@/features/commission/components/ManageBrokerPanel').then((m) => ({ default: m.ManageBrokerPanel })));
 const CommissionRulePanel = lazy(() => import('@/features/commission/components/CommissionRulePanel').then((m) => ({ default: m.CommissionRulePanel })));
+const CreateCampaignPanel = lazy(() => import('@/features/commission/components/CreateCampaignPanel').then((m) => ({ default: m.CreateCampaignPanel })));
 const RaiseDisputePanel = lazy(() => import('@/features/commission/components/RaiseDisputePanel').then((m) => ({ default: m.RaiseDisputePanel })));
 const ResolveDisputePanel = lazy(() => import('@/features/commission/components/ResolveDisputePanel').then((m) => ({ default: m.ResolveDisputePanel })));
+const GenerateLinkPanel = lazy(() => import('@/features/portal/components/GenerateLinkPanel').then((m) => ({ default: m.GenerateLinkPanel })));
+const BookOnBehalfPanel = lazy(() => import('@/features/portal/components/BookOnBehalfPanel').then((m) => ({ default: m.BookOnBehalfPanel })));
 const BeginImpersonationPanel = lazy(() => import('@/features/impersonation/components/BeginImpersonationPanel').then((m) => ({ default: m.BeginImpersonationPanel })));
 import { BOOKINGS } from '@/lib/data';
 import { useUI, type Panel } from '@/stores/ui';
@@ -95,7 +98,8 @@ const PAYLOADLESS: PanelType[] = [
   'createModule', 'createPermission',
   'registerClient', 'createWebhook',
   'exportData', 'reportBreach', 'breakGlass',
-  'registerBroker', 'createCommissionRule',
+  'registerBroker', 'createCommissionRule', 'createCampaign',
+  'generateLink', 'bookOnBehalf',
   'beginImpersonation',
 ];
 
@@ -291,10 +295,16 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <ManageBrokerPanel brokerId={panel.brokerId} open onClose={closePanel} />;
     case 'createCommissionRule':
       return <CommissionRulePanel open onClose={closePanel} />;
+    case 'createCampaign':
+      return <CreateCampaignPanel open onClose={closePanel} />;
     case 'raiseDispute':
       return <RaiseDisputePanel attributionId={panel.attributionId} open onClose={closePanel} />;
     case 'resolveDispute':
       return <ResolveDisputePanel disputeId={panel.disputeId} open onClose={closePanel} />;
+    case 'generateLink':
+      return <GenerateLinkPanel open onClose={closePanel} />;
+    case 'bookOnBehalf':
+      return <BookOnBehalfPanel open onClose={closePanel} />;
     case 'beginImpersonation':
       return <BeginImpersonationPanel open onClose={closePanel} />;
     default:

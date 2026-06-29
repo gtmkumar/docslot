@@ -74,8 +74,15 @@ export type Panel =
   | { type: 'registerBroker' }
   | { type: 'manageBroker'; brokerId: string }
   | { type: 'createCommissionRule' }
+  | { type: 'createCampaign' }
   | { type: 'raiseDispute'; attributionId: string }
   | { type: 'resolveDispute'; disputeId: string }
+  // Care Partner self-service portal (Slice 07 broker self-service). Both are
+  // payloadless + URL-addressable — the partner + tenant come from the JWT, so no
+  // id/PHI is ever URL-encoded. book-on-behalf collects the patient inside the
+  // panel (never in the URL) and triggers a patient consent OTP.
+  | { type: 'generateLink' }
+  | { type: 'bookOnBehalf' }
   // Support impersonation (issue #3). Payloadless + URL-addressable: a super_admin
   // opens it to begin acting as a tenant. No PHI/secret payload — the target
   // tenant id is picked inside the panel, never URL-encoded.

@@ -6,10 +6,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   approvePayout,
   blacklistBroker,
+  createCampaign,
   createCommissionRule,
   executePayout,
+  issueForm16A,
   listAttributions,
   listBrokers,
+  listCampaigns,
   listCommissionRules,
   listDisputes,
   listPayouts,
@@ -19,6 +22,7 @@ import {
   setBrokerStatus,
 } from '@/lib/backend';
 import type {
+  CreateCampaignRequest,
   CreateCommissionRuleRequest,
   RaiseDisputeRequest,
   RegisterBrokerRequest,
@@ -30,6 +34,7 @@ export const attributionsQueryKey = ['commission', 'attributions'] as const;
 export const rulesQueryKey = ['commission', 'rules'] as const;
 export const payoutsQueryKey = ['commission', 'payouts'] as const;
 export const disputesQueryKey = ['commission', 'disputes'] as const;
+export const campaignsQueryKey = ['commission', 'campaigns'] as const;
 
 export function useBrokers() {
   return useQuery({ queryKey: brokersQueryKey, queryFn: listBrokers });
@@ -121,5 +126,33 @@ export function useResolveDispute() {
       void qc.invalidateQueries({ queryKey: disputesQueryKey });
       void qc.invalidateQueries({ queryKey: attributionsQueryKey });
     },
+  });
+}
+
+// ── Campaigns (commission.campaign.manage) ────────────────────────────────────
+export function useCampaigns() {
+  return useQuery({ queryKey: campaignsQueryKey, queryFn: listCampaigns });
+}
+
+export function useCreateCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ idempotencyKey, ...req }: CreateCampaignRequest & { idempotencyKey: string }) =>
+      createCampaign(req, idempotencyKey),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: campaignsQueryKey }),
+  });
+}
+
+// ── Form 16A (commission.tds.issue) ───────────────────────────────────────────
+// Issue a TDS certificate for a PAID payout. The result carries PAN LAST 4 only;
+// the full PAN lives solely on the rendered document (opened in a new tab). We do
+// NOT cache the certificate in the query cache — it is consumed transiently by the
+// caller, then dropped. Invalidating payouts refreshes the row's certificate state.
+export function useIssueForm16A() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ payoutId, idempotencyKey }: { payoutId: string; idempotencyKey: string }) =>
+      issueForm16A(payoutId, idempotencyKey),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: payoutsQueryKey }),
   });
 }

@@ -8,7 +8,7 @@
 
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, FileText } from 'lucide-react';
+import { ChevronDown, ExternalLink, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -16,10 +16,11 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { inr, shortDate } from '@/lib/format';
 import { idempotencyKey } from '@/lib/api-client';
+import { openForm16ADocument } from '@/lib/backend';
 import { usePermissions } from '@/lib/permissions';
-import { useApprovePayout, useExecutePayout, usePayouts } from '../api';
+import { useApprovePayout, useExecutePayout, useIssueForm16A, usePayouts } from '../api';
 import { CommissionBadge } from './CommissionBadge';
-import type { Payout } from '@/lib/mock/contracts';
+import type { Form16ACertificate, Payout } from '@/lib/mock/contracts';
 
 export function PayoutsTab() {
   const { t } = useTranslation();
@@ -58,12 +59,43 @@ function PayoutCard({ payout }: { payout: Payout }) {
   const { can } = usePermissions();
   const approve = useApprovePayout();
   const execute = useExecutePayout();
+  const issueTds = useIssueForm16A();
   const [open, setOpen] = useState(false);
+  // The issued certificate carries PAN LAST 4 only (safe to hold/show). The FULL
+  // PAN lives solely on the rendered document opened via openForm16ADocument — it
+  // is never placed in this (or any) state, cached, or logged.
+  const [cert, setCert] = useState<Form16ACertificate | null>(null);
+  const [opening, setOpening] = useState(false);
 
   const onApprove = () =>
     approve.mutate({ payoutId: payout.payoutId, idempotencyKey: idempotencyKey() }, { onSuccess: () => toast.success(t('commission.payouts.approved')) });
   const onExecute = () =>
     execute.mutate({ payoutId: payout.payoutId, idempotencyKey: idempotencyKey() }, { onSuccess: () => toast.success(t('commission.payouts.executed')) });
+
+  const onIssueTds = () =>
+    issueTds.mutate(
+      { payoutId: payout.payoutId, idempotencyKey: idempotencyKey() },
+      {
+        onSuccess: (result) => {
+          setCert(result);
+          toast.success(t('commission.payouts.form16a.issued'));
+        },
+        onError: () => toast.error(t('error.genericTitle')),
+      },
+    );
+
+  const onViewCert = async () => {
+    setOpening(true);
+    try {
+      // Opens the document (full PAN) in a NEW TAB via a transient blob — never
+      // logged/cached/in app state. The server logs the access on its side.
+      await openForm16ADocument(payout.payoutId);
+    } catch {
+      toast.error(t('commission.payouts.form16a.openFailed'));
+    } finally {
+      setOpening(false);
+    }
+  };
 
   const statusInfo = STATUS[payout.status];
 
@@ -124,17 +156,45 @@ function PayoutCard({ payout }: { payout: Payout }) {
             </>
           ) : null}
 
-          {payout.status === 'paid' || payout.status === 'processing' ? (
-            <Button variant="ghost" size="sm">
-              <FileText size={14} aria-hidden="true" />
-              {t('commission.payouts.invoice')}
-            </Button>
+          {/* Form 16A — only for a PAID payout, gated on commission.tds.issue.
+              Issue mints the certificate; View opens the document (full PAN) in a
+              new tab. The certificate is PROVISIONAL until filed on TRACES. */}
+          {payout.status === 'paid' && can('commission.tds.issue') ? (
+            cert ? (
+              <Button variant="ghost" size="sm" onClick={() => void onViewCert()} disabled={opening}>
+                <ExternalLink size={14} aria-hidden="true" />
+                {t('commission.payouts.form16a.view')}
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" onClick={onIssueTds} disabled={issueTds.isPending}>
+                <FileText size={14} aria-hidden="true" />
+                {t('commission.payouts.form16a.issue')}
+              </Button>
+            )
           ) : null}
 
           {payout.paymentReference ? (
             <span className="mono ml-auto text-[11px] text-muted-2">{t('commission.payouts.ref', { ref: payout.paymentReference })}</span>
           ) : null}
         </div>
+
+        {/* Issued certificate summary — invoice number + the PROVISIONAL-until-TRACES
+            note. PAN shown as last 4 only (never the full PAN). */}
+        {cert ? (
+          <div className="mt-2 flex flex-col gap-1 rounded-[var(--radius-sm)] border border-line bg-bg-2 p-3 text-[11px]">
+            <div className="flex flex-wrap items-center gap-2">
+              <CommissionBadge tone="pending" label={t('commission.payouts.form16a.provisional')} />
+              {cert.invoiceNumber ? (
+                <span className="mono text-muted">{t('commission.payouts.form16a.invoice', { ref: cert.invoiceNumber })}</span>
+              ) : null}
+            </div>
+            <p className="text-muted-2">
+              {t('commission.payouts.form16a.tds', { section: cert.section, rate: cert.tdsRate, amount: inr(cert.tdsAmountInr) })}
+              {cert.deducteePanLast4 ? ` · ${t('commission.payouts.form16a.panLast4', { last4: cert.deducteePanLast4 })}` : ''}
+            </p>
+            <p className="text-muted-2">{t('commission.payouts.form16a.provisionalNote')}</p>
+          </div>
+        ) : null}
 
         {payout.status === 'pending' || payout.status === 'approved' ? (
           <p className="mt-2 text-[11px] text-muted-2">{t('commission.payouts.twoStepNote')}</p>
