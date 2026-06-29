@@ -1187,6 +1187,63 @@ INSERT INTO platform_api.api_event_types (event_type, resource, action, descript
 ('commission.payout.paid', 'payout', 'paid', 'Payout disbursed', 'commission.payouts.read');
 
 -- ============================================================================
+-- TABLE 27: INTEGRATION_EVENT_OUTBOX (durable transactional integration-event outbox)
+-- ============================================================================
+-- Every integration event raised at the Application boundary is captured here ATOMICALLY with the
+-- business write (same UnitOfWork transaction). This closes a real data-loss gap: previously an event
+-- was published ONLY through the webhook pipeline (webhook_deliveries, keyed to HTTP subscriptions), so
+-- an event with NO matching subscription was silently DISCARDED. The outbox captures EVERY event; a
+-- drain worker (IntegrationEventDrainWorker) later publishes due rows to the message broker out-of-band.
+--
+-- Mirrors webhook_deliveries (status machine, attempt_count, next_retry_at backoff/lease, dedup on the
+-- producer-assigned id) but fans to the broker, not per-subscriber — so there is NO webhook_id / no
+-- subscription join: one row per event, claimed once, published once.
+--
+-- ----------------------------------------------------------------------------
+-- RLS DECISION: NO ROW LEVEL SECURITY (deliberate, follows the platform_api PaaS convention)
+-- ----------------------------------------------------------------------------
+-- The platform_api.* tables (api_clients / api_tokens / webhook_subscriptions / webhook_deliveries) carry
+-- NO RLS: this is the cross-tenant platform/PaaS layer, and the drain worker runs as the plain docslot_app
+-- role under the blanket platform_api grants (NO SECURITY DEFINER needed — same as WebhookDeliveryDrainStore).
+-- This table follows that convention. Compensating controls instead of RLS:
+--   * CAPTURE happens app-side inside the command's tenant-scoped UnitOfWork transaction (atomic with the
+--     business row), so the write itself is already tenant-authorized at the application boundary.
+--   * tenant_id is recorded for locality/forensics (and broker routing) but is NOT a security boundary here.
+--   * payload is IDs/tokens ONLY — NEVER PHI/PII — so a non-RLS, broker-replayable row leaks no patient data.
+--   * append + state-transition ONLY: the app role holds SELECT/INSERT/UPDATE (no DELETE grant; no pruner
+--     this slice), so rows are never physically removed.
+-- ----------------------------------------------------------------------------
+CREATE TABLE platform_api.integration_event_outbox (
+    outbox_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id         UUID NOT NULL UNIQUE,        -- IntegrationEvent.EventId; UNIQUE backs dedup / ON CONFLICT (event_id)
+    event_type       VARCHAR(100) NOT NULL,       -- e.g. 'docslot.booking.created'; intentionally NOT FK'd to
+                                                  -- api_event_types so capture survives registry drift
+    tenant_id        UUID REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,  -- NULLABLE (some events are
+                                                  -- tenant-agnostic); recorded for locality/forensics, NOT an RLS boundary
+    payload          JSONB NOT NULL,              -- the integration-event envelope JSON — IDs/tokens ONLY, NEVER PHI/PII
+    correlation_id   VARCHAR(100),
+    occurred_at      TIMESTAMPTZ NOT NULL,
+    status           VARCHAR(20) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'success', 'failed', 'abandoned')),
+    attempt_count    SMALLINT NOT NULL DEFAULT 0,
+    next_retry_at    TIMESTAMPTZ,                 -- backoff schedule AND the processing-lease watermark
+    last_error       TEXT,
+    published_at     TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON COLUMN platform_api.integration_event_outbox.payload IS
+    'IDs/tokens only — NEVER PHI/PII; not RLS-gated; may be replayed to external consumers.';
+
+-- (Dedup on event_id is enforced by the inline UNIQUE on the column above — it auto-creates the unique index
+--  that ON CONFLICT (event_id) DO NOTHING targets; no separate dedup index is needed.)
+-- Due-set scan for the drain claim: pending/failed-past-backoff/stranded-processing-past-lease.
+CREATE INDEX idx_integration_outbox_due ON platform_api.integration_event_outbox(next_retry_at)
+    WHERE status IN ('pending', 'failed', 'processing');
+-- Tenant locality / forensics.
+CREATE INDEX idx_integration_outbox_tenant ON platform_api.integration_event_outbox(tenant_id, created_at DESC);
+
+-- ============================================================================
 -- VIEWS
 -- ============================================================================
 
