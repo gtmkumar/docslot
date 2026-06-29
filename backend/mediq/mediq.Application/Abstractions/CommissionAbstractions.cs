@@ -120,6 +120,55 @@ public sealed record ReversedAttribution(Guid BrokerId, decimal Amount, string F
 /// <summary>A granted campaign bonus: which campaign funded it and the (budget-capped) bonus amount reserved.</summary>
 public sealed record CampaignBonusGrant(Guid CampaignId, decimal BonusInr);
 
+/// <summary>
+/// Form 16A (TDS u/s 194H) certificate persistence + the source data to assemble one. The deductee PAN is held
+/// ENCRYPTED in the source (envelope) and decrypted transiently by the issuing handler; the persisted certificate
+/// row stores only the PAN's last 4.
+/// </summary>
+public interface ITdsCertificateRepository
+{
+    /// <summary>Source data for a payout's certificate (payout + deductor tenant + deductee broker incl. the encrypted PAN envelope). Null if the payout is not in this tenant.</summary>
+    Task<Form16ASource?> GetSourceAsync(Guid payoutId, Guid tenantId, CancellationToken ct);
+    /// <summary>Insert-or-update (one certificate per payout) the certificate METADATA. Returns the certificate id.</summary>
+    Task<Guid> UpsertAsync(TdsCertificateRecord rec, CancellationToken ct);
+    /// <summary>The stored certificate metadata for a payout (null if none issued yet).</summary>
+    Task<TdsCertificateRecord?> GetByPayoutAsync(Guid payoutId, Guid tenantId, CancellationToken ct);
+    /// <summary>Point the payout's <c>form_16a_url</c> at the certificate document path.</summary>
+    Task SetPayoutForm16AUrlAsync(Guid payoutId, Guid tenantId, string url, DateTime nowUtc, CancellationToken ct);
+}
+
+/// <summary>Assembly inputs for a Form 16A: the paid payout, the deductor (tenant) and the deductee (broker, PAN still enveloped).</summary>
+public sealed record Form16ASource(
+    Guid PayoutId, string Status, string? InvoiceNumber, decimal GrossInr, decimal TdsRate, decimal TdsInr,
+    DateTime? CompletedAt, Guid BrokerId, string BrokerName, string? BrokerPanEnvelope,
+    string DeductorName, string? DeductorTan, string? DeductorPan);
+
+/// <summary>Persisted Form 16A metadata (last-4 PAN only — the full PAN never lands here).</summary>
+public sealed record TdsCertificateRecord(
+    Guid CertificateId, Guid TenantId, Guid PayoutId, Guid BrokerId, string Section, string FinancialYear, string Quarter,
+    string DeductorName, string? DeductorTan, string? DeductorPan, string DeducteeName, string? DeducteePanLast4,
+    decimal GrossInr, decimal TdsRate, decimal TdsInr, string Status, string? TracesCertificateNumber,
+    Guid? GeneratedByUserId, DateTime GeneratedAt);
+
+/// <summary>
+/// Renders the Form 16A certificate document (dev: print-ready HTML; prod: a PDF/TRACES adapter). The model
+/// carries the FULL deductee PAN transiently for the legal certificate — the renderer must NEVER persist it.
+/// </summary>
+public interface IForm16ADocumentRenderer
+{
+    string ContentType { get; }
+    string Render(Form16ADocument model);
+}
+
+/// <summary>The printable Form 16A fields. <c>DeducteePanFull</c> is transient — decrypted for rendering, never stored.</summary>
+public sealed record Form16ADocument(
+    string? InvoiceNumber, string Section, string FinancialYear, string Quarter, string Status,
+    string DeductorName, string? DeductorTan, string? DeductorPan, string DeducteeName, string? DeducteePanFull,
+    decimal GrossInr, decimal TdsRate, decimal TdsInr, string? TracesCertificateNumber, DateTime GeneratedAt);
+
+/// <summary>A rendered certificate document: its content type + body (e.g. text/html + the HTML).</summary>
+public sealed record Form16ADocumentResult(string ContentType, string Content);
+
 /// <summary>Payout batch persistence + approve/execute (TWO distinct steps, gated by distinct permissions).</summary>
 public interface IPayoutRepository
 {

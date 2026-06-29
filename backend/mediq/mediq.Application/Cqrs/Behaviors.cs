@@ -124,6 +124,14 @@ public sealed class IdempotencyBehavior<TRequest, TResponse>(
 
     public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)
     {
+        // Some commands carry sensitive rendered content in their response (e.g. a Form 16A document holding the
+        // full deductee PAN) and run on the command pipeline only so a side-effect (the key_usage_log access
+        // entry) commits — they must NEVER have their response persisted to the durable idempotency store (which
+        // is plaintext + not crypto-erasable). Bypass the cache entirely for them: don't serve a cached response,
+        // don't save one. The handler still runs inside the UnitOfWork transaction, so its access log commits.
+        if (request is IDoNotCacheResponse)
+            return await next();
+
         var key = idempotency.Key;
         if (string.IsNullOrWhiteSpace(key))
         {
@@ -157,6 +165,14 @@ public interface IIdempotencyReplayMarker
 
 /// <summary>Marker for commands that MUST carry an Idempotency-Key (booking/money mutations) — enforced by the behavior.</summary>
 public interface IRequireIdempotency;
+
+/// <summary>
+/// Marker for commands whose RESPONSE must never be written to the durable idempotency store (it carries
+/// sensitive rendered content — e.g. a Form 16A document with a full PAN — and the store is plaintext + not
+/// reachable by cryptographic erasure). The <see cref="IdempotencyBehavior{TRequest,TResponse}"/> bypasses the
+/// cache entirely for these (no serve, no save). Use only for read-shaped commands that aren't idempotency-guarded.
+/// </summary>
+public interface IDoNotCacheResponse;
 
 /// <summary>
 /// Marker for commands that manage their OWN transaction boundaries — the <see cref="UnitOfWorkBehavior{TRequest,TResponse}"/>

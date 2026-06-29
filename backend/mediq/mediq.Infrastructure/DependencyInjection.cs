@@ -149,6 +149,10 @@ public static class InfrastructureRegistration
         // when credentials are present (same pattern as the WhatsApp sender) — not wired until then.
         services.AddScoped<IPayoutGateway, Commission.StubPayoutGateway>();
 
+        // Form 16A (TDS) certificate persistence + the dev HTML renderer (a PDF/TRACES adapter swaps in for prod).
+        services.AddScoped<ITdsCertificateRepository, Commission.TdsCertificateRepository>();
+        services.AddSingleton<IForm16ADocumentRenderer, Commission.HtmlForm16ADocumentRenderer>();
+
         return services;
     }
 

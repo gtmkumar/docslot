@@ -117,3 +117,17 @@ public sealed record BrokerWalletDto(
 public sealed record CreateCampaignRequest(
     string CampaignName, string BonusType, decimal? BonusValue, DateTimeOffset StartsAt, DateTimeOffset EndsAt, decimal? TotalBudgetInr);
 public sealed record CampaignDto(Guid CampaignId, string CampaignName, string BonusType, decimal? BonusValue, bool IsActive, decimal? TotalBudgetInr, decimal SpentSoFarInr);
+
+// ---- TDS / Form 16A (section 194H) ----------------------------------------------------------------
+
+/// <summary>
+/// A TDS certificate (Form 16A) for a paid commission payout. PHI discipline: the deductee PAN is exposed as
+/// LAST 4 only here; the legally-required full PAN appears solely on the rendered document at <c>DocumentUrl</c>.
+/// <c>Status</c> is 'provisional' until the quarterly TDS return is filed on TRACES and a real
+/// <c>TracesCertificateNumber</c> is recorded (external). <c>InvoiceNumber</c> is the payout's INV- number.
+/// </summary>
+public sealed record Form16ACertificateDto(
+    Guid CertificateId, Guid PayoutId, string? InvoiceNumber, string Section, string FinancialYear, string Quarter,
+    string DeductorName, string? DeductorTan, string DeducteeName, string? DeducteePanLast4,
+    decimal GrossAmountInr, decimal TdsRate, decimal TdsAmountInr, string Status,
+    string? TracesCertificateNumber, string DocumentUrl);
