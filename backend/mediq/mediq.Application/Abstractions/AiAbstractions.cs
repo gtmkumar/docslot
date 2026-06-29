@@ -22,3 +22,38 @@ public sealed record NoShowFeatures(int LeadTimeDays, int SlotHour, bool IsBehal
 
 /// <summary>A no-show risk result. <paramref name="Source"/> records provenance (<c>ai-service-http</c> | <c>stub-dev</c>).</summary>
 public sealed record NoShowRisk(double Probability, string Band, string ModelName, string Source);
+
+/// <summary>
+/// The seam to the AI sibling service's LangGraph TRIAGE workflow (<c>POST /triage</c>): a free-text symptom
+/// complaint → an urgency band + red flags + a suggested department/doctors. The complaint is PHI; the HTTP
+/// adapter sends it to the AI SIBLING (an internal service-to-service hop, not a third-party disclosure) and the
+/// AI service governs any onward external-LLM egress (the allows_phi/BAA gate). A dev stub stands in so the
+/// endpoint works without the AI service. Same flag/seam as <see cref="IAiNoShowClient"/>.
+/// </summary>
+public interface IAiTriageClient
+{
+    /// <summary>Triages a complaint. Returns null when the AI service is UNAVAILABLE (unreachable / errored) — the
+    /// caller surfaces "unavailable" rather than a fabricated assessment. The complaint MUST NOT be logged.</summary>
+    Task<TriageResult?> TriageAsync(TriageRequestInput request, CancellationToken ct);
+}
+
+/// <summary>A triage request. <paramref name="Complaint"/> is free-text symptom data (PHI).
+/// <paramref name="DeclaredPurpose"/> is the X-Purpose-Of-Use (DPDP) — REQUIRED when the request is bound to a
+/// patient/booking (the AI service enforces it and writes the purpose-of-use log); forwarded to the AI service.</summary>
+public sealed record TriageRequestInput(
+    string Complaint, Guid? PatientId, Guid? BookingId, int? PatientAge, string? DeclaredPurpose);
+
+/// <summary>A triage result: urgency band + red flags + suggested department/doctors. <paramref name="Source"/>
+/// records provenance (<c>ai-service-http</c> | <c>stub-dev</c>).</summary>
+public sealed record TriageResult(
+    string? RunId,
+    string Department,
+    string UrgencyBand,                       // low | medium | high | emergency
+    IReadOnlyList<string> RedFlags,
+    IReadOnlyList<string> Symptoms,
+    IReadOnlyList<SuggestedDoctorResult> SuggestedDoctors,
+    string Source);
+
+/// <summary>A doctor the triage workflow suggests for the complaint's department.</summary>
+public sealed record SuggestedDoctorResult(
+    Guid DoctorId, string FullName, string? Specialization, decimal? ConsultationFee, string? NextAvailableSlot);
