@@ -164,17 +164,21 @@ public static class InfrastructureRegistration
         if (string.Equals(config[$"{mediq.Application.Options.AiServiceOptions.SectionName}:Provider"],
                 "http", StringComparison.OrdinalIgnoreCase))
         {
-            services.AddHttpContextAccessor();   // the HTTP adapter forwards the caller's bearer JWT to the AI service
-            services.AddHttpClient<IAiNoShowClient, Ai.HttpAiNoShowClient>((sp, http) =>
-            {
-                var o = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<mediq.Application.Options.AiServiceOptions>>().Value;
-                http.BaseAddress = new Uri(o.BaseUrl);
-                http.Timeout = TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds));
-            });
+            services.AddHttpContextAccessor();   // the HTTP adapters forward the caller's bearer JWT to the AI service
+            services.AddHttpClient<IAiNoShowClient, Ai.HttpAiNoShowClient>(ConfigureAiHttp);
+            services.AddHttpClient<IAiTriageClient, Ai.HttpAiTriageClient>(ConfigureAiHttp);
         }
         else
         {
             services.AddScoped<IAiNoShowClient, Ai.StubAiNoShowClient>();
+            services.AddScoped<IAiTriageClient, Ai.StubAiTriageClient>();
+        }
+
+        static void ConfigureAiHttp(IServiceProvider sp, HttpClient http)
+        {
+            var o = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<mediq.Application.Options.AiServiceOptions>>().Value;
+            http.BaseAddress = new Uri(o.BaseUrl);
+            http.Timeout = TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds));
         }
 
         // Lab-report blob storage (PHI artifacts). Bytes are envelope-ENCRYPTED by the app BEFORE storage, so

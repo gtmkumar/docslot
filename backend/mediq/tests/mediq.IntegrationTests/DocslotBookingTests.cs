@@ -7,6 +7,7 @@ using mediq.Infrastructure.Persistence;
 using mediq.Application.Features.Docslot.Bookings;
 using mediq.SharedDataModel.Docslot.Auth;
 using mediq.SharedDataModel.Docslot.Dashboard.Dtos;
+using mediq.SharedDataModel.Docslot.Triage;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -194,6 +195,49 @@ public sealed class DocslotBookingTests(DocslotWebAppFactory factory) : IClassFi
         // A booking not in the tenant → 404 (the feature read is tenant-scoped + RLS).
         var missing = await client.GetAsync($"/api/v1/bookings/{Guid.NewGuid()}/no-show-risk");
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+    }
+
+    [Fact]
+    public async Task Triage_Stub_Bands_By_Complaint_And_Rejects_Empty()
+    {
+        var client = await AuthedClientAsync();   // tenant_owner → docslot.booking.create (intake)
+
+        // The test host uses the deterministic stub provider, so triage works WITHOUT the Python AI service.
+        var emergency = await client.PostAsJsonAsync("/api/v1/triage",
+            new TriageRequest("Severe chest pain and shortness of breath for the last hour"));
+        Assert.Equal(HttpStatusCode.OK, emergency.StatusCode);
+        var er = (await emergency.Content.ReadFromJsonAsync<TriageResultDto>())!;
+        Assert.True(er.Available);
+        Assert.Equal("emergency", er.UrgencyBand);
+        Assert.NotEmpty(er.RedFlags);
+        Assert.Equal("Cardiology", er.Department);
+        Assert.Equal("stub-dev", er.Source);
+
+        // A routine complaint → low urgency.
+        var routine = await client.PostAsJsonAsync("/api/v1/triage",
+            new TriageRequest("Mild cold and runny nose since yesterday"));
+        Assert.Equal(HttpStatusCode.OK, routine.StatusCode);
+        var rr = (await routine.Content.ReadFromJsonAsync<TriageResultDto>())!;
+        Assert.True(rr.Available);
+        Assert.Equal("low", rr.UrgencyBand);
+
+        // Empty complaint → 422 (validation).
+        var bad = await client.PostAsJsonAsync("/api/v1/triage", new TriageRequest(""));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, bad.StatusCode);
+
+        // DPDP: a triage BOUND to a patient WITHOUT X-Purpose-Of-Use → 422 (the gate isn't masked as "unavailable").
+        var noPurpose = await client.PostAsJsonAsync("/api/v1/triage",
+            new TriageRequest("Headache", PatientId: factory.PatientId));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, noPurpose.StatusCode);
+
+        // Patient-bound WITH X-Purpose-Of-Use → 200 (purpose declared + forwarded to the AI service).
+        var withPurpose = new HttpRequestMessage(HttpMethod.Post, "/api/v1/triage")
+        {
+            Content = JsonContent.Create(new TriageRequest("Headache", PatientId: factory.PatientId)),
+        };
+        withPurpose.Headers.Add("X-Purpose-Of-Use", "treatment");
+        var okPurpose = await client.SendAsync(withPurpose);
+        Assert.Equal(HttpStatusCode.OK, okPurpose.StatusCode);
     }
 
     private async Task<HttpClient> AuthedClientAsync()
