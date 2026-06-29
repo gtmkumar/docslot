@@ -194,6 +194,61 @@ public sealed class SecurityHardeningTests(SecurityWebAppFactory factory) : ICla
         Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task PurposeOfUseLog_Is_Append_Only_App_Cannot_Update_Trigger_Blocks_Owner_Except_Privileged_ReviewClose()
+    {
+        // Auditor Finding 1 (break-glass slice): the is_break_glass row is the sole record of a
+        // consent-override read + what populates v_security_review_queue, so it must be tamper-evident.
+        var logId = Guid.NewGuid();
+        await ExecAsync(
+            """
+            INSERT INTO platform.purpose_of_use_log
+                (log_id,user_id,tenant_id,accessed_resource_type,accessed_resource_id,declared_purpose,is_break_glass,break_glass_reason,accessed_at,review_required)
+            VALUES (@l,@u,@t,'prescription',@r,'emergency',true,'append-only test',NOW(),true)
+            """,
+            ("l", logId), ("u", factory.AdminUserId), ("t", factory.TenantId), ("r", Guid.NewGuid()));
+        try
+        {
+            // 1) The running API role (docslot_app) cannot UPDATE — its UPDATE grant is REVOKEd.
+            await using (var app = new NpgsqlConnection("Host=localhost;Port=5432;Database=docslot_platform;Username=docslot_app"))
+            {
+                await app.OpenAsync();
+                await using var cmd = new NpgsqlCommand("UPDATE platform.purpose_of_use_log SET is_break_glass=false WHERE log_id=@l", app);
+                cmd.Parameters.AddWithValue("l", logId);
+                var ex = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => cmd.ExecuteNonQueryAsync());
+                Assert.Equal("42501", ex.SqlState);   // insufficient_privilege
+            }
+
+            // 2) Even the table OWNER is blocked by the guard trigger (no privileged opt-in).
+            await using (var owner = new NpgsqlConnection(SecurityWebAppFactory.ConnectionString))
+            {
+                await owner.OpenAsync();
+                await using var cmd = new NpgsqlCommand("UPDATE platform.purpose_of_use_log SET is_break_glass=false WHERE log_id=@l", owner);
+                cmd.Parameters.AddWithValue("l", logId);
+                var ex = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => cmd.ExecuteNonQueryAsync());
+                Assert.Equal("42501", ex.SqlState);   // raised by trg_purpose_log_no_update
+            }
+
+            // 3) A privileged review-close (NOT the app role) that opts in via app.allow_purpose_review CAN
+            //    mark it reviewed — the sanctioned path the future review UI will use.
+            await using (var owner = new NpgsqlConnection(SecurityWebAppFactory.ConnectionString))
+            {
+                await owner.OpenAsync();
+                await using (var set = new NpgsqlCommand("SELECT set_config('app.allow_purpose_review','on', false)", owner))
+                    await set.ExecuteNonQueryAsync();
+                await using var upd = new NpgsqlCommand("UPDATE platform.purpose_of_use_log SET reviewed_at=NOW() WHERE log_id=@l", owner);
+                upd.Parameters.AddWithValue("l", logId);
+                Assert.Equal(1, await upd.ExecuteNonQueryAsync());
+            }
+            Assert.Equal(1, await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM platform.purpose_of_use_log WHERE log_id=@l AND reviewed_at IS NOT NULL", ("l", logId)));
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform.purpose_of_use_log WHERE log_id=@l", ("l", logId));   // DELETE is not blocked
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private async Task<HttpClient> AuthedClientAsync()
