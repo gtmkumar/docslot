@@ -26,5 +26,9 @@ internal static class TestHostConfig
         // slot-generation tests (it would pre-create the very slots a test asserts it created) and adds
         // pool churn. Tests drive ISlotGenerationService / ISlotHoldService explicitly. Default-ON for the app.
         Environment.SetEnvironmentVariable("Booking__MaintenanceWorkerEnabled", "false");
+        // Webhook delivery worker is off suite-wide: publish now only ENQUEUES (no in-request delivery), so a
+        // seeded dead-URL subscription can never stall a booking POST. Delivery tests drive the drain store
+        // explicitly. Default-ON for the app (Webhooks__DeliveryWorkerEnabled ⇒ Webhooks:DeliveryWorkerEnabled).
+        Environment.SetEnvironmentVariable("Webhooks__DeliveryWorkerEnabled", "false");
     }
 }

@@ -69,6 +69,10 @@ public static class InfrastructureRegistration
         services.AddScoped<IWebhookSubscriptionRepository, WebhookSubscriptionRepository>();
         services.AddScoped<IEventTypeRepository, EventTypeRepository>();
         services.AddScoped<IWebhookDeliveryStore, WebhookDeliveryStore>();
+        // Durable async webhook delivery: publish enqueues, the WebhookDeliveryWorker drains this store out-of-band.
+        services.Configure<mediq.Application.Options.WebhookDeliveryOptions>(
+            config.GetSection(mediq.Application.Options.WebhookDeliveryOptions.SectionName));
+        services.AddScoped<IWebhookDeliveryDrainStore, WebhookDeliveryDrainStore>();
         services.AddSingleton<IWebhookSigner, WebhookSigner>();
         services.AddHttpClient("webhooks");
         services.AddScoped<IWebhookHttpDispatcher, WebhookHttpDispatcher>();
