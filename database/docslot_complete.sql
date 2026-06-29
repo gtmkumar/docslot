@@ -2099,8 +2099,10 @@ BEGIN
     ('docslot.report.read', docslot_product_id, 'report', 'read', 'tenant', 'Read lab reports (PHI)', true),
     ('docslot.report.deliver', docslot_product_id, 'report', 'update', 'tenant', 'Deliver reports', false),
 
-    -- Medical history (clinical PHI — slice 03b)
+    -- Medical history (clinical PHI — slice 03b read; Phase-3 create/update)
     ('docslot.medical_history.read', docslot_product_id, 'medical_history', 'read', 'tenant', 'Read patient medical history (PHI)', true),
+    ('docslot.medical_history.create', docslot_product_id, 'medical_history', 'create', 'tenant', 'Add a patient medical-history record (PHI)', true),
+    ('docslot.medical_history.update', docslot_product_id, 'medical_history', 'update', 'tenant', 'Edit/retire a patient medical-history record (PHI)', true),
 
     -- Procedures
     ('docslot.procedure.manage', docslot_product_id, 'procedure', 'update', 'tenant', 'Manage procedure catalog', false),
@@ -2160,7 +2162,9 @@ WHERE r.role_key = 'doctor'
     'docslot.doctor.read_self', 'docslot.doctor.update_self',
     'docslot.schedule.update_self',
     'docslot.booking.read_self', 'docslot.booking.complete',
-    'docslot.patient.read'
+    'docslot.patient.read',
+    -- Doctors are the clinical writers — full medical-history CRUD.
+    'docslot.medical_history.read', 'docslot.medical_history.create', 'docslot.medical_history.update'
   );
 
 -- ============================================================================

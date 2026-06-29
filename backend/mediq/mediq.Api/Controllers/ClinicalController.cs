@@ -88,6 +88,25 @@ public sealed class ClinicalController(
     public async Task<ActionResult<IReadOnlyList<MedicalHistoryDto>>> MedicalHistory(Guid patientId, CancellationToken ct)
         => Ok(await queries.Query(new ListMedicalHistoryQuery(RequireTenant(), patientId, Purpose()), ct));
 
+    /// <summary>Add a medical-history record (PHI — title/description encrypted at rest). Distinct create permission.</summary>
+    [HttpPost("patients/{patientId:guid}/medical-history")]
+    [RequirePermission("docslot.medical_history.create")]
+    [ProducesResponseType<CreateMedicalHistoryResult>(StatusCodes.Status201Created)]
+    public async Task<ActionResult<CreateMedicalHistoryResult>> CreateMedicalHistory(
+        Guid patientId, [FromBody] CreateMedicalHistoryRequest request, CancellationToken ct)
+    {
+        var result = await commands.Send(new CreateMedicalHistoryCommand(RequireTenant(), patientId, request), ct);
+        return CreatedAtAction(nameof(MedicalHistory), new { patientId }, result);
+    }
+
+    /// <summary>Update a medical-history record in place (re-encrypts PHI). 404 if it isn't in the caller's tenant.</summary>
+    [HttpPut("patients/{patientId:guid}/medical-history/{historyId:guid}")]
+    [RequirePermission("docslot.medical_history.update")]
+    [ProducesResponseType<bool>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<bool>> UpdateMedicalHistory(
+        Guid patientId, Guid historyId, [FromBody] UpdateMedicalHistoryRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new UpdateMedicalHistoryCommand(RequireTenant(), historyId, request), ct));
+
     // ---- ABDM (consent-required) -----------------------------------------------------------------
 
     [HttpPost("abdm/records")]

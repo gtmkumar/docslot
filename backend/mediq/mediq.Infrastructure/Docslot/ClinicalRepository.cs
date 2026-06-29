@@ -2,6 +2,7 @@ using mediq.Application.Abstractions;
 using mediq.Domain.Docslot;
 using mediq.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 
 namespace mediq.Infrastructure.Docslot;
@@ -169,6 +170,69 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
                 rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.GetString(3), rd.GetString(4),
                 rd.IsDBNull(5) ? null : rd.GetString(5), rd.GetBoolean(6), rd.GetBoolean(7), rd.GetDateTime(8)));
         return result;
+    }
+
+    public async Task<Guid> AddMedicalHistoryAsync(MedicalHistory h, CancellationToken ct)
+    {
+        // Runs in the command's tenant-scoped UoW tx (app.tenant_id set) → RLS WITH CHECK admits the in-tenant row.
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO docslot.patient_medical_history
+                (history_id, patient_id, tenant_id, record_type, title, description, severity, icd10_code,
+                 started_date, ended_date, is_active, is_critical, added_by_user_id, added_at)
+            VALUES (@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13)
+            """,
+            new NpgsqlParameter("@p0", h.HistoryId), new NpgsqlParameter("@p1", h.PatientId),
+            new NpgsqlParameter("@p2", h.TenantId), new NpgsqlParameter("@p3", h.RecordType),
+            new NpgsqlParameter("@p4", h.TitleEnc), new NpgsqlParameter("@p5", (object?)h.DescriptionEnc ?? DBNull.Value),
+            new NpgsqlParameter("@p6", (object?)h.Severity ?? DBNull.Value), new NpgsqlParameter("@p7", (object?)h.Icd10Code ?? DBNull.Value),
+            new NpgsqlParameter("@p8", (object?)h.StartedDate ?? DBNull.Value), new NpgsqlParameter("@p9", (object?)h.EndedDate ?? DBNull.Value),
+            new NpgsqlParameter("@p10", h.IsActive), new NpgsqlParameter("@p11", h.IsCritical),
+            new NpgsqlParameter("@p12", (object?)h.AddedByUserId ?? DBNull.Value), new NpgsqlParameter("@p13", h.AddedAt));
+        return h.HistoryId;
+    }
+
+    public async Task<MedicalHistory?> GetMedicalHistoryAsync(Guid historyId, Guid tenantId, CancellationToken ct)
+    {
+        var conn = (NpgsqlConnection)db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            """
+            SELECT history_id, patient_id, tenant_id, record_type, title, description, is_active, is_critical, added_at
+            FROM docslot.patient_medical_history WHERE history_id = @p0 AND tenant_id = @p1
+            """, conn);
+        // Enlist the ambient tenant-scoped tx (this read runs inside the Update COMMAND's UoW tx) so app.tenant_id
+        // is in scope for RLS — the explicit house pattern (AttributionRepository, break-glass GetActiveGrantAsync).
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
+        cmd.Parameters.AddWithValue("@p0", historyId);
+        cmd.Parameters.AddWithValue("@p1", tenantId);
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        if (!await rd.ReadAsync(ct)) return null;
+        return MedicalHistory.FromRow(
+            rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.GetString(3), rd.GetString(4),
+            rd.IsDBNull(5) ? null : rd.GetString(5), rd.GetBoolean(6), rd.GetBoolean(7), rd.GetDateTime(8));
+    }
+
+    public async Task<bool> UpdateMedicalHistoryAsync(
+        Guid historyId, Guid tenantId, string recordType, string titleEnc, string? descEnc,
+        string? severity, string? icd10Code, DateOnly? startedDate, DateOnly? endedDate,
+        bool isActive, bool isCritical, CancellationToken ct)
+    {
+        // Conditional UPDATE pinned to (history_id, tenant_id). No physical delete — is_active=false retires.
+        var affected = await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE docslot.patient_medical_history
+               SET record_type=@p2, title=@p3, description=@p4, severity=@p5, icd10_code=@p6,
+                   started_date=@p7, ended_date=@p8, is_active=@p9, is_critical=@p10
+             WHERE history_id=@p0 AND tenant_id=@p1
+            """,
+            new NpgsqlParameter("@p0", historyId), new NpgsqlParameter("@p1", tenantId),
+            new NpgsqlParameter("@p2", recordType), new NpgsqlParameter("@p3", titleEnc),
+            new NpgsqlParameter("@p4", (object?)descEnc ?? DBNull.Value), new NpgsqlParameter("@p5", (object?)severity ?? DBNull.Value),
+            new NpgsqlParameter("@p6", (object?)icd10Code ?? DBNull.Value), new NpgsqlParameter("@p7", (object?)startedDate ?? DBNull.Value),
+            new NpgsqlParameter("@p8", (object?)endedDate ?? DBNull.Value), new NpgsqlParameter("@p9", isActive),
+            new NpgsqlParameter("@p10", isCritical));
+        return affected == 1;
     }
 
     // ---- ABDM records ----------------------------------------------------------------------------
