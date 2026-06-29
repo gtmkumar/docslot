@@ -156,6 +156,27 @@ public static class InfrastructureRegistration
         else
             services.AddSingleton<IAbdmGateway, Abdm.SandboxAbdmGateway>();
 
+        // AI sibling-service no-show risk client. Dev/test default = a deterministic stub (the AI service need
+        // not be running); prod sets AiService:Provider=http (a typed HttpClient to the AI service, forwarding
+        // the caller's JWT). Advisory only — never on the booking critical path. Same honest-stub seam.
+        services.Configure<mediq.Application.Options.AiServiceOptions>(
+            config.GetSection(mediq.Application.Options.AiServiceOptions.SectionName));
+        if (string.Equals(config[$"{mediq.Application.Options.AiServiceOptions.SectionName}:Provider"],
+                "http", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddHttpContextAccessor();   // the HTTP adapter forwards the caller's bearer JWT to the AI service
+            services.AddHttpClient<IAiNoShowClient, Ai.HttpAiNoShowClient>((sp, http) =>
+            {
+                var o = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<mediq.Application.Options.AiServiceOptions>>().Value;
+                http.BaseAddress = new Uri(o.BaseUrl);
+                http.Timeout = TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds));
+            });
+        }
+        else
+        {
+            services.AddScoped<IAiNoShowClient, Ai.StubAiNoShowClient>();
+        }
+
         // Lab-report blob storage (PHI artifacts). Bytes are envelope-ENCRYPTED by the app BEFORE storage, so
         // the adapter only ever holds ciphertext. Dev = local filesystem (default) or in-memory (tests); prod
         // swaps in an object store (S3/GCS/Azure + provider SSE/KMS) by config (same pattern as the payout

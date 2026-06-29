@@ -61,6 +61,9 @@ public interface IBookingReadService
     Task<(IReadOnlyList<BookingListItemDto> Items, int Total)> ListAsync(BookingListFilter filter, CancellationToken ct);
     Task<BookingListItemDto?> GetItemAsync(Guid tenantId, Guid bookingId, CancellationToken ct);
     Task<IReadOnlyList<ConversationMessageDto>> GetConversationAsync(Guid tenantId, Guid bookingId, CancellationToken ct);
+    /// <summary>Non-PHI no-show feature snapshot for a booking (lead time, slot hour, on-behalf) — feeds the
+    /// AI no-show client / stub heuristic. Null if the booking is not in the tenant.</summary>
+    Task<NoShowFeatures?> GetNoShowFeaturesAsync(Guid tenantId, Guid bookingId, CancellationToken ct);
 }
 
 public sealed record BookingListFilter(

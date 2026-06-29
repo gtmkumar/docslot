@@ -133,6 +133,26 @@ public sealed class BookingReadService(PlatformDbContext db) : IBookingReadServi
         return row is null ? null : Map(row);
     }
 
+    public async Task<NoShowFeatures?> GetNoShowFeaturesAsync(Guid tenantId, Guid bookingId, CancellationToken ct)
+    {
+        // Non-PHI features for no-show scoring: booking lead time (IST), the slot's hour, and whether it was a
+        // booked-on-behalf booking (patient_consent_status <> 'not_required'). Tenant-scoped (+ RLS).
+        var rows = await db.Database.SqlQueryRaw<FeatureRow>(
+                """
+                SELECT
+                    GREATEST(0, (s.slot_date - (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date))::int AS "LeadTimeDays",
+                    EXTRACT(hour FROM s.start_time)::int AS "SlotHour",
+                    (b.patient_consent_status <> 'not_required') AS "IsBehalfBooking"
+                FROM docslot.bookings b
+                JOIN docslot.time_slots s ON s.slot_id = b.slot_id
+                WHERE b.tenant_id = @p0 AND b.booking_id = @p1
+                """,
+                new NpgsqlParameter("@p0", tenantId), new NpgsqlParameter("@p1", bookingId))
+            .ToListAsync(ct);
+        var r = rows.FirstOrDefault();
+        return r is null ? null : new NoShowFeatures(r.LeadTimeDays, r.SlotHour, r.IsBehalfBooking);
+    }
+
     public async Task<IReadOnlyList<ConversationMessageDto>> GetConversationAsync(Guid tenantId, Guid bookingId, CancellationToken ct)
     {
         // Conversation panel reads wa_message_log for the booking's patient within the tenant.
@@ -169,6 +189,7 @@ public sealed class BookingReadService(PlatformDbContext db) : IBookingReadServi
         new(date.ToDateTime(time), DashboardContract.TimeZoneOffset);
 
     private sealed record SummaryRow(int LiveQueue, int ConfirmedToday, decimal Revenue, int NoShowToday, int TerminalToday);
+    private sealed record FeatureRow(int LeadTimeDays, int SlotHour, bool IsBehalfBooking);
     private sealed record CountRow(int Count);
     private sealed record BookingRow(
         Guid BookingId, string BookingNumber, int? TokenNumber, string? PatientName, string? RawPhone,

@@ -48,6 +48,14 @@ public sealed class BookingsController(
     public async Task<ActionResult<BookingListItemDto>> Get(Guid bookingId, CancellationToken ct)
         => Ok(await queries.Query(new GetBookingQuery(RequireTenant(), bookingId), ct));
 
+    /// <summary>A booking's AI no-show risk (advisory, computed on demand by the AI sibling service / a dev
+    /// stub). 404 if the booking isn't in the tenant; Available=false if the AI service is unreachable. No PHI.</summary>
+    [HttpGet("bookings/{bookingId:guid}/no-show-risk")]
+    [RequirePermission("docslot.booking.read")]
+    [ProducesResponseType<NoShowRiskDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<NoShowRiskDto>> NoShowRisk(Guid bookingId, CancellationToken ct)
+        => Ok(await queries.Query(new GetBookingNoShowRiskQuery(RequireTenant(), bookingId), ct));
+
     [HttpGet("bookings/{bookingId:guid}/conversation")]
     [RequirePermission("docslot.booking.read")]
     [ProducesResponseType<IReadOnlyList<ConversationMessageDto>>(StatusCodes.Status200OK)]

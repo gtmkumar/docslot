@@ -48,6 +48,40 @@ public sealed class GetBookingQueryHandler(IBookingReadService reads)
            ?? throw new KeyNotFoundException("Booking not found.");
 }
 
+// ---- Booking no-show risk (AI sibling-service advisory) ------------------------------------------
+
+// ISelfManagedTransaction: this handler performs an EXTERNAL HTTP call (the AI service), which must NOT run
+// inside the TenantScopeQueryBehavior read transaction (it would pin a pooled DB connection across the network
+// call — a pool-drain hazard). So it opens its own tenant scope JUST for the DB feature read, disposes it, then
+// calls the AI service with no DB connection held (the auditor-required split; mirrors the payout/ABDM commands).
+public sealed record GetBookingNoShowRiskQuery(Guid TenantId, Guid BookingId)
+    : IQuery<NoShowRiskDto>, ISelfManagedTransaction;
+
+public sealed class GetBookingNoShowRiskQueryHandler(IBookingReadService reads, IAiNoShowClient ai, IUnitOfWork uow)
+    : IQueryHandler<GetBookingNoShowRiskQuery, NoShowRiskDto>
+{
+    public async Task<NoShowRiskDto> Handle(GetBookingNoShowRiskQuery q, CancellationToken ct)
+    {
+        // Phase 1 — read the (non-PHI) feature snapshot inside an own tenant scope (RLS), then DISPOSE the scope
+        // so its DB connection is released before the network call. 404 if the booking isn't in this tenant.
+        NoShowFeatures? features;
+        await using (var scope = await uow.BeginTenantScopeAsync(q.TenantId, ct))
+        {
+            features = await reads.GetNoShowFeaturesAsync(q.TenantId, q.BookingId, ct);
+            // read-only — no commit; disposing rolls back the empty tx and clears SET LOCAL app.tenant_id.
+        }
+        if (features is null)
+            throw new KeyNotFoundException("Booking not found.");
+
+        // Phase 2 — call the AI service OUTSIDE any DB transaction. A null result means the AI service is
+        // unavailable — surface that (Available=false), don't fabricate a score.
+        var risk = await ai.PredictAsync(q.BookingId, features, ct);
+        return risk is null
+            ? new NoShowRiskDto(q.BookingId, Available: false, null, null, null, null)
+            : new NoShowRiskDto(q.BookingId, Available: true, risk.Probability, risk.Band, risk.ModelName, risk.Source);
+    }
+}
+
 public sealed record GetConversationQuery(Guid TenantId, Guid BookingId)
     : IQuery<IReadOnlyList<ConversationMessageDto>>;
 

@@ -98,3 +98,18 @@ public sealed record BookingListItemDto(
     string PatientConsentStatus = "not_required",
     // The booking's doctor — the reschedule slide-over lists this doctor's open slots.
     Guid DoctorId = default);
+
+/// <summary>
+/// A booking's AI no-show risk (advisory). Computed by the AI sibling service (or a dev stub) on demand — the
+/// .NET service is the system of record and does not store this. <see cref="Available"/> is false when the AI
+/// service is unreachable (the desk shows "risk unavailable" rather than a fabricated score). <see cref="Source"/>
+/// records provenance ('ai-service-http' | 'stub-dev'); <see cref="Probability"/> is in [0,1]; <see cref="Band"/>
+/// is low/medium/high. NO PHI.
+/// </summary>
+public sealed record NoShowRiskDto(
+    Guid BookingId,
+    bool Available,
+    double? Probability,
+    string? Band,
+    string? ModelName,
+    string? Source);
