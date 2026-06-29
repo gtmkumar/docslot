@@ -38,6 +38,18 @@ public interface IAttributionRepository
     Task AddAsync(Attribution attribution, CancellationToken ct);
     Task<bool> ExistsAsync(Guid bookingId, Guid brokerId, CancellationToken ct);
     Task<BookingValue?> GetBookingValueAsync(Guid bookingId, Guid tenantId, CancellationToken ct);
+
+    /// <summary>
+    /// Reserves a campaign bonus ON TOP of the base commission for this attribution, atomically capping it to the
+    /// campaign's remaining budget (<c>commission.grant_campaign_bonus</c> — a FOR-UPDATE'd, budget-safe pick of the
+    /// best active matching campaign). Returns the granted (campaign, bonus) or null if no campaign applies. The
+    /// reservation is in the caller's transaction, so a later attribution-insert failure (e.g. the discount trigger)
+    /// rolls the budget spend back. The bonus is REFUNDED to the budget by the DB trigger
+    /// <c>trg_refund_campaign_bonus_on_reversal</c> if the attribution is ever reversed/rejected.
+    /// </summary>
+    Task<CampaignBonusGrant?> GrantCampaignBonusAsync(
+        Guid tenantId, Guid brokerId, string brokerTier, string brokerType, string? serviceType,
+        decimal baseCommission, DateTime nowUtc, CancellationToken ct);
     Task<int> CountRecentByBrokerAsync(Guid brokerId, TimeSpan window, CancellationToken ct);       // rapid-burst fraud
     Task<bool> BookingPatientReferredBySelfAsync(Guid bookingId, Guid brokerId, CancellationToken ct); // self-referral fraud
     Task<decimal> BrokerEarnedThisMonthAsync(Guid brokerId, Guid tenantId, DateTime nowUtc, CancellationToken ct);
@@ -104,6 +116,9 @@ public sealed record EarnedAttribution(Guid BrokerId, decimal Amount);
 
 /// <summary>A reversed attribution: broker + amount + the status it held before reversal (drives the wallet bucket).</summary>
 public sealed record ReversedAttribution(Guid BrokerId, decimal Amount, string FromStatus);
+
+/// <summary>A granted campaign bonus: which campaign funded it and the (budget-capped) bonus amount reserved.</summary>
+public sealed record CampaignBonusGrant(Guid CampaignId, decimal BonusInr);
 
 /// <summary>Payout batch persistence + approve/execute (TWO distinct steps, gated by distinct permissions).</summary>
 public interface IPayoutRepository

@@ -463,6 +463,150 @@ public sealed class CommissionPipelineTests(CommissionPipelineWebAppFactory fact
         finally { await CleanBookingAsync(bookingId, slotId); }
     }
 
+    // ---- 8. CAMPAIGN BONUS: on top of base commission, budget-capped, refunded on reversal -----------
+
+    [Fact]
+    public async Task CampaignBonus_FlatPerBooking_IsAddedOnTopOfBaseCommission_AndSpendsBudget()
+    {
+        var super = await ClientAsync(factory.SuperEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        var campaignId = await SeedCampaignAsync("flat_bonus_per_booking", 100m);
+        try
+        {
+            var pending0 = (await PendingEarnedAsync()).Pending;
+
+            var attr = await CreateAttributionAsync(super, bookingId);
+            Assert.Equal(Commission + 100m, attr.CommissionAmountInr);                 // ₹200 base + ₹100 bonus
+            Assert.Equal(Commission + 100m, await AttrCommissionAsync(bookingId));
+            Assert.Equal(100m, await AttrBonusAsync(bookingId));                        // split recorded in source_metadata
+            Assert.Equal(campaignId, await AttrCampaignIdAsync(bookingId));
+            Assert.Equal(100m, await CampaignSpentAsync(campaignId));                   // budget reserved
+            Assert.Equal(pending0 + Commission + 100m, (await PendingEarnedAsync()).Pending);   // wallet credits the total
+        }
+        finally { await CleanCampaignAsync(campaignId); await CleanBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task CampaignBonus_PercentageMultiplier_AddsThePercentageOfBase()
+    {
+        var super = await ClientAsync(factory.SuperEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        var campaignId = await SeedCampaignAsync("percentage_multiplier", 1.5m);       // 1.5× → +50% of base
+        try
+        {
+            var attr = await CreateAttributionAsync(super, bookingId);
+            Assert.Equal(Commission * 1.5m, attr.CommissionAmountInr);                 // ₹200 + ₹100 = ₹300
+            Assert.Equal(Commission * 0.5m, await AttrBonusAsync(bookingId));          // bonus = ₹100
+            Assert.Equal(Commission * 0.5m, await CampaignSpentAsync(campaignId));
+        }
+        finally { await CleanCampaignAsync(campaignId); await CleanBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task CampaignBonus_NeverExceedsBudget_AndStopsOnceExhausted()
+    {
+        var super = await ClientAsync(factory.SuperEmail);
+        await ResetWalletAsync();
+        var (booking1, slot1) = await SeedCompletableBookingAsync();
+        var (booking2, slot2) = await SeedCompletableBookingAsync();
+        var campaignId = await SeedCampaignAsync("flat_bonus_per_booking", 100m, budget: 50m);   // ₹100 bonus, ₹50 budget
+        try
+        {
+            // First booking: the ₹100 bonus is CAPPED to the ₹50 remaining budget.
+            var attr1 = await CreateAttributionAsync(super, booking1);
+            Assert.Equal(Commission + 50m, attr1.CommissionAmountInr);                 // base + capped bonus
+            Assert.Equal(50m, await CampaignSpentAsync(campaignId));                   // budget fully spent
+
+            // Second booking: budget exhausted → NO bonus, base only.
+            var attr2 = await CreateAttributionAsync(super, booking2);
+            Assert.Equal(Commission, attr2.CommissionAmountInr);
+            Assert.Equal(0m, await AttrBonusAsync(booking2));
+            Assert.Equal(50m, await CampaignSpentAsync(campaignId));                   // unchanged (never overspent)
+        }
+        finally
+        {
+            await CleanCampaignAsync(campaignId);
+            await CleanBookingAsync(booking1, slot1);
+            await CleanBookingAsync(booking2, slot2);
+        }
+    }
+
+    [Fact]
+    public async Task CampaignBonus_OnReversal_IsRefundedToTheBudget_AndWalletDebitedByTheTotal()
+    {
+        var super = await ClientAsync(factory.SuperEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        var campaignId = await SeedCampaignAsync("flat_bonus_per_booking", 100m, budget: 500m);
+        try
+        {
+            var pending0 = (await PendingEarnedAsync()).Pending;
+            await CreateAttributionAsync(super, bookingId);
+            Assert.Equal(100m, await CampaignSpentAsync(campaignId));                  // reserved
+            Assert.Equal(pending0 + Commission + 100m, (await PendingEarnedAsync()).Pending);
+
+            // Cancel → the attribution reverses → the DB trigger refunds the bonus to the campaign budget.
+            await CancelBookingAsync(super, bookingId, "patient withdrew");
+            Assert.Equal("reversed", await AttrStatusAsync(bookingId));
+            Assert.Equal(0m, await CampaignSpentAsync(campaignId));                    // budget refunded
+            Assert.Equal(pending0, (await PendingEarnedAsync()).Pending);              // wallet debited by base+bonus
+        }
+        finally { await CleanCampaignAsync(campaignId); await CleanBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task CampaignBonus_MinBookingsThreshold_UnlocksOnlyFromTheNthBooking()
+    {
+        var super = await ClientAsync(factory.SuperEmail);
+        await ResetWalletAsync();
+        var (booking1, slot1) = await SeedCompletableBookingAsync();
+        var (booking2, slot2) = await SeedCompletableBookingAsync();
+        var campaignId = await SeedCampaignAsync("flat_bonus_per_booking", 100m, minBookings: 2);
+        try
+        {
+            // 1st qualifying booking: below the 2-booking threshold → base only, no budget spent.
+            var attr1 = await CreateAttributionAsync(super, booking1);
+            Assert.Equal(Commission, attr1.CommissionAmountInr);
+            Assert.Equal(0m, await CampaignSpentAsync(campaignId));
+
+            // 2nd booking: threshold met → bonus applies.
+            var attr2 = await CreateAttributionAsync(super, booking2);
+            Assert.Equal(Commission + 100m, attr2.CommissionAmountInr);
+            Assert.Equal(100m, await CampaignSpentAsync(campaignId));
+        }
+        finally
+        {
+            await CleanCampaignAsync(campaignId);
+            await CleanBookingAsync(booking1, slot1);
+            await CleanBookingAsync(booking2, slot2);
+        }
+    }
+
+    [Fact]
+    public async Task CampaignBonus_Refund_IsIdempotent_AcrossTerminalStatusShuffle()
+    {
+        // The refund must fire only on the FIRST entry into a terminal status. A reversed→rejected shuffle must
+        // NOT refund the bonus twice (which would push spent_so_far below the truly-committed spend / leak budget).
+        var super = await ClientAsync(factory.SuperEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        var campaignId = await SeedCampaignAsync("flat_bonus_per_booking", 100m, budget: 500m);
+        try
+        {
+            await CreateAttributionAsync(super, bookingId);
+            Assert.Equal(100m, await CampaignSpentAsync(campaignId));
+
+            await ExecAsync("UPDATE commission.attributions SET commission_status='reversed' WHERE booking_id=@b AND commission_status<>'reversed'", ("b", bookingId));
+            Assert.Equal(0m, await CampaignSpentAsync(campaignId));                    // refunded once
+
+            await ExecAsync("UPDATE commission.attributions SET commission_status='rejected' WHERE booking_id=@b", ("b", bookingId));
+            Assert.Equal(0m, await CampaignSpentAsync(campaignId));                    // NOT refunded again
+        }
+        finally { await CleanCampaignAsync(campaignId); await CleanBookingAsync(bookingId, slotId); }
+    }
+
     // ================================ helpers ======================================================
 
     private Task<HttpClient> ClientAsync(string email) => BearerClientAsync(factory, email);
@@ -572,6 +716,39 @@ public sealed class CommissionPipelineTests(CommissionPipelineWebAppFactory fact
 
     private static Task<int> SettleAsync() =>
         ScalarAsync<int>("SELECT commission.settle_earned_attributions(make_interval(secs => 0))::int");
+
+    /// <summary>Seeds an ACTIVE campaign (window now±1d, no targeting) in the fixture tenant; returns its id.</summary>
+    private async Task<Guid> SeedCampaignAsync(string bonusType, decimal bonusValue, decimal? budget = null, int? minBookings = null)
+    {
+        var id = Guid.NewGuid();
+        await ExecAsync(
+            """
+            INSERT INTO commission.broker_campaigns
+                (campaign_id, tenant_id, campaign_name, bonus_type, bonus_value, min_bookings_for_bonus,
+                 starts_at, ends_at, is_active, total_budget_inr, spent_so_far_inr, created_at, updated_at)
+            VALUES (@id, @t, 'QA Campaign', @bt, @bv, @mb, @s, @e, true, @budget, 0, NOW(), NOW())
+            """,
+            ("id", id), ("t", factory.TenantId), ("bt", bonusType), ("bv", bonusValue),
+            ("mb", (object?)minBookings ?? DBNull.Value),
+            ("s", DateTime.UtcNow.AddDays(-1)), ("e", DateTime.UtcNow.AddDays(1)),
+            ("budget", (object?)budget ?? DBNull.Value));
+        return id;
+    }
+
+    private static Task CleanCampaignAsync(Guid campaignId) =>
+        ExecAsync("DELETE FROM commission.broker_campaigns WHERE campaign_id=@c", ("c", campaignId));
+
+    private static Task<decimal> CampaignSpentAsync(Guid campaignId) =>
+        ScalarAsync<decimal>("SELECT spent_so_far_inr FROM commission.broker_campaigns WHERE campaign_id=@c", ("c", campaignId));
+
+    private static Task<decimal> AttrCommissionAsync(Guid bookingId) =>
+        ScalarAsync<decimal>("SELECT commission_amount_inr FROM commission.attributions WHERE booking_id=@b", ("b", bookingId));
+
+    private static Task<decimal> AttrBonusAsync(Guid bookingId) =>
+        ScalarAsync<decimal>("SELECT COALESCE((source_metadata->>'campaign_bonus_inr')::numeric, 0) FROM commission.attributions WHERE booking_id=@b", ("b", bookingId));
+
+    private static Task<Guid> AttrCampaignIdAsync(Guid bookingId) =>
+        ScalarAsync<Guid>("SELECT (source_metadata->>'campaign_id')::uuid FROM commission.attributions WHERE booking_id=@b", ("b", bookingId));
 
     private static Task<string?> AttrStatusAsync(Guid bookingId) =>
         ScalarOrNullAsync<string>("SELECT commission_status FROM commission.attributions WHERE booking_id=@b", ("b", bookingId));

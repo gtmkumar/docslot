@@ -562,7 +562,7 @@ CREATE TABLE commission.broker_campaigns (
     target_doctor_ids   UUID[],
 
     -- Bonus structure (on top of base commission)
-    bonus_type          VARCHAR(20) NOT NULL CHECK (bonus_type IN ('flat_bonus_per_booking', 'percentage_multiplier', 'tier_upgrade')),
+    bonus_type          VARCHAR(30) NOT NULL CHECK (bonus_type IN ('flat_bonus_per_booking', 'percentage_multiplier', 'tier_upgrade')),
     bonus_value         DECIMAL(10,2),                          -- ₹500 flat or 1.5x multiplier
     min_bookings_for_bonus INT,                                 -- Hit 10 bookings to unlock
 
@@ -584,6 +584,132 @@ CREATE INDEX idx_campaigns_active ON commission.broker_campaigns(tenant_id, ends
 
 CREATE TRIGGER trg_campaigns_updated_at BEFORE UPDATE ON commission.broker_campaigns
     FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+-- ============================================================================
+-- CAMPAIGN BONUS: grant (atomic, budget-capped) + refund-on-reversal (trigger)
+-- ============================================================================
+-- A campaign bonus is paid ON TOP OF the base commission (broker_campaigns.bonus_value). The attribution
+-- engine calls grant_campaign_bonus AFTER computing the base, folds the granted bonus into the attribution's
+-- commission_amount_inr, and records the split + campaign_id in source_metadata. The bonus therefore rides the
+-- SAME lifecycle (pending->earned->ready_to_pay->paid) and the SAME wallet buckets as the base — no separate
+-- ledger row (the UNIQUE(booking_id,broker_id) forbids a second attribution anyway).
+--
+-- grant_campaign_bonus: picks the active, in-window, budget-available, targeting-matching campaign that yields
+-- the LARGEST bonus, enforces min_bookings_for_bonus, computes the bonus (flat_bonus_per_booking |
+-- percentage_multiplier; tier_upgrade is a DIFFERENT mechanism — it changes rule selection, not an additive
+-- bonus — so it is intentionally NOT matched here), CAPS it to the remaining budget, and atomically reserves
+-- it (FOR UPDATE serialises concurrent grants so total_budget_inr can never be overspent). SECURITY INVOKER:
+-- it runs with the caller's RLS (app.tenant_id), so it can only ever spend the caller-tenant's campaigns; the
+-- explicit tenant predicate is defence-in-depth.
+CREATE OR REPLACE FUNCTION commission.grant_campaign_bonus(
+    p_tenant uuid, p_broker uuid, p_broker_tier text, p_broker_type text,
+    p_service_type text, p_base_commission numeric, p_now timestamptz)
+RETURNS TABLE(campaign_id uuid, bonus_inr numeric)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_campaign  commission.broker_campaigns%ROWTYPE;
+    v_prior     int;
+    v_bonus     numeric;
+    v_remaining numeric;
+    v_granted   numeric;
+BEGIN
+    SELECT c.* INTO v_campaign
+    FROM commission.broker_campaigns c
+    WHERE c.tenant_id = p_tenant
+      AND c.is_active
+      AND p_now >= c.starts_at AND p_now < c.ends_at
+      AND c.bonus_type IN ('flat_bonus_per_booking','percentage_multiplier')
+      AND (c.total_budget_inr IS NULL OR c.spent_so_far_inr < c.total_budget_inr)
+      AND (c.target_broker_tiers IS NULL OR cardinality(c.target_broker_tiers) = 0 OR p_broker_tier = ANY(c.target_broker_tiers))
+      AND (c.target_broker_types IS NULL OR cardinality(c.target_broker_types) = 0 OR p_broker_type = ANY(c.target_broker_types))
+      AND (c.target_services     IS NULL OR cardinality(c.target_services)     = 0 OR p_service_type = ANY(c.target_services))
+    ORDER BY (CASE c.bonus_type
+                WHEN 'flat_bonus_per_booking' THEN COALESCE(c.bonus_value, 0)
+                WHEN 'percentage_multiplier'  THEN GREATEST(0, p_base_commission * (COALESCE(c.bonus_value, 1) - 1))
+                ELSE 0 END) DESC, c.ends_at ASC, c.campaign_id
+    LIMIT 1
+    FOR UPDATE;                                   -- lock the chosen campaign → concurrent grants serialise on budget
+
+    IF NOT FOUND THEN
+        RETURN;                                   -- no matching campaign → no bonus
+    END IF;
+
+    -- Unlock threshold: this booking must be the Nth (or later) of the broker's non-reversed attributions
+    -- in the campaign window.
+    IF v_campaign.min_bookings_for_bonus IS NOT NULL AND v_campaign.min_bookings_for_bonus > 1 THEN
+        SELECT count(*) INTO v_prior
+        FROM commission.attributions a
+        WHERE a.tenant_id = p_tenant AND a.broker_id = p_broker
+          AND a.attributed_at >= v_campaign.starts_at AND a.attributed_at < v_campaign.ends_at
+          AND a.commission_status NOT IN ('reversed','rejected');
+        IF (v_prior + 1) < v_campaign.min_bookings_for_bonus THEN
+            RETURN;                               -- threshold not yet met
+        END IF;
+    END IF;
+
+    v_bonus := round(CASE v_campaign.bonus_type
+                 WHEN 'flat_bonus_per_booking' THEN COALESCE(v_campaign.bonus_value, 0)
+                 WHEN 'percentage_multiplier'  THEN GREATEST(0, p_base_commission * (COALESCE(v_campaign.bonus_value, 1) - 1))
+                 ELSE 0 END, 2);
+    IF v_bonus <= 0 THEN RETURN; END IF;
+
+    IF v_campaign.total_budget_inr IS NULL THEN
+        v_granted := v_bonus;
+    ELSE
+        v_remaining := v_campaign.total_budget_inr - v_campaign.spent_so_far_inr;
+        v_granted := LEAST(v_bonus, GREATEST(0, v_remaining));   -- never overspend the budget
+    END IF;
+    IF v_granted <= 0 THEN RETURN; END IF;
+
+    UPDATE commission.broker_campaigns
+       SET spent_so_far_inr = spent_so_far_inr + v_granted, updated_at = p_now
+     WHERE broker_campaigns.campaign_id = v_campaign.campaign_id;
+
+    campaign_id := v_campaign.campaign_id;
+    bonus_inr   := v_granted;
+    RETURN NEXT;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION commission.grant_campaign_bonus(uuid, uuid, text, text, text, numeric, timestamptz) TO docslot_app;
+
+-- refund_campaign_bonus_on_reversal: when an attribution leaves the lifecycle into a terminal non-earning
+-- state (reversed / rejected), return its reserved campaign bonus to the campaign budget — so a cancelled,
+-- no-show, denied, expired or disputed booking never permanently consumes budget. Fires from EVERY reversal
+-- path: the .NET lifecycle reversals AND the RLS-less SQL sweeps (expire_stale_consent_otps /
+-- expire_stale_attribution_claims). SECURITY DEFINER + pinned search_path so it can update broker_campaigns
+-- regardless of the caller's RLS context (tenant correctness is inherent: campaign_id was matched to this
+-- attribution's tenant at grant time). The WHEN guard makes it fire once, only on the actual transition.
+CREATE OR REPLACE FUNCTION commission.refund_campaign_bonus_on_reversal()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = commission, pg_temp
+AS $$
+DECLARE
+    v_campaign uuid;
+    v_bonus    numeric;
+BEGIN
+    v_campaign := NULLIF(NEW.source_metadata->>'campaign_id', '')::uuid;
+    v_bonus    := COALESCE(NULLIF(NEW.source_metadata->>'campaign_bonus_inr', '')::numeric, 0);
+    IF v_campaign IS NOT NULL AND v_bonus > 0 THEN
+        UPDATE commission.broker_campaigns
+           SET spent_so_far_inr = GREATEST(0, spent_so_far_inr - v_bonus), updated_at = NOW()
+         WHERE campaign_id = v_campaign;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_refund_campaign_bonus_on_reversal
+    AFTER UPDATE OF commission_status ON commission.attributions
+    FOR EACH ROW
+    -- Fire only on the FIRST entry into a terminal non-earning state: OLD must be a LIVE status. This makes the
+    -- refund idempotent — a later reversed->rejected (or rejected->reversed) shuffle does NOT refund again.
+    WHEN (NEW.commission_status IN ('reversed','rejected')
+          AND OLD.commission_status NOT IN ('reversed','rejected'))
+    EXECUTE FUNCTION commission.refund_campaign_bonus_on_reversal();
 
 -- ============================================================================
 -- VIEW: Active rule for a booking (used by attribution engine)
