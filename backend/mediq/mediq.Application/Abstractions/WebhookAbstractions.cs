@@ -69,6 +69,38 @@ public interface IWebhookHttpDispatcher
     Task<WebhookHttpResult> PostAsync(string url, string payload, string signature, int timeoutSeconds, CancellationToken ct);
 }
 
+/// <summary>
+/// Drain-side store for <c>platform_api.webhook_deliveries</c> — the worker half of durable async delivery.
+/// Publishing only ENQUEUES a 'pending' delivery; the WebhookDeliveryWorker claims due rows here, delivers
+/// them out-of-band, and records the outcome. Unlike the WhatsApp outbox, the webhook tables are NOT
+/// RLS-protected (platform-API PaaS layer), so the claim/mark run as plain app-role SQL (no SECURITY DEFINER):
+/// the claim still uses <c>FOR UPDATE SKIP LOCKED</c> so scaled-out workers never double-deliver, and a
+/// visibility lease on <c>next_retry_at</c> lets a later tick re-claim a row stranded in 'processing' by a
+/// crashed worker.
+/// </summary>
+public interface IWebhookDeliveryDrainStore
+{
+    /// <summary>Atomically claims up to <paramref name="batchSize"/> DUE deliveries (pending / failed-past-backoff
+    /// / stranded-processing-past-lease) whose subscription is still active, flips each to 'processing' with a
+    /// fresh <paramref name="leaseSeconds"/> lease, and returns them with the subscription's delivery config.</summary>
+    Task<IReadOnlyList<ClaimedWebhookDelivery>> ClaimDueAsync(int batchSize, int leaseSeconds, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>Records a successful delivery (→'success', attempt++) and resets the subscription's failure health.</summary>
+    Task MarkDeliveredAsync(Guid deliveryId, string signature, int statusCode, int responseMs, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>Records a failed delivery: attempt++ then 'abandoned' at <paramref name="maxRetries"/> else 'failed'
+    /// with the backoff <paramref name="nextRetryUtc"/>; bumps the subscription's consecutive_failures and
+    /// auto-disables it past <paramref name="autoDisableThreshold"/>.</summary>
+    Task MarkFailedAsync(Guid deliveryId, string signature, int? statusCode, string error, int maxRetries,
+        int autoDisableThreshold, DateTime nextRetryUtc, DateTime nowUtc, CancellationToken ct);
+}
+
+/// <summary>A claimed delivery plus its subscription's delivery config (the worker signs with the encrypted
+/// <paramref name="SecretHash"/> and POSTs to <paramref name="Url"/>).</summary>
+public sealed record ClaimedWebhookDelivery(
+    Guid DeliveryId, Guid WebhookId, string EventType, Guid EventId, string PayloadJson,
+    int AttemptCount, string Url, string SecretHash, int TimeoutSeconds, int MaxRetries);
+
 public sealed record WebhookHttpResult(bool Success, int? StatusCode, int ElapsedMs, string? Error);
 
 /// <summary>

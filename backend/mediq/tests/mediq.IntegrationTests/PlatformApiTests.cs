@@ -3,8 +3,11 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
+using mediq.Application.Abstractions;
 using mediq.SharedDataModel.Docslot.Auth;
 using mediq.SharedDataModel.Docslot.PlatformApi;
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Xunit;
 
 namespace mediq.IntegrationTests;
@@ -84,47 +87,201 @@ public sealed class PlatformApiTests(PlatformApiWebAppFactory factory) : IClassF
         Assert.Equal(HttpStatusCode.Forbidden, after.StatusCode);
     }
 
-    // ---- E: webhook signed-delivery + retry dry-run --------------------------------------------
+    // ---- E: webhook DURABLE ASYNC delivery (publish enqueues; the worker drains + retries) ------
 
     [Fact]
-    public async Task Webhook_Delivery_Signs_With_Hmac_And_Retries_On_Failure()
+    public async Task Webhook_Publish_Enqueues_Only_Then_Worker_Drains_With_Retry_And_Hmac()
     {
         var admin = factory.CreateClient();
         var adminToken = await AdminLoginAsync(admin);
         admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
 
         const string secret = "webhook-known-secret-abcdef";
-        // URL is a fast-fail loopback (port 9 = discard/closed → instant connection-refused), NOT a dead
-        // public host. This test delivers via the FAKE dispatcher so the URL is irrelevant to its assertions;
-        // but the row is platform-wide (tenant_id NULL → matches every tenant's booking.created), so if it
-        // ever leaks (a cleanup hiccup), the REAL dispatcher used by OTHER test hosts fails instantly instead
-        // of stalling for minutes on an unreachable public URL and cascading booking-create timeouts.
         var create = await admin.PostAsJsonAsync("/api/v1/webhooks", new CreateWebhookRequest(
             factory.ClientId, TenantId: null, Name: "test-hook", Url: "https://127.0.0.1:9/hook",
             EventTypes: new[] { "docslot.booking.created" }, Secret: secret, MaxRetries: 3));
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
-        var created = await create.Content.ReadFromJsonAsync<CreateWebhookResult>();
-        Assert.NotNull(created);
-        Assert.Equal(secret, created!.SigningSecret);   // plaintext returned once
+        var created = (await create.Content.ReadFromJsonAsync<CreateWebhookResult>())!;
 
-        // Force the fake transport to fail the first 2 attempts → success on the 3rd (proves retry).
-        PlatformApiWebAppFactory.Dispatcher.FailFirst(2);
+        try
+        {
+            PlatformApiWebAppFactory.Dispatcher.Reset();
+            PlatformApiWebAppFactory.Dispatcher.FailFirst(2);   // attempts 1-2 fail → 3rd succeeds (proves retry)
 
-        const string payload = "{\"booking_id\":\"abc\",\"status\":\"pending\"}";
-        var publish = await admin.PostAsJsonAsync("/api/v1/webhooks/publish",
-            new { eventType = "docslot.booking.created", tenantId = (Guid?)null, payloadJson = payload });
-        Assert.Equal(HttpStatusCode.OK, publish.StatusCode);
+            const string payload = "{\"booking_id\":\"abc\",\"status\":\"pending\"}";
+            var publish = await admin.PostAsJsonAsync("/api/v1/webhooks/publish",
+                new { eventType = "docslot.booking.created", tenantId = (Guid?)null, payloadJson = payload });
+            Assert.Equal(HttpStatusCode.OK, publish.StatusCode);
 
-        // Retry happened: more than one attempt was made.
-        Assert.True(PlatformApiWebAppFactory.Dispatcher.AttemptCount >= 3,
-            $"expected >=3 attempts, got {PlatformApiWebAppFactory.Dispatcher.AttemptCount}");
+            // THE FIX — durable async: publishing did NOT deliver in-request (the dispatcher was never called);
+            // the delivery is enqueued 'pending'. A slow/dead subscriber can no longer stall the request path.
+            Assert.Equal(0, PlatformApiWebAppFactory.Dispatcher.AttemptCount);
+            Assert.Equal("pending", await ScalarStrAsync(
+                "SELECT status FROM platform_api.webhook_deliveries WHERE webhook_id=@w", ("w", created.WebhookId)));
 
-        // HMAC correctness: the signature the dispatcher received equals HMAC-SHA256(payload, secret).
-        Assert.True(PlatformApiWebAppFactory.Dispatcher.Calls.TryPeek(out var call));
-        var expected = "sha256=" + Convert.ToHexString(
-            HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
-        Assert.Equal(expected, call!.Signature);
-        Assert.Equal(payload, call.Payload);
+            // Worker tick 1 → delivery attempt fails → 'failed', attempt_count=1, a backoff next_retry_at set.
+            Assert.Equal(1, await DrainWebhooksOnceAsync());
+            Assert.Equal("failed", await ScalarStrAsync(
+                "SELECT status FROM platform_api.webhook_deliveries WHERE webhook_id=@w", ("w", created.WebhookId)));
+            Assert.Equal(1, await ScalarIntAsync(
+                "SELECT attempt_count FROM platform_api.webhook_deliveries WHERE webhook_id=@w", ("w", created.WebhookId)));
+
+            // Ticks 2-3 → 2nd attempt fails, 3rd succeeds → 'success'.
+            await DrainWebhooksOnceAsync();
+            await DrainWebhooksOnceAsync();
+            Assert.Equal("success", await ScalarStrAsync(
+                "SELECT status FROM platform_api.webhook_deliveries WHERE webhook_id=@w", ("w", created.WebhookId)));
+            Assert.True(PlatformApiWebAppFactory.Dispatcher.AttemptCount >= 3);
+
+            // HMAC correctness: signature == HMAC-SHA256(deliveredPayload, secret) — exactly what a subscriber verifies.
+            Assert.True(PlatformApiWebAppFactory.Dispatcher.Calls.TryPeek(out var call));
+            var expected = "sha256=" + Convert.ToHexString(
+                HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(call!.Payload))).ToLowerInvariant();
+            Assert.Equal(expected, call.Signature);
+            Assert.Contains("booking_id", call.Payload);
+        }
+        finally
+        {
+            await DeleteWebhookAsync(created.WebhookId);
+        }
+    }
+
+    [Fact]
+    public async Task Webhook_Delivery_Dead_Letters_After_Max_Retries()
+    {
+        var admin = factory.CreateClient();
+        var adminToken = await AdminLoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
+
+        const string secret = "webhook-deadletter-secret-1234";
+        var create = await admin.PostAsJsonAsync("/api/v1/webhooks", new CreateWebhookRequest(
+            factory.ClientId, TenantId: null, Name: "deadletter-hook", Url: "https://127.0.0.1:9/hook",
+            EventTypes: new[] { "docslot.booking.created" }, Secret: secret, MaxRetries: 1));   // 1 retry → 2 attempts
+        var created = (await create.Content.ReadFromJsonAsync<CreateWebhookResult>())!;
+
+        try
+        {
+            PlatformApiWebAppFactory.Dispatcher.Reset();
+            PlatformApiWebAppFactory.Dispatcher.FailFirst(100);   // always fail
+
+            await admin.PostAsJsonAsync("/api/v1/webhooks/publish",
+                new { eventType = "docslot.booking.created", tenantId = (Guid?)null, payloadJson = "{\"booking_id\":\"x\"}" });
+
+            // 2 attempts (1 + 1 retry), both fail → 'abandoned' (dead-letter), not retried forever.
+            await DrainWebhooksOnceAsync();   // attempt 1 → 'failed'
+            await DrainWebhooksOnceAsync();   // attempt 2 → 'abandoned'
+            Assert.Equal("abandoned", await ScalarStrAsync(
+                "SELECT status FROM platform_api.webhook_deliveries WHERE webhook_id=@w", ("w", created.WebhookId)));
+            Assert.Equal(2, await ScalarIntAsync(
+                "SELECT attempt_count FROM platform_api.webhook_deliveries WHERE webhook_id=@w", ("w", created.WebhookId)));
+
+            // An abandoned delivery is NOT re-claimed; the subscription's failure health is recorded.
+            Assert.Equal(0, await DrainWebhooksOnceAsync());
+            Assert.True(await ScalarIntAsync(
+                "SELECT consecutive_failures FROM platform_api.webhook_subscriptions WHERE webhook_id=@w", ("w", created.WebhookId)) >= 2);
+        }
+        finally
+        {
+            await DeleteWebhookAsync(created.WebhookId);
+        }
+    }
+
+    [Fact]
+    public async Task Webhook_Stale_SingleWinner_Loser_Does_Not_Perturb_Subscription_Health()
+    {
+        var admin = factory.CreateClient();
+        var adminToken = await AdminLoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
+
+        const string secret = "webhook-loser-secret-9876";
+        var create = await admin.PostAsJsonAsync("/api/v1/webhooks", new CreateWebhookRequest(
+            factory.ClientId, TenantId: null, Name: "loser-hook", Url: "https://127.0.0.1:9/hook",
+            EventTypes: new[] { "docslot.booking.created" }, Secret: secret, MaxRetries: 3));
+        var created = (await create.Content.ReadFromJsonAsync<CreateWebhookResult>())!;
+
+        try
+        {
+            PlatformApiWebAppFactory.Dispatcher.Reset();   // all attempts succeed
+            await admin.PostAsJsonAsync("/api/v1/webhooks/publish",
+                new { eventType = "docslot.booking.created", tenantId = (Guid?)null, payloadJson = "{\"booking_id\":\"ok\"}" });
+
+            // Winner delivers → 'success', subscription consecutive_failures reset to 0.
+            await DrainWebhooksOnceAsync();
+            Assert.Equal("success", await ScalarStrAsync("SELECT status FROM platform_api.webhook_deliveries WHERE webhook_id=@w", ("w", created.WebhookId)));
+            Assert.Equal(0, await ScalarIntAsync("SELECT consecutive_failures FROM platform_api.webhook_subscriptions WHERE webhook_id=@w", ("w", created.WebhookId)));
+
+            // A STALE LOSER — a late MarkFailed on a row that is no longer 'processing' (lease-collision twin).
+            // The delivery UPDATE matches 0 rows, so the GATED subscription-health UPDATE must be a no-op: the
+            // delivery stays 'success' and consecutive_failures is NOT bumped toward auto-disable (auditor finding).
+            var deliveryId = Guid.Parse((await ScalarStrAsync(
+                "SELECT delivery_id::text FROM platform_api.webhook_deliveries WHERE webhook_id=@w", ("w", created.WebhookId)))!);
+            using (var scope = factory.Services.CreateScope())
+            {
+                var store = scope.ServiceProvider.GetRequiredService<IWebhookDeliveryDrainStore>();
+                await store.MarkFailedAsync(deliveryId, "sig", 500, "stale loser", maxRetries: 3,
+                    autoDisableThreshold: 20, DateTime.UtcNow.AddSeconds(60), DateTime.UtcNow, default);
+            }
+            Assert.Equal("success", await ScalarStrAsync("SELECT status FROM platform_api.webhook_deliveries WHERE webhook_id=@w", ("w", created.WebhookId)));
+            Assert.Equal(0, await ScalarIntAsync("SELECT consecutive_failures FROM platform_api.webhook_subscriptions WHERE webhook_id=@w", ("w", created.WebhookId)));
+        }
+        finally
+        {
+            await DeleteWebhookAsync(created.WebhookId);
+        }
+    }
+
+    /// <summary>One drain pass: mirrors WebhookDeliveryWorker.DrainOnce against the live DB via the real drain
+    /// store + signer + the fake dispatcher. A failed delivery is rescheduled in the PAST so the next pass
+    /// re-claims it immediately (fast retry for the test, vs the worker's real exponential backoff).</summary>
+    private async Task<int> DrainWebhooksOnceAsync()
+    {
+        using var scope = factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<IWebhookDeliveryDrainStore>();
+        var signer = scope.ServiceProvider.GetRequiredService<IWebhookSigner>();
+        var dispatcher = scope.ServiceProvider.GetRequiredService<IWebhookHttpDispatcher>();
+
+        var batch = await store.ClaimDueAsync(20, leaseSeconds: 300, DateTime.UtcNow, default);
+        foreach (var d in batch)
+        {
+            var sig = signer.SignWithProtected(d.PayloadJson, d.SecretHash);
+            var r = await dispatcher.PostAsync(d.Url, d.PayloadJson, sig, d.TimeoutSeconds, default);
+            if (r.Success)
+                await store.MarkDeliveredAsync(d.DeliveryId, sig, r.StatusCode ?? 200, r.ElapsedMs, DateTime.UtcNow, default);
+            else
+                await store.MarkFailedAsync(d.DeliveryId, sig, r.StatusCode, r.Error ?? "fail",
+                    d.MaxRetries, autoDisableThreshold: 20, DateTime.UtcNow.AddSeconds(-1), DateTime.UtcNow, default);
+        }
+        return batch.Count;
+    }
+
+    private static Task DeleteWebhookAsync(Guid webhookId) =>
+        ExecAsync("DELETE FROM platform_api.webhook_deliveries WHERE webhook_id=@w; DELETE FROM platform_api.webhook_subscriptions WHERE webhook_id=@w", ("w", webhookId));
+
+    private static async Task<int> ScalarIntAsync(string sql, params (string Name, object Value)[] ps)
+    {
+        await using var conn = new NpgsqlConnection(PlatformApiWebAppFactory.ConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        foreach (var (n, v) in ps) cmd.Parameters.AddWithValue(n, v);
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync());
+    }
+
+    private static async Task<string?> ScalarStrAsync(string sql, params (string Name, object Value)[] ps)
+    {
+        await using var conn = new NpgsqlConnection(PlatformApiWebAppFactory.ConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        foreach (var (n, v) in ps) cmd.Parameters.AddWithValue(n, v);
+        return (await cmd.ExecuteScalarAsync()) as string;
+    }
+
+    private static async Task ExecAsync(string sql, params (string Name, object Value)[] ps)
+    {
+        await using var conn = new NpgsqlConnection(PlatformApiWebAppFactory.ConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        foreach (var (n, v) in ps) cmd.Parameters.AddWithValue(n, v);
+        await cmd.ExecuteNonQueryAsync();
     }
 
     // ---- helpers -------------------------------------------------------------------------------

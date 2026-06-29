@@ -1,22 +1,22 @@
 using mediq.Application.Abstractions;
 using Microsoft.Extensions.Logging;
-using Polly;
-using Polly.Retry;
 
 namespace mediq.Infrastructure.PlatformApi;
 
 /// <summary>
-/// publish → sign → deliver → retry pipeline. For each integration event it finds matching active
-/// subscriptions, creates a <c>webhook_deliveries</c> outbox row (idempotency key = event id), HMAC-signs
-/// the payload with the subscription's (decrypted) secret, POSTs to the subscriber, and on failure retries
-/// with Polly exponential backoff up to the subscription's <c>max_retries</c>, dead-lettering ('abandoned')
-/// after exhaustion. Each delivery's outcome is recorded for the developer portal + abuse detection.
+/// Publish = ENQUEUE ONLY (durable async outbox). For each integration event it finds the matching active
+/// subscriptions and writes a <c>platform_api.webhook_deliveries</c> row in 'pending' (idempotency key = event
+/// id) — and returns. It does NOT sign or POST in the request path: the <c>WebhookDeliveryWorker</c> claims due
+/// rows out-of-band, signs, delivers, and retries with exponential backoff / dead-letters at max_retries.
+/// <para>
+/// This is the durable-async replacement for the previous synchronous publish→sign→deliver→retry pipeline,
+/// which delivered in-request with Polly: a slow or dead subscriber URL stalled the whole request (e.g. every
+/// booking POST) for the retry budget. Now the request returns as soon as the deliveries are enqueued.
+/// </para>
 /// </summary>
 public sealed class WebhookPublisher(
     IWebhookSubscriptionRepository subscriptions,
     IWebhookDeliveryStore deliveries,
-    IWebhookSigner signer,
-    IWebhookHttpDispatcher dispatcher,
     IClock clock,
     ILogger<WebhookPublisher> logger)
     : IWebhookPublisher
@@ -28,67 +28,15 @@ public sealed class WebhookPublisher(
 
         foreach (var sub in matches)
         {
-            var deliveryId = await deliveries.EnqueueAsync(
-                sub.WebhookId, evt.EventType, evt.EventId, evt.PayloadJson, clock.UtcNow, ct);
-            created.Add(deliveryId);
-            await DeliverWithRetryAsync(sub, deliveryId, evt, ct);
+            // Enqueue a 'pending' delivery (next_retry_at NULL → claimed on the worker's next tick). No HTTP here.
+            created.Add(await deliveries.EnqueueAsync(
+                sub.WebhookId, evt.EventType, evt.EventId, evt.PayloadJson, clock.UtcNow, ct));
         }
+
+        if (created.Count > 0)
+            logger.LogDebug("Enqueued {Count} webhook delivery(ies) for event {EventType} ({EventId}).",
+                created.Count, evt.EventType, evt.EventId);
 
         return created;
-    }
-
-    private async Task DeliverWithRetryAsync(
-        mediq.Domain.PlatformApi.WebhookSubscription sub, Guid deliveryId, IntegrationEvent evt, CancellationToken ct)
-    {
-        var signature = signer.SignWithProtected(evt.PayloadJson, sub.SecretHash);
-        short attempt = 0;
-
-        // Polly: retry on a failed delivery up to max_retries with exponential backoff + jitter.
-        var pipeline = new ResiliencePipelineBuilder<WebhookHttpResult>()
-            .AddRetry(new RetryStrategyOptions<WebhookHttpResult>
-            {
-                ShouldHandle = new PredicateBuilder<WebhookHttpResult>().HandleResult(r => !r.Success),
-                MaxRetryAttempts = Math.Max(0, (int)sub.MaxRetries),
-                BackoffType = DelayBackoffType.Exponential,
-                UseJitter = true,
-                Delay = TimeSpan.FromMilliseconds(200),
-                OnRetry = args =>
-                {
-                    logger.LogWarning("Webhook {WebhookId} delivery retry {Attempt} (status={Status})",
-                        sub.WebhookId, args.AttemptNumber + 1, args.Outcome.Result?.StatusCode);
-                    return ValueTask.CompletedTask;
-                },
-            })
-            .Build();
-
-        WebhookHttpResult result = new(false, null, 0, "not-attempted");
-        try
-        {
-            result = await pipeline.ExecuteAsync(async token =>
-            {
-                attempt++;
-                return await dispatcher.PostAsync(sub.Url, evt.PayloadJson, signature, sub.TimeoutSeconds, token);
-            }, ct);
-        }
-        catch (Exception ex)
-        {
-            result = new WebhookHttpResult(false, null, 0, ex.Message);
-        }
-
-        var now = clock.UtcNow;
-        if (result.Success)
-        {
-            await deliveries.MarkSuccessAsync(deliveryId, signature, result.StatusCode ?? 200, result.ElapsedMs, attempt, now, ct);
-            await subscriptions.RecordOutcomeAsync(sub.WebhookId, success: true, now, ct);
-        }
-        else
-        {
-            // Retries are exhausted here → dead-letter ('abandoned'). A scheduled drainer (later slice) can
-            // also re-pick 'failed' rows with a next_retry_at; for slice 02 the synchronous pipeline owns it.
-            await deliveries.MarkFailedAsync(
-                deliveryId, signature, result.StatusCode, result.Error ?? "delivery failed",
-                attempt, nextRetryUtc: null, abandoned: true, now, ct);
-            await subscriptions.RecordOutcomeAsync(sub.WebhookId, success: false, now, ct);
-        }
     }
 }

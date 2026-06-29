@@ -6,3 +6,4 @@
 - [Consent + DPDP tables](consent-dpdp-tables.md) — where consent/purpose tables live; no marketing/promotional consent class yet.
 - [Prior audit decisions](prior-audit-decisions.md) — conditions issued per wave so later waves can be checked against them.
 - [Payout finalize side-effect scoping](payout-finalize-side-effect-scoping.md) — finalize re-queries ready_to_pay per (tenant,broker), not batch membership; cross-batch hazard.
+- [Webhook delivery drain](webhook-delivery-drain.md) — Phase-4 durable async webhooks; webhook tables NOT RLS so no DEFINER; secret encrypted+registered; unconditional subscription-health bump defect.

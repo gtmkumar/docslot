@@ -44,6 +44,11 @@ if (whatsAppSection.GetValue("OutboxWorkerEnabled", true))
 if (builder.Configuration.GetValue("Booking:MaintenanceWorkerEnabled", true))
     builder.Services.AddHostedService<mediq.Api.Workers.BookingMaintenanceWorker>();
 
+// --- Webhook delivery worker: drains platform_api.webhook_deliveries out-of-band (publish enqueues only, so a
+// slow/dead subscriber never blocks the request path). Enabled by default; toggle via Webhooks:DeliveryWorkerEnabled=false. ---
+if (builder.Configuration.GetValue("Webhooks:DeliveryWorkerEnabled", true))
+    builder.Services.AddHostedService<mediq.Api.Workers.WebhookDeliveryWorker>();
+
 // --- Cross-cutting / web ---
 builder.Services.AddRequestContext();
 builder.Services.AddPlatformJwtAuth(builder.Configuration);
