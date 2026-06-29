@@ -16,6 +16,8 @@ import { DOCTORS, PATIENTS } from '@/lib/data';
 import {
   AbdmRecordDetailSchema,
   AbdmRecordListItemSchema,
+  BreakGlassResultSchema,
+  CreateMedicalHistoryResultSchema,
   IssuePrescriptionResultSchema,
   LabReportDetailSchema,
   LabReportListItemSchema,
@@ -27,6 +29,10 @@ import {
   UploadLabReportResultSchema,
   type AbdmRecordDetail,
   type AbdmRecordListItem,
+  type BreakGlassRequest,
+  type BreakGlassResult,
+  type CreateMedicalHistoryRequest,
+  type CreateMedicalHistoryResult,
   type IssuePrescriptionRequest,
   type IssuePrescriptionResult,
   type LabReportDetail,
@@ -36,6 +42,7 @@ import {
   type PrescriptionDetail,
   type PrescriptionListItem,
   type PushAbdmRecordResult,
+  type UpdateMedicalHistoryRequest,
   type UploadLabReportRequest,
   type UploadLabReportResult,
 } from './contracts';
@@ -72,6 +79,16 @@ export class ConsentRequiredError extends Error {
 
 function requirePurpose(purpose: string | undefined): void {
   if (!purpose || purpose.trim().length === 0) throw new PurposeRequiredError();
+}
+
+/** Mirror the server's consent gate: a clinical read for a patient WITHOUT active
+ *  clinical consent 403s (here: ConsentRequiredError), which the UI surfaces as a
+ *  break-glass affordance. A break-glass grant flips the seed consent to 'granted'
+ *  so the retried read succeeds. Patients with no consent seed are treated as
+ *  granted (so the common path stays unblocked). */
+function requireClinicalConsent(patientId: string): void {
+  const consent = CONSENT[patientId];
+  if (consent && consent.clinicalConsent !== 'granted') throw new ConsentRequiredError();
 }
 
 const doctorName = (id: string) => DOCTORS.find((d) => d.id === id)?.name ?? 'Dr. —';
@@ -131,7 +148,10 @@ const RX: SeedRx[] = [
   },
 ];
 
-export function listPrescriptions(patientId: string): Promise<PrescriptionListItem[]> {
+export function listPrescriptions(patientId: string, purpose: string | undefined): Promise<PrescriptionListItem[]> {
+  // The backend gates the LIST read with X-Purpose-Of-Use too (a missing purpose
+  // is a 422). Mirror that here so the purpose gate stays load-bearing in mock mode.
+  requirePurpose(purpose);
   const rows = RX.filter((r) => r.patientId === patientId).map((r) =>
     PrescriptionListItemSchema.parse({
       prescriptionId: r.prescriptionId,
@@ -149,6 +169,12 @@ export function getPrescription(prescriptionId: string, purpose: string | undefi
   requirePurpose(purpose);
   const r = RX.find((x) => x.prescriptionId === prescriptionId);
   if (!r) return Promise.reject(new Error('Not found'));
+  // The detail read is consent-gated (a denied read 403s → break-glass affordance).
+  try {
+    requireClinicalConsent(r.patientId);
+  } catch (e) {
+    return Promise.reject(e);
+  }
   return delay(
     PrescriptionDetailSchema.parse({
       prescriptionId: r.prescriptionId,
@@ -208,7 +234,8 @@ const REPORTS: SeedReport[] = [
   },
 ];
 
-export function listLabReports(patientId: string): Promise<LabReportListItem[]> {
+export function listLabReports(patientId: string, purpose: string | undefined): Promise<LabReportListItem[]> {
+  requirePurpose(purpose);
   const rows = REPORTS.filter((r) => r.patientId === patientId).map((r) =>
     LabReportListItemSchema.parse({
       reportId: r.reportId,
@@ -226,6 +253,12 @@ export function getLabReport(reportId: string, purpose: string | undefined): Pro
   requirePurpose(purpose);
   const r = REPORTS.find((x) => x.reportId === reportId);
   if (!r) return Promise.reject(new Error('Not found'));
+  // The detail read is consent-gated (a denied read 403s → break-glass affordance).
+  try {
+    requireClinicalConsent(r.patientId);
+  } catch (e) {
+    return Promise.reject(e);
+  }
   return delay(
     LabReportDetailSchema.parse({
       reportId: r.reportId,
@@ -251,22 +284,91 @@ export function uploadLabReport(req: UploadLabReportRequest, idempotencyKey: str
   });
 }
 
-export function deliverLabReport(reportId: string, idempotencyKey: string): Promise<{ reportId: string }> {
-  return withIdem(idempotencyKey, () => ({ reportId }));
+export function deliverLabReport(
+  patientId: string,
+  reportId: string,
+  idempotencyKey: string,
+): Promise<{ reportId: string }> {
+  return withIdem(idempotencyKey, () => {
+    void patientId;
+    return { reportId };
+  });
 }
 
 // ── Medical history (purpose-gated) ──────────────────────────────────────────
+// Records carry the non-encrypted scalars severity/icd10Code/startedDate/endedDate
+// (matching MedicalHistoryDto) so the EDIT round-trip is exercisable flag-off — an
+// edit that doesn't touch these must PRESERVE them (the PUT treats missing as null).
 const HISTORY: Record<string, MedicalHistory[]> = {
   p1: [
-    { historyId: 'h-1', recordType: 'condition', title: 'Hypertension', description: 'Diagnosed 2024; on Telmisartan', isActive: true, isCritical: false, addedAt: iso(420) },
-    { historyId: 'h-2', recordType: 'allergy', title: 'Penicillin allergy', description: 'Rash on exposure', isActive: true, isCritical: true, addedAt: iso(900) },
-    { historyId: 'h-3', recordType: 'procedure', title: 'Appendectomy', description: 'Laparoscopic, uneventful', isActive: false, isCritical: false, addedAt: iso(1800) },
+    { historyId: 'h-1', recordType: 'chronic_condition', title: 'Hypertension', description: 'Diagnosed 2024; on Telmisartan', severity: 'moderate', icd10Code: 'I10', startedDate: '2024-02-14', endedDate: null, isActive: true, isCritical: false, addedAt: iso(420) },
+    { historyId: 'h-2', recordType: 'allergy', title: 'Penicillin allergy', description: 'Rash on exposure', severity: 'severe', icd10Code: 'Z88.0', startedDate: null, endedDate: null, isActive: true, isCritical: true, addedAt: iso(900) },
+    { historyId: 'h-3', recordType: 'surgery', title: 'Appendectomy', description: 'Laparoscopic, uneventful', severity: null, icd10Code: 'K35.80', startedDate: '2021-07-03', endedDate: '2021-07-05', isActive: false, isCritical: false, addedAt: iso(1800) },
   ],
 };
 
 export function listMedicalHistory(patientId: string, purpose: string | undefined): Promise<MedicalHistory[]> {
   requirePurpose(purpose);
+  // Consent-gated (a denied read 403s → break-glass affordance, then re-fetch).
+  requireClinicalConsent(patientId);
   return delay((HISTORY[patientId] ?? []).map((h) => MedicalHistorySchema.parse(h)));
+}
+
+/** Create a medical-history entry. Mutates the seed so the timeline reflects it
+ *  after the list invalidates (flag-off parity). title/description are PHI. */
+export function createMedicalHistory(
+  patientId: string,
+  req: CreateMedicalHistoryRequest,
+  idempotencyKey: string,
+): Promise<CreateMedicalHistoryResult> {
+  return withIdem(idempotencyKey, () => {
+    const historyId = crypto.randomUUID();
+    const list = HISTORY[patientId] ?? (HISTORY[patientId] = []);
+    list.unshift(
+      MedicalHistorySchema.parse({
+        historyId,
+        recordType: req.recordType,
+        title: req.title,
+        description: req.description ?? null,
+        severity: req.severity ?? null,
+        icd10Code: req.icd10Code ?? null,
+        startedDate: req.startedDate ?? null,
+        endedDate: req.endedDate ?? null,
+        isActive: true,
+        isCritical: req.isCritical,
+        addedAt: new Date().toISOString(),
+      }),
+    );
+    return CreateMedicalHistoryResultSchema.parse({ historyId });
+  });
+}
+
+/** Update (or retire, isActive=false) a medical-history entry. Returns true when
+ *  the row was found + patched, false (404 in real) otherwise. */
+export function updateMedicalHistory(
+  patientId: string,
+  historyId: string,
+  req: UpdateMedicalHistoryRequest,
+  idempotencyKey: string,
+): Promise<boolean> {
+  return withIdem(idempotencyKey, () => {
+    const list = HISTORY[patientId];
+    const row = list?.find((h) => h.historyId === historyId);
+    if (!row) return false;
+    // Mirror the real PUT: write exactly the body received. The panel sends
+    // icd10Code/startedDate/endedDate back from the read, so they're PRESERVED
+    // (a body omitting them would null them — the data-loss bug being closed).
+    row.recordType = req.recordType;
+    row.title = req.title;
+    row.description = req.description ?? null;
+    row.severity = req.severity ?? null;
+    row.icd10Code = req.icd10Code ?? null;
+    row.startedDate = req.startedDate ?? null;
+    row.endedDate = req.endedDate ?? null;
+    row.isActive = req.isActive;
+    row.isCritical = req.isCritical;
+    return true;
+  });
 }
 
 // ── ABDM (consent-gated) ─────────────────────────────────────────────────────
@@ -277,7 +379,8 @@ const ABDM: Record<string, AbdmRecordListItem[]> = {
   ],
 };
 
-export function listAbdmRecords(patientId: string): Promise<AbdmRecordListItem[]> {
+export function listAbdmRecords(patientId: string, purpose: string | undefined): Promise<AbdmRecordListItem[]> {
+  requirePurpose(purpose);
   return delay((ABDM[patientId] ?? []).map((r) => AbdmRecordListItemSchema.parse(r)));
 }
 
@@ -303,5 +406,26 @@ export function pushAbdmRecord(input: { patientId: string }, idempotencyKey: str
   return withIdem(idempotencyKey, () => {
     void input;
     return PushAbdmRecordResultSchema.parse({ recordId: crypto.randomUUID() });
+  });
+}
+
+// ── Break-glass (emergency access) ───────────────────────────────────────────
+// POST /security/break-glass → a grant id. After a successful grant the clinician
+// can read a consent-denied record, so the UI re-fetches the gated read. In the
+// mock we LIFT the relevant consent for the patient so the retried read succeeds,
+// making the affordance demonstrable in flag-off mode. The justification is the
+// clinician's typed reason (>=10 chars, enforced by the panel + the zod schema).
+export function breakGlass(req: BreakGlassRequest, idempotencyKey: string): Promise<BreakGlassResult> {
+  return withIdem(idempotencyKey, () => {
+    const consent = CONSENT[req.patientId];
+    if (consent) {
+      // The grant lifts the gate that was blocking the read. ABDM records gate on
+      // abdmConsent; the general clinical surface gates on clinicalConsent.
+      if (req.resourceType === 'medical_history' || req.resourceType === 'prescription' || req.resourceType === 'lab_report') {
+        consent.clinicalConsent = 'granted';
+      }
+      consent.abdmConsent = 'granted';
+    }
+    return BreakGlassResultSchema.parse({ grantId: crypto.randomUUID() });
   });
 }

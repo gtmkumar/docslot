@@ -319,6 +319,10 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
             Assert.Equal(title, item.Title);
             Assert.Equal(desc, item.Description);
             Assert.True(item.IsCritical);
+            // The non-encrypted scalars round-trip on read (so an edit can preserve them — no silent loss).
+            Assert.Equal("severe", item.Severity);
+            Assert.Equal("T78.0", item.Icd10Code);
+            Assert.Equal(new DateOnly(2019, 5, 1), item.StartedDate);
 
             // UPDATE re-encrypts; the read reflects the change and the column is still ciphertext.
             const string newTitle = "Penicillin + sulfa allergy";
@@ -329,7 +333,9 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
             Assert.DoesNotContain(newTitle, rawTitle2!);
             var list2 = await (await client.GetAsync($"/api/v1/patients/{factory.PatientId}/medical-history"))
                 .Content.ReadFromJsonAsync<List<MedicalHistoryDto>>();
-            Assert.Equal(newTitle, list2!.Single(h => h.HistoryId == created.HistoryId).Title);
+            var edited = list2!.Single(h => h.HistoryId == created.HistoryId);
+            Assert.Equal(newTitle, edited.Title);
+            Assert.Equal("critical", edited.Severity);            // severity updated, not wiped
 
             // Update of a record not in the caller's tenant → 404 (RLS + WHERE history_id+tenant_id).
             var notFound = await client.PutAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history/{Guid.NewGuid()}",

@@ -26,6 +26,19 @@ import {
   AuditAnchorSchema,
   AuditChainVerifySchema,
   BadgesResponseSchema,
+  AbdmRecordDetailSchema,
+  AbdmRecordListItemSchema,
+  BreakGlassResultSchema,
+  CreateMedicalHistoryResultSchema,
+  IssuePrescriptionResultSchema,
+  LabReportDetailSchema,
+  LabReportListItemSchema,
+  MedicalHistorySchema,
+  PatientConsentSchema,
+  PrescriptionDetailSchema,
+  PrescriptionListItemSchema,
+  PushAbdmRecordResultSchema,
+  UploadLabReportResultSchema,
   BehalfRelationSchema,
   BookedByTypeSchema,
   BookingActionResultDtoSchema,
@@ -96,6 +109,24 @@ import {
   type AuditAnchor,
   type AuditChainVerify,
   type BadgesResponse,
+  type AbdmRecordDetail,
+  type AbdmRecordListItem,
+  type BreakGlassRequest,
+  type BreakGlassResult,
+  type CreateMedicalHistoryRequest,
+  type CreateMedicalHistoryResult,
+  type IssuePrescriptionRequest,
+  type IssuePrescriptionResult,
+  type LabReportDetail,
+  type LabReportListItem,
+  type MedicalHistory,
+  type PatientConsent,
+  type PrescriptionDetail,
+  type PrescriptionListItem,
+  type PushAbdmRecordResult,
+  type UpdateMedicalHistoryRequest,
+  type UploadLabReportRequest,
+  type UploadLabReportResult,
   type BookingMutationResult,
   type BookingRow,
   type Breach,
@@ -1820,4 +1851,235 @@ export async function setOverride(
     },
   });
   return SetOverrideResultSchema.parse(raw);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CLINICAL PHI + ABDM + CONSENT (Phase-3 slice 4) — base paths /patients,
+// /prescriptions, /lab-reports, /abdm. THE MOST PHI-SENSITIVE SURFACE.
+// ─────────────────────────────────────────────────────────────────────────────
+// ACCESS MODEL (server-enforced; mirrored here so the seam swap is a no-op):
+//  - Every clinical READ (prescriptions, lab reports, medical history, ABDM)
+//    carries the declared X-Purpose-Of-Use header (apiFetch `purposeOfUse`). A
+//    read WITHOUT it is a 422 — the feature query is DISABLED until the purpose
+//    gate declares one, so that never reaches the wire. The CONSENT read is the
+//    only clinical GET that does NOT take a purpose.
+//  - A consent-denied read returns 403; the UI surfaces a contextual break-glass
+//    affordance, POSTs /security/break-glass, then re-fetches the gated read.
+//  - WRITES carry a stable caller-generated Idempotency-Key.
+// PHI DISCIPLINE: decrypted detail (prescription/lab/history/abdm content) is
+//  rendered but NEVER logged, NEVER placed in a URL/query param, and not persisted
+//  beyond the Query cache's normal lifetime. The contracts mirror the C# DTOs 1:1,
+//  so these adapters are thin: apiFetch (+purpose/idempotency) → zod-parse → return.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── Consent (no purpose header — drives what the records screen shows) ─────────
+export async function getPatientConsent(patientId: string): Promise<PatientConsent> {
+  const raw = await apiFetch<unknown>(`/patients/${patientId}/consent`);
+  return PatientConsentSchema.parse(raw);
+}
+
+// ── Prescriptions ─────────────────────────────────────────────────────────────
+export async function listPrescriptions(
+  patientId: string,
+  purpose: string | undefined,
+): Promise<PrescriptionListItem[]> {
+  const raw = await apiFetch<unknown[]>(`/patients/${patientId}/prescriptions`, { purposeOfUse: purpose });
+  return PrescriptionListItemSchema.array().parse(raw);
+}
+
+export async function getPrescription(
+  prescriptionId: string,
+  purpose: string | undefined,
+): Promise<PrescriptionDetail> {
+  const raw = await apiFetch<unknown>(`/prescriptions/${prescriptionId}`, { purposeOfUse: purpose });
+  return PrescriptionDetailSchema.parse(raw);
+}
+
+export async function issuePrescription(
+  req: IssuePrescriptionRequest,
+  idempotencyKey: string,
+): Promise<IssuePrescriptionResult> {
+  const raw = await apiFetch<unknown>('/prescriptions', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      bookingId: req.bookingId,
+      patientId: req.patientId,
+      doctorId: req.doctorId,
+      chiefComplaints: req.chiefComplaints ?? null,
+      examination: req.examination ?? null,
+      diagnosis: req.diagnosis ?? null,
+      medications: req.medications,
+      advice: req.advice ?? null,
+      followUpInDays: req.followUpInDays ?? null,
+    },
+  });
+  return IssuePrescriptionResultSchema.parse(raw);
+}
+
+// ── Lab reports ───────────────────────────────────────────────────────────────
+export async function listLabReports(
+  patientId: string,
+  purpose: string | undefined,
+): Promise<LabReportListItem[]> {
+  const raw = await apiFetch<unknown[]>(`/patients/${patientId}/lab-reports`, { purposeOfUse: purpose });
+  return LabReportListItemSchema.array().parse(raw);
+}
+
+export async function getLabReport(reportId: string, purpose: string | undefined): Promise<LabReportDetail> {
+  const raw = await apiFetch<unknown>(`/lab-reports/${reportId}`, { purposeOfUse: purpose });
+  return LabReportDetailSchema.parse(raw);
+}
+
+export async function uploadLabReport(
+  req: UploadLabReportRequest,
+  idempotencyKey: string,
+): Promise<UploadLabReportResult> {
+  const raw = await apiFetch<unknown>('/lab-reports', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      bookingId: req.bookingId,
+      patientId: req.patientId,
+      testName: req.testName,
+      fileName: req.fileName ?? null,
+      results: req.results,
+      hasCriticalFindings: req.hasCriticalFindings,
+    },
+  });
+  return UploadLabReportResultSchema.parse(raw);
+}
+
+/** POST /patients/{patientId}/lab-reports/{reportId}/deliver — mark a report
+ *  delivered to the patient (WhatsApp). The result shape is { reportId }. */
+export async function deliverLabReport(
+  patientId: string,
+  reportId: string,
+  idempotencyKey: string,
+): Promise<{ reportId: string }> {
+  const raw = await apiFetch<unknown>(`/patients/${patientId}/lab-reports/${reportId}/deliver`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+  });
+  // The endpoint may return a richer DeliverLabReportResult; we only need the id.
+  const id = typeof raw === 'string' ? raw : ((raw as { reportId?: string })?.reportId ?? reportId);
+  return { reportId: id };
+}
+
+// ── Medical history (purpose-gated read; create/update writes) ────────────────
+export async function listMedicalHistory(
+  patientId: string,
+  purpose: string | undefined,
+): Promise<MedicalHistory[]> {
+  const raw = await apiFetch<unknown[]>(`/patients/${patientId}/medical-history`, { purposeOfUse: purpose });
+  return MedicalHistorySchema.array().parse(raw);
+}
+
+/** POST /patients/{patientId}/medical-history → 201 { historyId }. title/description
+ *  are PHI captured server-side and encrypted at rest. */
+export async function createMedicalHistory(
+  patientId: string,
+  req: CreateMedicalHistoryRequest,
+  idempotencyKey: string,
+): Promise<CreateMedicalHistoryResult> {
+  const raw = await apiFetch<unknown>(`/patients/${patientId}/medical-history`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      recordType: req.recordType,
+      title: req.title,
+      description: req.description ?? null,
+      severity: req.severity ?? null,
+      icd10Code: req.icd10Code ?? null,
+      startedDate: req.startedDate ?? null,
+      endedDate: req.endedDate ?? null,
+      isCritical: req.isCritical,
+    },
+  });
+  // The endpoint returns { historyId } (or a bare Guid string).
+  const historyId = typeof raw === 'string' ? raw : ((raw as { historyId?: string })?.historyId ?? crypto.randomUUID());
+  return CreateMedicalHistoryResultSchema.parse({ historyId });
+}
+
+/** PUT /patients/{patientId}/medical-history/{historyId} → 200 bool (404 if not
+ *  found). isActive=false retires the record. */
+export async function updateMedicalHistory(
+  patientId: string,
+  historyId: string,
+  req: UpdateMedicalHistoryRequest,
+  idempotencyKey: string,
+): Promise<boolean> {
+  const raw = await apiFetch<unknown>(`/patients/${patientId}/medical-history/${historyId}`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: {
+      recordType: req.recordType,
+      title: req.title,
+      description: req.description ?? null,
+      severity: req.severity ?? null,
+      icd10Code: req.icd10Code ?? null,
+      startedDate: req.startedDate ?? null,
+      endedDate: req.endedDate ?? null,
+      isActive: req.isActive,
+      isCritical: req.isCritical,
+    },
+  });
+  // A 200 with a bool body; treat anything truthy/empty as success (404 throws).
+  return raw === false ? false : true;
+}
+
+// ── ABDM (consent-gated detail) ───────────────────────────────────────────────
+export async function listAbdmRecords(
+  patientId: string,
+  purpose: string | undefined,
+): Promise<AbdmRecordListItem[]> {
+  const raw = await apiFetch<unknown[]>(`/patients/${patientId}/abdm-records`, { purposeOfUse: purpose });
+  return AbdmRecordListItemSchema.array().parse(raw);
+}
+
+/** GET /abdm/records/{recordId} (decrypted metadata). Consent-gated server-side:
+ *  a 403 surfaces as a consent-blocked state (the UI offers break-glass). The
+ *  patientId is carried for the seam signature but the path keys on recordId. */
+export async function getAbdmRecord(
+  recordId: string,
+  patientId: string,
+  purpose: string | undefined,
+): Promise<AbdmRecordDetail> {
+  void patientId;
+  const raw = await apiFetch<unknown>(`/abdm/records/${recordId}`, { purposeOfUse: purpose });
+  return AbdmRecordDetailSchema.parse(raw);
+}
+
+export async function pushAbdmRecord(
+  input: { patientId: string },
+  idempotencyKey: string,
+): Promise<PushAbdmRecordResult> {
+  const raw = await apiFetch<unknown>('/abdm/records', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: { patientId: input.patientId },
+  });
+  // The endpoint returns { recordId } (or a bare Guid string).
+  const recordId = typeof raw === 'string' ? raw : ((raw as { recordId?: string })?.recordId ?? crypto.randomUUID());
+  return PushAbdmRecordResultSchema.parse({ recordId });
+}
+
+// ── Break-glass (emergency access) ────────────────────────────────────────────
+// POST /security/break-glass { patientId, resourceType, resourceId, justification }
+// → a grant id (Guid). After a successful grant the clinician may read a
+// consent-denied record; the UI re-fetches the gated read. The justification is
+// the clinician's typed reason (>=10 chars; enforced by the panel + the server).
+export async function breakGlass(req: BreakGlassRequest, idempotencyKey: string): Promise<BreakGlassResult> {
+  const raw = await apiFetch<unknown>('/security/break-glass', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      patientId: req.patientId,
+      resourceType: req.resourceType,
+      resourceId: req.resourceId,
+      justification: req.justification,
+    },
+  });
+  const grantId = typeof raw === 'string' ? raw : ((raw as { grantId?: string })?.grantId ?? crypto.randomUUID());
+  return BreakGlassResultSchema.parse({ grantId });
 }

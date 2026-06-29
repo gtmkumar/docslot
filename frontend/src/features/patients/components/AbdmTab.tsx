@@ -77,7 +77,7 @@ function AbdmList({
   onPush: () => void;
 }) {
   const { t } = useTranslation();
-  const { data, isLoading, isError, refetch } = useAbdmRecords(patientId);
+  const { data, isLoading, isError, refetch } = useAbdmRecords(patientId, purpose);
   const openPanel = useUI((s) => s.openPanel);
 
   return (

@@ -10,21 +10,25 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { shortDate } from '@/lib/format';
 import { usePrescription } from '../api';
+import { ConsentBlocked, isConsentDenied } from './ConsentBlocked';
 import type { PurposeOfUse } from '@/lib/mock/contracts';
 
 export function PrescriptionDetailPanel({
   prescriptionId,
+  patientId,
   purpose,
   open,
   onClose,
 }: {
   prescriptionId: string;
+  patientId: string;
   purpose: PurposeOfUse;
   open: boolean;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const { data, isLoading, isError, refetch } = usePrescription(prescriptionId, purpose);
+  const { data, isLoading, isError, error, refetch } = usePrescription(prescriptionId, purpose);
+  const consentDenied = isError && isConsentDenied(error);
 
   return (
     <SlideOver
@@ -34,7 +38,16 @@ export function PrescriptionDetailPanel({
       title={data?.prescriptionNumber ?? t('clinical.rx.detailTitle')}
       description={t('clinical.rx.detailTitle')}
     >
-      {isError ? (
+      {consentDenied ? (
+        <ConsentBlocked
+          patientId={patientId}
+          resourceType="prescription"
+          resourceId={prescriptionId}
+          reopen={{ type: 'prescriptionDetail', prescriptionId, patientId, purpose }}
+          onRetry={() => void refetch()}
+          inPanel
+        />
+      ) : isError ? (
         <EmptyState title={t('error.genericTitle')} description={t('error.genericBody')} actionLabel={t('common.retry')} onAction={() => void refetch()} />
       ) : isLoading || !data ? (
         <div className="flex flex-col gap-3" role="status" aria-busy="true">
