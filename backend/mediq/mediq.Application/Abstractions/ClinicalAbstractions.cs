@@ -13,6 +13,10 @@ public interface IClinicalRepository
     Task<string?> AddPrescriptionAsync(Prescription prescription, CancellationToken ct);   // returns prescription_number
     Task<Prescription?> GetPrescriptionAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<PrescriptionRow>> ListPrescriptionsAsync(Guid tenantId, Guid patientId, CancellationToken ct);
+    /// <summary>Conditionally marks an amendable prescription (status finalized/delivered) as 'amended'.
+    /// Returns false if it was not in an amendable state (already amended / draft / cross-tenant) — the
+    /// single-winner guard for a concurrent amend.</summary>
+    Task<bool> MarkPrescriptionSupersededAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct);
 
     Task<string?> AddLabReportAsync(LabReport report, CancellationToken ct);               // returns report_number
     Task<LabReport?> GetLabReportAsync(Guid reportId, Guid tenantId, CancellationToken ct);

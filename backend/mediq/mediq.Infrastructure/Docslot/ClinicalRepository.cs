@@ -24,8 +24,9 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
                 """
                 INSERT INTO docslot.prescriptions
                     (prescription_id, booking_id, patient_id, doctor_id, tenant_id,
-                     chief_complaints, examination, diagnosis, medications, advice, follow_up_in_days, status, created_at, updated_at)
-                VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, to_jsonb(@p8::text), @p9, @p10, @p11, @p12, @p12)
+                     chief_complaints, examination, diagnosis, medications, advice, follow_up_in_days, status,
+                     supersedes_prescription_id, amendment_reason, created_at, updated_at)
+                VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, to_jsonb(@p8::text), @p9, @p10, @p11, @p13, @p14, @p12, @p12)
                 RETURNING prescription_number AS "Number"
                 """,
                 Params(
@@ -33,7 +34,9 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
                     ("@p5", (object?)p.ChiefComplaintsEnc ?? DBNull.Value), ("@p6", (object?)p.ExaminationEnc ?? DBNull.Value),
                     ("@p7", (object?)p.DiagnosisEnc ?? DBNull.Value), ("@p8", p.MedicationsEnc),
                     ("@p9", (object?)p.Advice ?? DBNull.Value), ("@p10", (object?)p.FollowUpInDays ?? DBNull.Value),
-                    ("@p11", p.Status), ("@p12", p.CreatedAt)))
+                    ("@p11", p.Status), ("@p12", p.CreatedAt),
+                    ("@p13", (object?)p.SupersedesPrescriptionId ?? DBNull.Value),
+                    ("@p14", (object?)p.AmendmentReason ?? DBNull.Value)))
             .ToListAsync(ct);
         return rows.FirstOrDefault()?.Number;
     }
@@ -47,18 +50,38 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
             """
             SELECT prescription_id, prescription_number, booking_id, patient_id, doctor_id, tenant_id,
                    chief_complaints, examination, diagnosis, medications #>> '{}', advice, follow_up_in_days,
-                   status, created_at
+                   status, supersedes_prescription_id, amendment_reason, created_at
             FROM docslot.prescriptions WHERE prescription_id = @p0 AND tenant_id = @p1
             """, conn);
         cmd.Parameters.AddWithValue("@p0", prescriptionId);
         cmd.Parameters.AddWithValue("@p1", tenantId);
+        // Enlist the ambient scope (read-scope query tx OR the amend command's UoW tx) so this raw
+        // reader runs in the request's transaction (house pattern; mirrors GetMedicalHistoryAsync).
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
         await using var rd = await cmd.ExecuteReaderAsync(ct);
         if (!await rd.ReadAsync(ct)) return null;
         return Prescription.FromRow(
             rd.GetGuid(0), rd.IsDBNull(1) ? null : rd.GetString(1), rd.GetGuid(2), rd.GetGuid(3), rd.GetGuid(4), rd.GetGuid(5),
             rd.IsDBNull(6) ? null : rd.GetString(6), rd.IsDBNull(7) ? null : rd.GetString(7), rd.IsDBNull(8) ? null : rd.GetString(8),
             rd.GetString(9), rd.IsDBNull(10) ? null : rd.GetString(10), rd.IsDBNull(11) ? null : rd.GetInt32(11),
-            rd.GetString(12), rd.GetDateTime(13));
+            rd.GetString(12), rd.IsDBNull(13) ? (Guid?)null : rd.GetGuid(13), rd.IsDBNull(14) ? null : rd.GetString(14),
+            rd.GetDateTime(15));
+    }
+
+    public async Task<bool> MarkPrescriptionSupersededAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct)
+    {
+        // Single-winner conditional flip: only an issued (finalized/delivered) prescription can be amended;
+        // a draft or an already-'amended' row matches nothing → returns false. Runs in the command's UoW tx.
+        var rows = await db.Database.SqlQueryRaw<AmendedRow>(
+                """
+                UPDATE docslot.prescriptions
+                SET status = 'amended', updated_at = NOW()
+                WHERE prescription_id = @p0 AND tenant_id = @p1 AND status IN ('finalized', 'delivered')
+                RETURNING status AS "Status"
+                """,
+                Params(("@p0", prescriptionId), ("@p1", tenantId)))
+            .ToListAsync(ct);
+        return rows.Count > 0;
     }
 
     public async Task<IReadOnlyList<PrescriptionRow>> ListPrescriptionsAsync(Guid tenantId, Guid patientId, CancellationToken ct)
@@ -323,5 +346,6 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
     private sealed record ListRow(Guid PrescriptionId, string? PrescriptionNumber, Guid PatientId, Guid DoctorId, string Status, DateTime CreatedAt);
     private sealed record LabListRow(Guid ReportId, string? ReportNumber, string TestName, string Status, bool HasCriticalFindings, DateTime CreatedAt);
     private sealed record DeliverRow(string Status, DateTime? DeliveredAt);
+    private sealed record AmendedRow(string Status);
     private sealed record ConsentRow(Guid PatientId, string? Phone, bool ClinicalConsentActive, bool AbdmConsentActive, DateTime? AbdmConsentExpiresAt);
 }

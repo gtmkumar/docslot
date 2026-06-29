@@ -20,6 +20,20 @@ public sealed record IssuePrescriptionRequest(
 
 public sealed record IssuePrescriptionResult(Guid PrescriptionId, string? PrescriptionNumber);
 
+// Amend an issued prescription: new clinical content + a mandatory reason. Targets an existing
+// prescription by id (route); mints a new row that supersedes it (the original is marked 'amended').
+public sealed record AmendPrescriptionRequest(
+    string? ChiefComplaints,
+    string? Examination,
+    string? Diagnosis,
+    string MedicationsJson,
+    string? Advice,
+    int? FollowUpInDays,
+    string AmendmentReason);
+
+public sealed record AmendPrescriptionResult(
+    Guid PrescriptionId, string? PrescriptionNumber, Guid SupersededPrescriptionId);
+
 public sealed record PrescriptionDto(
     Guid PrescriptionId,
     string? PrescriptionNumber,
@@ -32,6 +46,7 @@ public sealed record PrescriptionDto(
     string? Advice,
     int? FollowUpInDays,
     string Status,
+    Guid? SupersedesPrescriptionId, // amendment lineage (NULL = original); status='amended' = superseded
     DateTimeOffset CreatedAt);
 
 public sealed record PrescriptionListItemDto(

@@ -24,6 +24,12 @@ public sealed class Prescription
     public string? Advice { get; private set; }
     public int? FollowUpInDays { get; private set; }
     public string Status { get; private set; } = "draft";
+
+    // Amendment lineage: an amendment is a new row that supersedes the issued original
+    // (which is marked 'amended'). NULL on an original (non-amendment) prescription.
+    public Guid? SupersedesPrescriptionId { get; private set; }
+    public string? AmendmentReason { get; private set; }
+
     public DateTime CreatedAt { get; private set; }
     public DateTime UpdatedAt { get; private set; }
 
@@ -43,16 +49,36 @@ public sealed class Prescription
             Status = "finalized", CreatedAt = nowUtc, UpdatedAt = nowUtc,
         };
 
+    /// <summary>Amends an issued prescription: a NEW row that SUPERSEDES the original (which the caller
+    /// marks 'amended' atomically in the same unit of work). Carries the original's booking/patient/doctor;
+    /// the amendment reason and superseded id record the lineage. The original is never overwritten.</summary>
+    public static Prescription Amend(
+        Guid bookingId, Guid patientId, Guid doctorId, Guid tenantId,
+        string? chiefComplaintsEnc, string? examinationEnc, string? diagnosisEnc, string medicationsEnc,
+        string? advice, int? followUpInDays, Guid supersedesPrescriptionId, string amendmentReason, DateTime nowUtc)
+        => new()
+        {
+            PrescriptionId = Guid.CreateVersion7(),
+            BookingId = bookingId, PatientId = patientId, DoctorId = doctorId, TenantId = tenantId,
+            ChiefComplaintsEnc = chiefComplaintsEnc, ExaminationEnc = examinationEnc,
+            DiagnosisEnc = diagnosisEnc, MedicationsEnc = medicationsEnc,
+            Advice = advice, FollowUpInDays = followUpInDays,
+            Status = "finalized", SupersedesPrescriptionId = supersedesPrescriptionId, AmendmentReason = amendmentReason,
+            CreatedAt = nowUtc, UpdatedAt = nowUtc,
+        };
+
     /// <summary>Rehydrates from a persisted row (read path) — identity + trigger-assigned number preserved.</summary>
     public static Prescription FromRow(
         Guid id, string? number, Guid bookingId, Guid patientId, Guid doctorId, Guid tenantId,
-        string? chiefEnc, string? examEnc, string? diagEnc, string medsEnc, string? advice, int? followUp, string status, DateTime createdAt)
+        string? chiefEnc, string? examEnc, string? diagEnc, string medsEnc, string? advice, int? followUp, string status,
+        Guid? supersedesId, string? amendmentReason, DateTime createdAt)
         => new()
         {
             PrescriptionId = id, PrescriptionNumber = number, BookingId = bookingId, PatientId = patientId,
             DoctorId = doctorId, TenantId = tenantId, ChiefComplaintsEnc = chiefEnc, ExaminationEnc = examEnc,
             DiagnosisEnc = diagEnc, MedicationsEnc = medsEnc, Advice = advice, FollowUpInDays = followUp,
-            Status = status, CreatedAt = createdAt, UpdatedAt = createdAt,
+            Status = status, SupersedesPrescriptionId = supersedesId, AmendmentReason = amendmentReason,
+            CreatedAt = createdAt, UpdatedAt = createdAt,
         };
 }
 

@@ -1816,9 +1816,20 @@ CREATE TABLE docslot.prescriptions (
     delivered_at        TIMESTAMPTZ,
     delivery_message_id VARCHAR(100),
 
+    -- Amendment lineage. An issued prescription is a clinical document that must never be
+    -- silently overwritten: amending one mints a NEW row that SUPERSEDES the original (this
+    -- column points to the superseded prescription) and the original is marked status='amended'.
+    -- Walk the chain via supersedes_prescription_id; the current version is the row that is
+    -- itself not yet superseded (status <> 'amended'). NULL = an original (non-amendment) row.
+    supersedes_prescription_id UUID REFERENCES docslot.prescriptions(prescription_id),
+    amendment_reason    TEXT,                                   -- why this amendment was issued (NULL for originals)
+
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX idx_prescriptions_supersedes ON docslot.prescriptions(supersedes_prescription_id)
+    WHERE supersedes_prescription_id IS NOT NULL;
 
 CREATE INDEX idx_prescriptions_patient ON docslot.prescriptions(patient_id, created_at DESC);
 CREATE INDEX idx_prescriptions_booking ON docslot.prescriptions(booking_id);
@@ -2092,6 +2103,7 @@ BEGIN
     -- Prescriptions (clinical PHI — slice 03b)
     ('docslot.prescription.create', docslot_product_id, 'prescription', 'create', 'tenant', 'Issue prescriptions', true),
     ('docslot.prescription.read', docslot_product_id, 'prescription', 'read', 'tenant', 'Read prescriptions (PHI)', true),
+    ('docslot.prescription.amend', docslot_product_id, 'prescription', 'amend', 'tenant', 'Amend an issued prescription — supersedes the original (PHI); distinct from issue', true),
 
     -- Pathology
     ('docslot.test.manage', docslot_product_id, 'test', 'update', 'tenant', 'Manage test catalog', false),

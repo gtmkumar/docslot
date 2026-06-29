@@ -54,6 +54,64 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
     }
 
     [Fact]
+    public async Task Amend_Prescription_Supersedes_Original_Encrypts_New_Content_And_Guards_State()
+    {
+        var client = await AuthedClientAsync();   // tenant A; tenant_owner → create/read/amend
+
+        // Issue the original prescription.
+        var issue = await client.PostAsJsonAsync("/api/v1/prescriptions", new IssuePrescriptionRequest(
+            factory.BookingId, factory.PatientId, factory.DoctorId, "Cough", "Mild", "Acute bronchitis",
+            "[{\"name\":\"Amoxicillin\",\"dose\":\"500mg\"}]", "Fluids", 5));
+        Assert.Equal(HttpStatusCode.Created, issue.StatusCode);
+        var original = await issue.Content.ReadFromJsonAsync<IssuePrescriptionResult>();
+        Assert.NotNull(original);
+
+        // Amend it: new diagnosis + meds + a mandatory reason.
+        const string newDiagnosis = "Bacterial pneumonia (revised)";
+        const string newMeds = "[{\"name\":\"Azithromycin\",\"dose\":\"500mg\"}]";
+        var amend = await client.PostAsJsonAsync($"/api/v1/prescriptions/{original!.PrescriptionId}/amend",
+            new AmendPrescriptionRequest("Cough, fever", "Crackles", newDiagnosis, newMeds, "Complete the course", 7,
+                "Chest X-ray confirmed pneumonia; antibiotic changed."));
+        Assert.Equal(HttpStatusCode.Created, amend.StatusCode);
+        var amended = await amend.Content.ReadFromJsonAsync<AmendPrescriptionResult>();
+        Assert.NotNull(amended);
+        Assert.NotEqual(original.PrescriptionId, amended!.PrescriptionId);            // a NEW row
+        Assert.Equal(original.PrescriptionId, amended.SupersededPrescriptionId);
+        Assert.StartsWith("PRX-", amended.PrescriptionNumber);
+
+        // The ORIGINAL is now 'amended' (superseded) — never overwritten.
+        Assert.Equal("amended", await ScalarStrAsync(
+            "SELECT status FROM docslot.prescriptions WHERE prescription_id=@id", ("id", original.PrescriptionId)));
+        // The amendment links back, is 'finalized', and its new content is encrypted at rest.
+        Assert.Equal(original.PrescriptionId.ToString(), await ScalarStrAsync(
+            "SELECT supersedes_prescription_id::text FROM docslot.prescriptions WHERE prescription_id=@id", ("id", amended.PrescriptionId)));
+        Assert.Equal("finalized", await ScalarStrAsync(
+            "SELECT status FROM docslot.prescriptions WHERE prescription_id=@id", ("id", amended.PrescriptionId)));
+        var rawNewDiag = await ScalarStrAsync(
+            "SELECT diagnosis FROM docslot.prescriptions WHERE prescription_id=@id", ("id", amended.PrescriptionId));
+        Assert.DoesNotContain(newDiagnosis, rawNewDiag!);   // encrypted, not plaintext
+
+        // Authorized read of the amendment → decrypts new content + surfaces the lineage.
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var read = await client.GetAsync($"/api/v1/prescriptions/{amended.PrescriptionId}");
+        Assert.Equal(HttpStatusCode.OK, read.StatusCode);
+        var dto = await read.Content.ReadFromJsonAsync<PrescriptionDto>();
+        Assert.Equal(newDiagnosis, dto!.Diagnosis);
+        Assert.Contains("Azithromycin", dto.MedicationsJson);
+        Assert.Equal(original.PrescriptionId, dto.SupersedesPrescriptionId);
+
+        // Re-amending the already-superseded ORIGINAL is refused (422 — not an amendable state).
+        var reAmend = await client.PostAsJsonAsync($"/api/v1/prescriptions/{original.PrescriptionId}/amend",
+            new AmendPrescriptionRequest(null, null, "x", "[]", null, null, "second amend attempt must fail"));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, reAmend.StatusCode);
+
+        // Amending a non-existent (or cross-tenant) prescription → 404.
+        var missing = await client.PostAsJsonAsync($"/api/v1/prescriptions/{Guid.NewGuid()}/amend",
+            new AmendPrescriptionRequest(null, null, "x", "[]", null, null, "amend a ghost prescription"));
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+    }
+
+    [Fact]
     public async Task Clinical_Read_Without_Purpose_Header_Is_Rejected()
     {
         var client = await AuthedClientAsync();
