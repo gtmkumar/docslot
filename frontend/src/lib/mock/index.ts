@@ -98,14 +98,14 @@ const HOSPITAL_MENUS: MenusResponse = [
   // menu→platform.audit.verify_chain (or a dedicated security menu permission) map.
   { id: 'm-security', key: 'security', label: 'Security', labelHi: 'सुरक्षा', icon: 'shield-check', route: '/security', badgeSource: null, ...NAV_NODE_DEFAULTS, sortOrder: 9 },
   // Care Partners (Slice 07). Customer-facing label "Care Partners" — NEVER
-  // "brokers"/"referral partners" (MCI 6.4). Real menu seeding is the slice-08
-  // TODO; mocked so the backend-driven nav renders it. Gated by commission.broker.read.
+  // "brokers"/"referral partners" (MCI 6.4). Seeded in 08_rbac_navigation.sql and
+  // mirrored here for mock parity. Gated by commission.broker.read.
   { id: 'm-care-partners', key: 'care_partners', label: 'Care Partners', labelHi: 'केयर पार्टनर', icon: 'handshake', route: '/care-partners', badgeSource: null, ...NAV_NODE_DEFAULTS, sortOrder: 10 },
-  // Care Partner self-service portal (Slice 07 broker self-service). Same slice-08
-  // schema TODO as the rows above: 08_rbac_navigation.sql has no nav row for
-  // /portal yet — mocked here so the backend-driven nav renders it for the demo.
-  // Backend needs a navigation_menus row (tenant_type-scoped to the partner-facing
-  // tenants) + a menu→commission.broker.read_self map. Gated by read_self.
+  // Care Partner self-service portal (Slice 07 broker self-service). Now seeded in
+  // 08_rbac_navigation.sql as menu_key 'partner_portal' (icon 'wallet', /portal),
+  // gated by the self-scoped commission.broker.read_self — distinct from the admin
+  // Care Partners screen above (tenant-wide commission.broker.read). Mirrored here
+  // for mock parity so real-mode and mock-mode render the same node.
   { id: 'm-portal', key: 'partner_portal', label: 'My Portal', labelHi: 'मेरा पोर्टल', icon: 'wallet', route: '/portal', badgeSource: null, ...NAV_NODE_DEFAULTS, sortOrder: 11 },
 ];
 

@@ -76,6 +76,49 @@ public sealed class RbacNavigationTests(PlatformWebAppFactory factory) : IClassF
     }
 
     [Fact]
+    public async Task PartnerPortal_Surfaces_For_ReadSelf_Holder_And_Gate_Hides_It_From_ZeroPermUser()
+    {
+        // POSITIVE — the factory user (super_admin/tenant_owner) holds the self-scoped
+        // commission.broker.read_self, so the Care Partner self-service portal (/portal)
+        // surfaces in their backend-driven nav. This is the row added by the nav-config slice.
+        var admin = factory.CreateClient();
+        var adminToken = await LoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
+
+        var adminMenus = await (await admin.GetAsync("/api/v1/me/menus"))
+            .Content.ReadFromJsonAsync<List<MenuNodeDto>>();
+        Assert.NotNull(adminMenus);
+        var portal = adminMenus!.SingleOrDefault(m => m.Key == "partner_portal");
+        Assert.NotNull(portal);                                       // gated by commission.broker.read_self
+        Assert.Equal("/portal", portal!.Route);
+        Assert.Equal("wallet", portal.Icon);
+        Assert.False(string.IsNullOrWhiteSpace(portal.LabelHi));      // bilingual contract
+
+        // The portal gate (read_self) is DISTINCT from the admin Care Partners gate
+        // (tenant-wide commission.broker.read) — both can co-exist for this user.
+        Assert.Contains(adminMenus, m => m.Key == "care_partners");
+
+        // NEGATIVE — a fresh user with a zero-permission custom role lacks read_self,
+        // so the same gate hides /portal from their menu tree (proves it is not visible-to-all).
+        var (denyEmail, denyUserId, customRoleId) = await SeedZeroPermissionUserAsync();
+        try
+        {
+            var deny = factory.CreateClient();
+            var denyToken = await LoginAsync(deny, denyEmail);
+            deny.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", denyToken.AccessToken);
+
+            var denyMenus = await (await deny.GetAsync("/api/v1/me/menus"))
+                .Content.ReadFromJsonAsync<List<MenuNodeDto>>();
+            Assert.NotNull(denyMenus);
+            Assert.DoesNotContain(denyMenus!, m => m.Key == "partner_portal");
+        }
+        finally
+        {
+            await CleanupZeroPermissionUserAsync(denyEmail, denyUserId, customRoleId);
+        }
+    }
+
+    [Fact]
     public async Task ReGated_Endpoints_Accept_New_Key_For_SuperAdmin_And_Deny_Without_It()
     {
         // --- ACCEPT path: super_admin holds docslot.booking.no_show → the gate lets the request THROUGH

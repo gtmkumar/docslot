@@ -5910,6 +5910,7 @@ DECLARE
     m_lab UUID;
     m_analytics UUID;
     m_care_partners UUID;
+    m_portal UUID;
     m_team UUID;
     m_developers UUID;
     m_security UUID;
@@ -5947,6 +5948,17 @@ BEGIN
     INSERT INTO platform.navigation_menus (menu_key, menu_label, menu_label_hi, menu_icon, menu_url, display_order, applies_to_tenant_types)
     VALUES ('care_partners', 'Care Partners', 'केयर पार्टनर', 'handshake', '/care-partners', 80, NULL)
     RETURNING menu_id INTO m_care_partners;
+
+    -- Care Partner SELF-SERVICE portal (/portal). Distinct audience from the admin
+    -- "Care Partners" screen above: this is the partner's OWN wallet/links/book-on-
+    -- behalf surface, gated on the self-scoped commission.broker.read_self (held by
+    -- the 'broker' role). The server resolves broker_id from the JWT — the menu is
+    -- visible to anyone holding read_self; non-broker holders (e.g. tenant_owner)
+    -- simply see an empty self-scoped portal. Placed adjacent to Care Partners for
+    -- admins; for a broker it is the primary surface alongside Overview.
+    INSERT INTO platform.navigation_menus (menu_key, menu_label, menu_label_hi, menu_icon, menu_url, display_order, applies_to_tenant_types)
+    VALUES ('partner_portal', 'My Portal', 'मेरा पोर्टल', 'wallet', '/portal', 85, NULL)
+    RETURNING menu_id INTO m_portal;
 
     INSERT INTO platform.navigation_menus (menu_key, menu_label, menu_label_hi, menu_icon, menu_url, display_order, applies_to_tenant_types)
     VALUES ('team', 'Team & Roles', 'टीम और भूमिकाएँ', 'user-cog', '/team', 90, NULL)
@@ -6029,6 +6041,14 @@ BEGIN
     JOIN platform.permissions p ON p.permission_key = 'commission.broker.read'
     WHERE m.menu_key IN ('care_partners','care_partners.directory','care_partners.payouts')
     ON CONFLICT DO NOTHING;
+
+    -- My Portal (partner self-service) → commission.broker.read_self (self-scoped).
+    -- This is the SELF read, NOT the tenant-wide commission.broker.read that gates
+    -- the admin Care Partners screen — so an admin who lacks read_self never sees it,
+    -- and a broker (who holds only the *_self keys) sees Portal but not the admin screen.
+    INSERT INTO platform.menu_permissions (menu_id, permission_id)
+    SELECT m_portal, p.permission_id FROM platform.permissions p
+    WHERE p.permission_key = 'commission.broker.read_self' ON CONFLICT DO NOTHING;
 
     -- Team & Roles → tenant.roles.assign
     INSERT INTO platform.menu_permissions (menu_id, permission_id)
@@ -6185,8 +6205,11 @@ COMMENT ON VIEW platform.v_user_effective_permissions IS 'Final effective permis
 -- Permissions: 6 RBAC-mgmt + 2 domain (docslot.patient.create, docslot.booking.no_show)
 -- Seed: ResourceTypes/ActionTypes backfilled, full navigation menu tree
 --       (Overview, Bookings+children, Calendar, Patients+clinical, Doctors, Lab,
---        Analytics, Care Partners+children, Team & Roles, Developers, Security &
---        Compliance, Settings+children), bilingual + tenant_type-aware, menu→perm maps
+--        Analytics, Care Partners+children, My Portal (partner self-service),
+--        Team & Roles, Developers, Security & Compliance, Settings+children),
+--        bilingual + tenant_type-aware, menu→perm maps. "My Portal" is gated on the
+--        self-scoped commission.broker.read_self (the broker's own surface), distinct
+--        from the admin "Care Partners" screen gated on tenant-wide commission.broker.read.
 --
 -- TOTAL PLATFORM TABLES AFTER THIS FILE: 112 (was 107)
 --
