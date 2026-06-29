@@ -43,6 +43,9 @@ const PatientRecordsScreen = lazy(() =>
 const CarePartnersScreen = lazy(() =>
   import('@/features/commission/CarePartnersScreen').then((m) => ({ default: m.CarePartnersScreen })),
 );
+const PortalScreen = lazy(() =>
+  import('@/features/portal/PortalScreen').then((m) => ({ default: m.PortalScreen })),
+);
 const BookingsScreen = lazy(() =>
   import('@/features/bookings/BookingsScreen').then((m) => ({ default: m.BookingsScreen })),
 );
@@ -69,7 +72,8 @@ const panelSearchSchema = z.object({
       'roleMatrix', 'duplicateRole', 'effectiveAccess', 'createModule', 'createPermission',
       'registerClient', 'manageClient', 'createWebhook', 'webhookForm', 'webhookDeliveries',
       'exportData', 'eraseData', 'reportBreach', 'breakGlass',
-      'registerBroker', 'manageBroker', 'createCommissionRule', 'raiseDispute', 'resolveDispute',
+      'registerBroker', 'manageBroker', 'createCommissionRule', 'createCampaign', 'raiseDispute', 'resolveDispute',
+      'generateLink', 'bookOnBehalf',
       'beginImpersonation',
     ])
     .optional(),
@@ -164,6 +168,14 @@ const carePartnersRoute = createRoute({
   path: '/care-partners',
   component: CarePartnersScreen,
 });
+// Care Partner self-service portal. Surfaced by the backend nav for partner-typed
+// sessions; the route exists so a /me/menus node (once seeded in the DB) resolves
+// without 404. See PortalScreen for the nav-seeding gap flagged to the orchestrator.
+const portalRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/portal',
+  component: PortalScreen,
+});
 const settingsRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/settings',
@@ -192,6 +204,7 @@ const routeTree = rootRoute.addChildren([
     developersRoute,
     securityRoute,
     carePartnersRoute,
+    portalRoute,
     settingsRoute,
     labRoute,
   ]),

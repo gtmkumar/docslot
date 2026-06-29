@@ -101,6 +101,12 @@ const HOSPITAL_MENUS: MenusResponse = [
   // "brokers"/"referral partners" (MCI 6.4). Real menu seeding is the slice-08
   // TODO; mocked so the backend-driven nav renders it. Gated by commission.broker.read.
   { id: 'm-care-partners', key: 'care_partners', label: 'Care Partners', labelHi: 'केयर पार्टनर', icon: 'handshake', route: '/care-partners', badgeSource: null, ...NAV_NODE_DEFAULTS, sortOrder: 10 },
+  // Care Partner self-service portal (Slice 07 broker self-service). Same slice-08
+  // schema TODO as the rows above: 08_rbac_navigation.sql has no nav row for
+  // /portal yet — mocked here so the backend-driven nav renders it for the demo.
+  // Backend needs a navigation_menus row (tenant_type-scoped to the partner-facing
+  // tenants) + a menu→commission.broker.read_self map. Gated by read_self.
+  { id: 'm-portal', key: 'partner_portal', label: 'My Portal', labelHi: 'मेरा पोर्टल', icon: 'wallet', route: '/portal', badgeSource: null, ...NAV_NODE_DEFAULTS, sortOrder: 11 },
 ];
 
 export function getMenus(): Promise<MenusResponse> {
@@ -184,6 +190,14 @@ const SIGNED_IN_PERMISSIONS: PermissionsResponse = {
     'commission.dispute.raise',
     'commission.dispute.resolve',
     'commission.campaign.manage',
+    // TDS / Form 16A issuance for a paid payout (section 194H).
+    'commission.tds.issue',
+    // Broker self-service portal (Care Partner's OWN data; server resolves
+    // broker_id from the JWT). Granted in the demo so the /portal surface is
+    // exercisable. Each portal action still gates on its own key independently.
+    'commission.broker.read_self',
+    'commission.broker.generate_link_self',
+    'commission.broker.create_booking_self',
   ],
 };
 

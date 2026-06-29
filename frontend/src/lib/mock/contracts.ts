@@ -1298,6 +1298,136 @@ export type ResolveDisputeRequest = z.infer<typeof ResolveDisputeRequestSchema>;
 export const CommissionCreatedSchema = z.object({ id: z.string() });
 export type CommissionCreated = z.infer<typeof CommissionCreatedSchema>;
 
+// ---- Campaigns (admin) ------------------------------------------------------
+// Mirrors CampaignDto / CreateCampaignRequest. bonusType is one of two supported
+// kinds in the create form (tier_upgrade exists in the domain but is NOT offered
+// here). The list shows spent-so-far against the total budget (a usage bar).
+export const CampaignBonusTypeSchema = z.enum(['flat_bonus_per_booking', 'percentage_multiplier']);
+export type CampaignBonusType = z.infer<typeof CampaignBonusTypeSchema>;
+
+/** A marketing campaign. Mirrors CampaignDto (camelCase). `bonusType` is a free
+ *  string on the wire (the domain has more kinds than the create form offers), so
+ *  it stays a plain string here; the create form constrains input to the two
+ *  supported kinds. */
+export const CampaignSchema = z.object({
+  campaignId: z.string(),
+  campaignName: z.string(),
+  bonusType: z.string(),
+  bonusValue: z.number().nullable(),
+  isActive: z.boolean(),
+  totalBudgetInr: z.number().nullable(),
+  spentSoFarInr: z.number(),
+});
+export type Campaign = z.infer<typeof CampaignSchema>;
+
+export const CreateCampaignRequestSchema = z.object({
+  campaignName: z.string(),
+  bonusType: CampaignBonusTypeSchema,
+  bonusValue: z.number().nullable(),
+  startsAt: z.string(),
+  endsAt: z.string(),
+  totalBudgetInr: z.number().nullable(),
+});
+export type CreateCampaignRequest = z.infer<typeof CreateCampaignRequestSchema>;
+
+// ---- TDS / Form 16A (section 194H) ------------------------------------------
+// Mirrors Form16ACertificateDto. PHI: the DTO carries only the deductee PAN
+// LAST 4 (safe to show); the legally-required FULL PAN lives ONLY on the rendered
+// document at documentUrl — opened in a new tab, never logged/cached/in state.
+// `status` is 'provisional' until the quarterly return is filed on TRACES.
+export const Form16AStatusSchema = z.enum(['provisional', 'filed', 'revised', 'cancelled']);
+export type Form16AStatus = z.infer<typeof Form16AStatusSchema>;
+
+export const Form16ACertificateSchema = z.object({
+  certificateId: z.string(),
+  payoutId: z.string(),
+  invoiceNumber: z.string().nullable(),
+  section: z.string(),
+  financialYear: z.string(),
+  quarter: z.string(),
+  deductorName: z.string(),
+  deductorTan: z.string().nullable(),
+  deducteeName: z.string(),
+  /** PAN LAST 4 only — never the full PAN. */
+  deducteePanLast4: z.string().nullable(),
+  grossAmountInr: z.number(),
+  tdsRate: z.number(),
+  tdsAmountInr: z.number(),
+  /** Free string on the wire ('provisional' until TRACES-filed). */
+  status: z.string(),
+  tracesCertificateNumber: z.string().nullable(),
+  /** Where the FULL document (with full PAN) is rendered. Opened in a new tab. */
+  documentUrl: z.string(),
+});
+export type Form16ACertificate = z.infer<typeof Form16ACertificateSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BROKER SELF-SERVICE PORTAL (Care Partner's OWN data) — base path /commission/me
+// The server resolves broker_id from the JWT `broker_id` claim; there is NO id in
+// any path (IDOR-safe). A Care Partner can only ever reach their own wallet/links
+// and book on their own behalf.
+//  - DPDP: book-on-behalf creates a BEHALF booking that triggers a patient consent
+//    OTP (the patient approves via WhatsApp). The portal surfaces that.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The Care Partner's commission wallet. Mirrors BrokerWalletDto. NO PAN. */
+export const BrokerWalletSchema = z.object({
+  brokerId: z.string(),
+  pendingInr: z.number(),
+  earnedInr: z.number(),
+  readyToPayInr: z.number(),
+  lifetimePaidInr: z.number(),
+  currentMonthInr: z.number(),
+  currentMonthAttributions: z.number(),
+});
+export type BrokerWallet = z.infer<typeof BrokerWalletSchema>;
+
+/** A referral link the Care Partner shares. Mirrors ReferralLinkDto. */
+export const ReferralLinkSchema = z.object({
+  linkId: z.string(),
+  shortCode: z.string(),
+  targetUrl: z.string().nullable(),
+  clickCount: z.number(),
+  conversionCount: z.number(),
+  isActive: z.boolean(),
+  /** Not on ReferralLinkDto; carried for display when the create echoes it back. */
+  campaignName: z.string().nullable(),
+});
+export type ReferralLink = z.infer<typeof ReferralLinkSchema>;
+
+/** Generate a referral link. Mirrors CreateReferralLinkRequest. tenantId/doctorId
+ *  are server-resolved in the portal context, so the form sends only a campaign. */
+export const CreateReferralLinkRequestSchema = z.object({
+  campaignName: z.string().nullable(),
+});
+export type CreateReferralLinkRequest = z.infer<typeof CreateReferralLinkRequestSchema>;
+
+/** Book on behalf of a referred patient. Mirrors CreateBrokerBookingRequest. */
+export const BrokerGenderSchema = z.enum(['male', 'female', 'other']);
+export type BrokerGender = z.infer<typeof BrokerGenderSchema>;
+
+export const BrokerPortalBookingRequestSchema = z.object({
+  patientPhone: z.string(),
+  patientName: z.string().nullable(),
+  patientAge: z.number().nullable(),
+  patientGender: BrokerGenderSchema.nullable(),
+  slotId: z.string(),
+  doctorId: z.string(),
+  departmentId: z.string().nullable(),
+  chiefComplaint: z.string().nullable(),
+});
+export type BrokerPortalBookingRequest = z.infer<typeof BrokerPortalBookingRequestSchema>;
+
+/** Result of a broker-portal booking. Mirrors BrokerBookingResult. The status is
+ *  'awaiting_patient_consent' — the patient must approve via WhatsApp OTP. */
+export const BrokerBookingResultSchema = z.object({
+  bookingId: z.string(),
+  bookingNumber: z.string().nullable(),
+  attributionId: z.string(),
+  status: z.string(),
+});
+export type BrokerBookingResult = z.infer<typeof BrokerBookingResultSchema>;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DOCTORS DIRECTORY (/doctors) — practitioner cards with OPD load. Mirrors the
 // docslot.doctors + today's booking aggregate. NO PHI. `colorKey` is a token key

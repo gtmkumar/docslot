@@ -12,3 +12,4 @@
 - [Platform-admin login](feedback_platform-admin-login.md) — verify Developers/Security live with admin@docslot.io/admin, NOT priyanka (tenant_owner gets 403 + no nav; mock fixture differs).
 - [Support impersonation](project_impersonation.md) — issue #3: `impersonated_tenant` JWT claim, begin/end endpoints, session slice (impersonationId), `lib/jwt.ts` decoder, global banner.
 - [IAM Roles & permissions matrix](project_iam-matrix.md) — Team & Roles IAM surface; assignment vs catalog plane gating split, + Module/+ Permission panels, seam fns, inert-permission caveat.
+- [Broker portal + Campaigns + Form 16A](project_broker-portal-campaigns-form16a.md) — Phase-2 commission: /portal self-service (IDOR-safe me/* + consent-OTP), Campaigns tab (budget bar), Form 16A TDS (full-PAN via transient blob, never in state).

@@ -12,6 +12,7 @@ import { AttributionsTab } from './components/AttributionsTab';
 import { RulesTab } from './components/RulesTab';
 import { PayoutsTab } from './components/PayoutsTab';
 import { DisputesTab } from './components/DisputesTab';
+import { CampaignsTab } from './components/CampaignsTab';
 
 const tabTrigger =
   'shrink-0 whitespace-nowrap px-3 py-2 text-[13px] font-medium text-muted border-b-2 border-transparent transition-colors ' +
@@ -42,6 +43,9 @@ export function CarePartnersScreen() {
             <Tabs.Trigger value="rules" className={tabTrigger}>
               {t('commission.tabRules')}
             </Tabs.Trigger>
+            <Tabs.Trigger value="campaigns" className={tabTrigger}>
+              {t('commission.tabCampaigns')}
+            </Tabs.Trigger>
             <Tabs.Trigger value="payouts" className={tabTrigger}>
               {t('commission.tabPayouts')}
             </Tabs.Trigger>
@@ -59,6 +63,9 @@ export function CarePartnersScreen() {
         </Tabs.Content>
         <Tabs.Content value="rules" className="pt-5 focus-visible:outline-none">
           <RulesTab />
+        </Tabs.Content>
+        <Tabs.Content value="campaigns" className="pt-5 focus-visible:outline-none">
+          <CampaignsTab />
         </Tabs.Content>
         <Tabs.Content value="payouts" className="pt-5 focus-visible:outline-none">
           <PayoutsTab />

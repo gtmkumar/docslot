@@ -35,10 +35,15 @@ import {
   ConversationMessageDtoSchema,
   PatientConsentStatusSchema,
   RescheduleResultDtoSchema,
+  BrokerBookingResultSchema,
   BrokerSchema,
+  BrokerWalletSchema,
   CalendarGridSchema,
+  CampaignSchema,
   CommissionCreatedSchema,
   CommissionRuleSchema,
+  Form16ACertificateSchema,
+  ReferralLinkSchema,
   CreateBookingResultDtoSchema,
   CreateModuleResultSchema,
   CreatePermissionResultSchema,
@@ -95,11 +100,19 @@ import {
   type BookingRow,
   type Breach,
   type Broker,
+  type BrokerBookingResult,
+  type BrokerPortalBookingRequest,
+  type BrokerWallet,
   type CalendarGrid,
+  type Campaign,
   type CommissionCreated,
   type CommissionRule,
   type CreateBookingResult,
+  type CreateCampaignRequest,
   type CreateCommissionRuleRequest,
+  type CreateReferralLinkRequest,
+  type Form16ACertificate,
+  type ReferralLink,
   type CreateModuleRequest,
   type CreateModuleResult,
   type CreatePermissionRequest,
@@ -1098,6 +1111,134 @@ export async function resolveDispute(
     },
   });
   return CommissionCreatedSchema.parse({ id: req.disputeId });
+}
+
+// ── Campaigns (admin) ────────────────────────────────────────────────────────
+
+export async function listCampaigns(): Promise<Campaign[]> {
+  const raw = await apiFetch<unknown[]>('/commission/campaigns');
+  return CampaignSchema.array().parse(raw);
+}
+
+export async function createCampaign(
+  req: CreateCampaignRequest,
+  idempotencyKey: string,
+): Promise<CommissionCreated> {
+  // POST /campaigns → campaignId (Guid; bare string or { campaignId }). The list
+  // refetches after invalidation, so the hook only needs an { id } back.
+  const raw = await apiFetch<unknown>('/commission/campaigns', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      campaignName: req.campaignName,
+      bonusType: req.bonusType,
+      bonusValue: req.bonusValue ?? null,
+      startsAt: req.startsAt,
+      endsAt: req.endsAt,
+      totalBudgetInr: req.totalBudgetInr ?? null,
+    },
+  });
+  const id =
+    typeof raw === 'string' ? raw : ((raw as { campaignId?: string })?.campaignId ?? crypto.randomUUID());
+  return CommissionCreatedSchema.parse({ id });
+}
+
+// ── Form 16A (TDS 194H certificate for a PAID payout) ─────────────────────────
+// Issue returns the cert DTO (PAN LAST 4 only — the full PAN is solely on the
+// rendered document). Status is 'provisional' until filed on TRACES.
+
+export async function issueForm16A(payoutId: string, idempotencyKey: string): Promise<Form16ACertificate> {
+  const raw = await apiFetch<unknown>(`/commission/payouts/${payoutId}/form-16a`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+  });
+  return Form16ACertificateSchema.parse(raw);
+}
+
+/** The same-origin path to the certificate document (text/html, full PAN). The
+ *  caller (openForm16ADocument) fetches it WITH auth headers and opens a transient
+ *  object URL in a new tab — the document is NEVER kept in app state or cached. */
+export function getForm16ADocumentUrl(payoutId: string): string {
+  return `/api/v1/commission/payouts/${payoutId}/form-16a/document`;
+}
+
+/**
+ * Open the Form 16A document (text/html, contains the FULL PAN) in a NEW TAB.
+ * The endpoint requires the Bearer token + tenant header, so a bare window.open
+ * wouldn't authenticate. We fetch it WITH auth headers into a transient blob,
+ * open an object URL, and revoke it shortly after — the full-PAN HTML is NEVER
+ * stored in React state, the query cache, or logged (DPDP/PHI discipline). The
+ * server logs the access to key_usage_log on its side.
+ */
+export async function openForm16ADocument(payoutId: string): Promise<void> {
+  const { accessToken, tenantId } = getSessionSnapshot();
+  const headers: Record<string, string> = {};
+  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+  if (tenantId) headers['X-Tenant-Id'] = tenantId;
+
+  const res = await fetch(getForm16ADocumentUrl(payoutId), { headers });
+  if (!res.ok) throw new ApiError(res.status, `Form 16A document failed: ${res.status}`);
+  const html = await res.blob();
+  const url = URL.createObjectURL(html);
+  window.open(url, '_blank', 'noopener,noreferrer');
+  // Revoke once the new tab has had time to load — the blob is not retained.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BROKER SELF-SERVICE PORTAL (/commission/me) — the Care Partner's OWN data.
+// ─────────────────────────────────────────────────────────────────────────────
+// IDOR-safe: the server resolves broker_id from the JWT `broker_id` claim — there
+// is NO id in any path. A holder of read_self/generate_link_self/create_booking_self
+// can only ever act on their own broker. POSTs carry an Idempotency-Key. The
+// book-on-behalf result status is 'awaiting_patient_consent' (patient OTP, DPDP).
+// ═════════════════════════════════════════════════════════════════════════════
+
+export async function getBrokerWallet(): Promise<BrokerWallet> {
+  const raw = await apiFetch<unknown>('/commission/me/wallet');
+  return BrokerWalletSchema.parse(raw);
+}
+
+export async function listReferralLinks(): Promise<ReferralLink[]> {
+  // ReferralLinkDto has no campaignName; fill it as null before parse (the schema
+  // models it as nullable for display when a create echoes it back).
+  const raw = await apiFetch<Record<string, unknown>[]>('/commission/me/links');
+  const rows = raw.map((r) => ({ campaignName: null, ...r }));
+  return ReferralLinkSchema.array().parse(rows);
+}
+
+export async function createReferralLink(
+  req: CreateReferralLinkRequest,
+  idempotencyKey: string,
+): Promise<ReferralLink> {
+  const raw = await apiFetch<Record<string, unknown>>('/commission/me/links', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    // tenantId/targetDoctorId are server-resolved in the portal context.
+    body: { tenantId: null, targetDoctorId: null, campaignName: req.campaignName ?? null },
+  });
+  return ReferralLinkSchema.parse({ campaignName: req.campaignName ?? null, ...raw });
+}
+
+export async function createPortalBooking(
+  req: BrokerPortalBookingRequest,
+  idempotencyKey: string,
+): Promise<BrokerBookingResult> {
+  const raw = await apiFetch<unknown>('/commission/me/bookings', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      patientPhone: req.patientPhone,
+      patientName: req.patientName ?? null,
+      patientAge: req.patientAge ?? null,
+      patientGender: req.patientGender ?? null,
+      slotId: req.slotId,
+      doctorId: req.doctorId,
+      departmentId: req.departmentId ?? null,
+      chiefComplaint: req.chiefComplaint ?? null,
+    },
+  });
+  return BrokerBookingResultSchema.parse(raw);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
