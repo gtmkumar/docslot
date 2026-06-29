@@ -196,7 +196,110 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
         await ExecAsync("DELETE FROM docslot.doctors WHERE doctor_id=@d", ("d", doctorB));
     }
 
+    [Fact]
+    public async Task BreakGlass_Override_Unlocks_ConsentDenied_Read_Honoring_Scope_TTL_Revoke_And_Tenant()
+    {
+        // FR-MED-03: a deliberate, scoped, time-boxed break-glass grant lets a consent-denied clinical read
+        // proceed — and ONLY then. Proves the unlock + the audit stamp + every refusal dimension.
+        var client = await AuthedClientAsync();                       // admin, scoped to tenant A
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "emergency");
+
+        // ---- Setup: a NON-CONSENTED patient (consent_given_at NULL) with a REAL (encrypted) prescription ----
+        var ncPatient = Guid.NewGuid();
+        var ncPhone = $"+9197{Random.Shared.Next(10000000, 99999999)}";
+        var ncSlot = Guid.NewGuid();
+        var ncBooking = Guid.NewGuid();
+        await ExecAsync("INSERT INTO docslot.patients (patient_id, phone_number, full_name, is_active, created_at, updated_at) VALUES (@id,@ph,'NoConsent NC',true,NOW(),NOW())",
+            ("id", ncPatient), ("ph", ncPhone));                     // no consent_given_at → HasActiveConsent=false
+        await ExecAsync("INSERT INTO docslot.patient_tenant_links (link_id, patient_id, tenant_id, first_visit_at, last_visit_at, total_visits) VALUES (gen_random_uuid(),@p,@t,NOW(),NOW(),0)", ("p", ncPatient), ("t", factory.TenantA));
+        await ExecAsync("INSERT INTO docslot.time_slots (slot_id,tenant_id,doctor_id,slot_date,start_time,end_time,status,current_count,max_count,created_at) VALUES (@id,@t,@d,CURRENT_DATE,'10:00','10:15','booked',1,1,NOW())", ("id", ncSlot), ("t", factory.TenantA), ("d", factory.DoctorId));
+        await ExecAsync("INSERT INTO docslot.bookings (booking_id,tenant_id,slot_id,patient_id,doctor_id,status,booked_via,booked_for,booked_at,updated_at) VALUES (@id,@t,@s,@p,@d,'completed','dashboard','self',NOW(),NOW())", ("id", ncBooking), ("t", factory.TenantA), ("s", ncSlot), ("p", ncPatient), ("d", factory.DoctorId));
+
+        const string diagnosis = "Anaphylaxis — penicillin allergy";
+        const string meds = "[{\"name\":\"Adrenaline\",\"dose\":\"0.5mg\"}]";
+        var issue = await client.PostAsJsonAsync("/api/v1/prescriptions", new IssuePrescriptionRequest(
+            ncBooking, ncPatient, factory.DoctorId, "Collapse", "Hypotension", diagnosis, meds, "Refer ICU", null));
+        issue.EnsureSuccessStatusCode();
+        var pres = (await issue.Content.ReadFromJsonAsync<IssuePrescriptionResult>())!;
+
+        try
+        {
+            // (a) NO grant → the consent-denied read is refused (403).
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await client.GetAsync($"/api/v1/prescriptions/{pres.PrescriptionId}")).StatusCode);
+
+            // (b)+(c) Break glass (scoped to this prescription) → the read succeeds + DECRYPTS, and the read
+            //         stamps is_break_glass=true at READ time (so the review queue shows the actual access).
+            var bg = await client.PostAsJsonAsync("/api/v1/security/break-glass", new
+            {
+                patientId = ncPatient,
+                resourceType = "prescription",
+                resourceId = (Guid?)pres.PrescriptionId,
+                justification = "Unconscious anaphylaxis patient; consent unobtainable — prescription needed now."
+            });
+            bg.EnsureSuccessStatusCode();
+            var grantId = await bg.Content.ReadFromJsonAsync<Guid>();
+
+            var unlocked = await client.GetAsync($"/api/v1/prescriptions/{pres.PrescriptionId}");
+            Assert.Equal(HttpStatusCode.OK, unlocked.StatusCode);
+            var dto = (await unlocked.Content.ReadFromJsonAsync<PrescriptionDto>())!;
+            Assert.Equal(diagnosis, dto.Diagnosis);                  // decrypted under the grant
+
+            var bgReadLogged = await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM platform.purpose_of_use_log WHERE accessed_resource_id=@r AND declared_purpose='emergency' AND is_break_glass=true AND review_required=true",
+                ("r", pres.PrescriptionId));
+            Assert.True(bgReadLogged >= 1, "the emergency read must stamp is_break_glass=true at read time");
+
+            // (d-revoke) Revoke the grant (distinct reviewer permission) → the read re-locks (403).
+            (await client.PostAsync($"/api/v1/security/break-glass/{grantId}/revoke", null)).EnsureSuccessStatusCode();
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await client.GetAsync($"/api/v1/prescriptions/{pres.PrescriptionId}")).StatusCode);
+
+            // (d-expired) An EXPIRED grant does NOT unlock.
+            await SeedGrantAsync(factory.AdminUserId, factory.TenantA, ncPatient, "prescription", pres.PrescriptionId, expiresInMinutes: -5);
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await client.GetAsync($"/api/v1/prescriptions/{pres.PrescriptionId}")).StatusCode);
+
+            // (e-scope) An active grant scoped to a DIFFERENT resource_type does NOT unlock the prescription read.
+            await SeedGrantAsync(factory.AdminUserId, factory.TenantA, ncPatient, "medical_history", null, expiresInMinutes: 60);
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await client.GetAsync($"/api/v1/prescriptions/{pres.PrescriptionId}")).StatusCode);
+
+            // (f-tenant) A grant in TENANT B (otherwise identical) does NOT unlock a tenant-A read (RLS + predicate).
+            await SeedGrantAsync(factory.AdminUserId, factory.TenantB, ncPatient, "prescription", pres.PrescriptionId, expiresInMinutes: 60);
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await client.GetAsync($"/api/v1/prescriptions/{pres.PrescriptionId}")).StatusCode);
+
+            // Sanity: a fresh, correctly-scoped, in-tenant grant unlocks again — proving the 403s above were the
+            // tested dimension (expiry / scope / tenant), not a setup artifact.
+            await SeedGrantAsync(factory.AdminUserId, factory.TenantA, ncPatient, "prescription", pres.PrescriptionId, expiresInMinutes: 60);
+            Assert.Equal(HttpStatusCode.OK,
+                (await client.GetAsync($"/api/v1/prescriptions/{pres.PrescriptionId}")).StatusCode);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform.break_glass_grants WHERE patient_id=@p", ("p", ncPatient));
+            await ExecAsync("DELETE FROM platform.purpose_of_use_log WHERE accessed_resource_id IN (@p,@r)", ("p", ncPatient), ("r", pres.PrescriptionId));
+            await ExecAsync("DELETE FROM docslot.prescriptions WHERE patient_id=@p", ("p", ncPatient));
+            await ExecAsync("DELETE FROM docslot.bookings WHERE booking_id=@b", ("b", ncBooking));
+            await ExecAsync("DELETE FROM docslot.time_slots WHERE slot_id=@s", ("s", ncSlot));
+            await ExecAsync("DELETE FROM docslot.patient_tenant_links WHERE patient_id=@p", ("p", ncPatient));
+            await ExecAsync("DELETE FROM docslot.patients WHERE patient_id=@p", ("p", ncPatient));
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
+
+    /// <summary>Seeds a break-glass grant directly (privileged role) for the negative/positive scope tests.</summary>
+    private static Task SeedGrantAsync(Guid userId, Guid tenantId, Guid patientId, string resourceType, Guid? resourceId, int expiresInMinutes) =>
+        ExecAsync(
+            """
+            INSERT INTO platform.break_glass_grants
+                (grant_id, user_id, tenant_id, patient_id, resource_type, resource_id, justification, granted_at, expires_at)
+            VALUES (gen_random_uuid(), @u, @t, @p, @rt, @rid, 'seeded test grant', NOW(), NOW() + make_interval(mins => @mins))
+            """,
+            ("u", userId), ("t", tenantId), ("p", patientId), ("rt", resourceType),
+            ("rid", (object?)resourceId ?? DBNull.Value), ("mins", expiresInMinutes));
 
     private async Task<HttpClient> AuthedClientAsync()
     {

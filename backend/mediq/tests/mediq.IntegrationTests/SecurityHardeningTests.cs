@@ -151,23 +151,47 @@ public sealed class SecurityHardeningTests(SecurityWebAppFactory factory) : ICla
     }
 
     [Fact]
-    public async Task BreakGlass_Logs_Is_Break_Glass_And_Flags_Review()
+    public async Task BreakGlass_Logs_Is_Break_Glass_And_Issues_Scoped_Grant()
     {
         var client = await AuthedClientAsync();
-        var resourceId = factory.PatientId;
+        var patientId = factory.PatientId;
+        var resourceId = Guid.NewGuid();   // a specific prescription (need not exist — grant carries no FK to it)
         var resp = await client.PostAsJsonAsync("/api/v1/security/break-glass", new
         {
-            resourceType = "patient",
+            patientId,
+            resourceType = "prescription",
             resourceId,
             justification = "Emergency: unconscious patient, need allergy history immediately."
         });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        // A purpose_of_use_log row with is_break_glass=true and review_required=true was written.
+        // A purpose_of_use_log row with is_break_glass=true and review_required=true was written (review queue).
         var count = await ScalarIntAsync(
             "SELECT COUNT(*)::int FROM platform.purpose_of_use_log WHERE accessed_resource_id=@r AND is_break_glass=true AND review_required=true",
             ("r", resourceId));
         Assert.True(count >= 1);
+
+        // And the AUTHORIZATION row exists — active, scoped to this prescription, with a server-side TTL.
+        var grants = await ScalarIntAsync(
+            "SELECT COUNT(*)::int FROM platform.break_glass_grants WHERE patient_id=@p AND resource_type='prescription' AND resource_id=@r AND revoked_at IS NULL AND expires_at > NOW()",
+            ("p", patientId), ("r", resourceId));
+        Assert.True(grants >= 1);
+    }
+
+    [Fact]
+    public async Task BreakGlass_Rejects_Unsupported_ResourceType()
+    {
+        var client = await AuthedClientAsync();
+        // 'patient' / 'abdm_record' are not grantable — the validator rejects them (422), so ABDM stays
+        // gated by its own NHA consent regime and can never be unlocked by break-glass.
+        var resp = await client.PostAsJsonAsync("/api/v1/security/break-glass", new
+        {
+            patientId = factory.PatientId,
+            resourceType = "abdm_record",
+            resourceId = (Guid?)null,
+            justification = "Attempting to break glass over an ABDM record — must be refused."
+        });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
     }
 
     // ---- helpers -------------------------------------------------------------------------------

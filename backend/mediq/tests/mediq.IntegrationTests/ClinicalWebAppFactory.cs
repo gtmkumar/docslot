@@ -62,6 +62,13 @@ public sealed class ClinicalWebAppFactory : WebApplicationFactory<Program>, IAsy
             SELECT gen_random_uuid(), @uid, NULL, r.role_id, false, NOW()
             FROM platform.roles r WHERE r.role_key='super_admin' AND r.is_system ON CONFLICT DO NOTHING
             """, ("uid", AdminUserId));
+        // Break-glass perm rides on the 'doctor' role per the 05 seed (tenant-scoped); grant the admin a
+        // doctor assignment in tenant A so the break-glass override test can issue an emergency grant.
+        await Exec(conn, """
+            INSERT INTO platform.user_tenant_roles (user_tenant_role_id, user_id, tenant_id, role_id, is_primary, granted_at)
+            SELECT gen_random_uuid(), @uid, @tid, r.role_id, false, NOW()
+            FROM platform.roles r WHERE r.role_key='doctor' AND r.is_system ON CONFLICT DO NOTHING
+            """, ("uid", AdminUserId), ("tid", TenantA));
 
         // Facility + doctor + slot + booking in tenant A.
         await Exec(conn, "INSERT INTO docslot.healthcare_facilities (facility_id, tenant_id, facility_type, created_at, updated_at) VALUES (gen_random_uuid(), @t, 'hospital', NOW(), NOW()) ON CONFLICT (tenant_id) DO NOTHING", ("t", TenantA));
@@ -113,6 +120,8 @@ public sealed class ClinicalWebAppFactory : WebApplicationFactory<Program>, IAsy
             // key_usage_log FK-references encryption_keys → delete usage first.
             await Exec(conn, "DELETE FROM platform.key_usage_log WHERE key_id IN (SELECT key_id FROM platform.encryption_keys WHERE tenant_id=@t)", ("t", t));
             await Exec(conn, "DELETE FROM platform.encryption_keys WHERE tenant_id=@t", ("t", t));
+            // break_glass_grants.purpose_log_id FKs purpose_of_use_log → delete grants first (defensive).
+            await Exec(conn, "DELETE FROM platform.break_glass_grants WHERE tenant_id=@t", ("t", t));
             await Exec(conn, "DELETE FROM platform.purpose_of_use_log WHERE tenant_id=@t", ("t", t));
         }
         await Exec(conn, "DELETE FROM docslot.patients WHERE patient_id=@p", ("p", PatientId));

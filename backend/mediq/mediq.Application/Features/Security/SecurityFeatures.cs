@@ -209,15 +209,29 @@ public sealed class ReportBreachCommandHandler(
 
 // ---- Break-glass emergency access ----------------------------------------------------------------
 
-public sealed record BreakGlassCommand(Guid TenantId, string ResourceType, Guid ResourceId, string Justification) : ICommand<Guid>;
+/// <summary>
+/// Issues a scoped, time-boxed emergency-access grant over a patient's clinical records (FR-MED-03).
+/// <c>ResourceType</c> is one clinical record class; <c>ResourceId</c> null = patient-wide for that class.
+/// ABDM is intentionally NOT grantable here (the grant table CHECK excludes it).
+/// </summary>
+public sealed record BreakGlassCommand(Guid TenantId, Guid PatientId, string ResourceType, Guid? ResourceId, string Justification) : ICommand<Guid>;
+
+/// <summary>The clinical record classes a break-glass grant may cover (ABDM excluded — separate NHA regime).</summary>
+public static class BreakGlassResourceTypes
+{
+    public static readonly string[] Allowed = ["prescription", "lab_report", "medical_history"];
+}
 
 public sealed class BreakGlassValidator : AbstractValidator<BreakGlassCommand>
 {
     public BreakGlassValidator()
     {
         RuleFor(x => x.TenantId).NotEmpty();
-        RuleFor(x => x.ResourceType).NotEmpty();
-        RuleFor(x => x.ResourceId).NotEmpty();
+        RuleFor(x => x.PatientId).NotEmpty();
+        RuleFor(x => x.ResourceType).NotEmpty()
+            .Must(rt => BreakGlassResourceTypes.Allowed.Contains(rt))
+            .WithMessage("Break-glass covers prescription, lab_report, or medical_history only (ABDM is not overridable).");
+        // ResourceId is OPTIONAL: null = patient-wide for the resource type.
         RuleFor(x => x.Justification).NotEmpty().MinimumLength(10)
             .WithMessage("Break-glass requires a substantive justification.");
     }
@@ -230,11 +244,43 @@ public sealed class BreakGlassCommandHandler(
     public async Task<Guid> Handle(BreakGlassCommand command, CancellationToken ct)
     {
         var userId = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
-        var logId = await breakGlass.GrantAsync(userId, command.TenantId, command.ResourceType, command.ResourceId, command.Justification, ct);
+        var grantId = await breakGlass.GrantAsync(
+            userId, command.TenantId, command.PatientId, command.ResourceType, command.ResourceId, command.Justification, ct);
         await audit.RecordAsync(new AuditEntry(
-            "break_glass", command.ResourceType, command.ResourceId, null, ctx.UserId, command.TenantId,
+            "break_glass", command.ResourceType, command.ResourceId ?? command.PatientId, null, ctx.UserId, command.TenantId,
             ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
-            ChangeSummary: "Break-glass emergency access granted (flagged for review)", Purpose: "emergency"), ct);
-        return logId;
+            ChangeSummary: "Break-glass emergency access granted (scoped, time-boxed, flagged for review)", Purpose: "emergency"), ct);
+        return grantId;
+    }
+}
+
+// ---- Break-glass revoke (reviewer ends a grant early) --------------------------------------------
+
+/// <summary>Revokes an active break-glass grant (reviewer action; gated by the distinct review permission).</summary>
+public sealed record RevokeBreakGlassCommand(Guid TenantId, Guid GrantId) : ICommand<bool>;
+
+public sealed class RevokeBreakGlassValidator : AbstractValidator<RevokeBreakGlassCommand>
+{
+    public RevokeBreakGlassValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.GrantId).NotEmpty();
+    }
+}
+
+public sealed class RevokeBreakGlassCommandHandler(
+    IBreakGlassService breakGlass, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<RevokeBreakGlassCommand, bool>
+{
+    public async Task<bool> Handle(RevokeBreakGlassCommand command, CancellationToken ct)
+    {
+        var userId = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
+        var revoked = await breakGlass.RevokeAsync(command.GrantId, command.TenantId, userId, ct);
+        if (revoked)
+            await audit.RecordAsync(new AuditEntry(
+                "revoke", "break_glass_grant", command.GrantId, null, ctx.UserId, command.TenantId,
+                ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+                ChangeSummary: "Break-glass grant revoked by reviewer", Purpose: "audit"), ct);
+        return revoked;
     }
 }
