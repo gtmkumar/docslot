@@ -168,9 +168,9 @@ const carePartnersRoute = createRoute({
   path: '/care-partners',
   component: CarePartnersScreen,
 });
-// Care Partner self-service portal. Surfaced by the backend nav for partner-typed
-// sessions; the route exists so a /me/menus node (once seeded in the DB) resolves
-// without 404. See PortalScreen for the nav-seeding gap flagged to the orchestrator.
+// Care Partner self-service portal. Surfaced by the backend-driven nav for users
+// holding commission.broker.read_self (seeded in 08_rbac_navigation.sql as menu_key
+// 'partner_portal'); this route resolves the /me/menus node for that screen.
 const portalRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/portal',

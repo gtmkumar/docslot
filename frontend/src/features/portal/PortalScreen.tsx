@@ -4,10 +4,10 @@
 // the partner's own — the server resolves broker_id from the JWT (no id anywhere).
 // Customer-facing term is "Care Partner" (MCI 6.4) — never "broker".
 //
-// This route is rendered from the backend-driven nav like every other screen. If
-// the /me/menus tree has no node for it (the live backend hasn't seeded one yet),
-// the route still resolves; the nav gap is flagged to the orchestrator rather than
-// worked around with a role check.
+// This route is rendered from the backend-driven nav like every other screen: the
+// 'partner_portal' menu row (08_rbac_navigation.sql) is gated on the self-scoped
+// commission.broker.read_self, so it surfaces only for Care Partner sessions — no
+// role check in JSX.
 
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
