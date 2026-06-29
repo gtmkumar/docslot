@@ -159,6 +159,16 @@ public sealed class ClinicalController(
     public async Task<ActionResult<PushAbdmRecordResult>> PushAbdm([FromBody] PushAbdmRecordRequest request, CancellationToken ct)
         => Ok(await commands.Send(new PushAbdmRecordCommand(RequireTenant(), request), ct));
 
+    /// <summary>Publish a stored ABDM record's care context to the national network (HIP data push, via the ABDM
+    /// gateway). Active ABDM consent required (else 403); idempotent (re-link returns the existing care context).
+    /// Gated by the DANGEROUS <c>docslot.abdm.records.link</c> — national-network PHI egress is a distinct, higher
+    /// privilege than local store (<c>.create</c>), so it is excluded from the tenant_admin auto-grant.</summary>
+    [HttpPost("abdm/records/{recordId:guid}/link")]
+    [RequirePermission("docslot.abdm.records.link")]
+    [ProducesResponseType<LinkAbdmRecordResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<LinkAbdmRecordResult>> LinkAbdm(Guid recordId, CancellationToken ct)
+        => Ok(await commands.Send(new LinkAbdmRecordCommand(RequireTenant(), recordId), ct));
+
     [HttpGet("abdm/records/{recordId:guid}")]
     [RequirePermission("docslot.abdm.records.read")]
     [ProducesResponseType<AbdmRecordDto>(StatusCodes.Status200OK)]

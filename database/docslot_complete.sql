@@ -2134,7 +2134,11 @@ BEGIN
 
     -- ABDM
     ('docslot.abdm.records.read', docslot_product_id, 'abdm_records', 'read', 'tenant', 'Access ABDM records', true),
-    ('docslot.abdm.records.create', docslot_product_id, 'abdm_records', 'create', 'tenant', 'Push records to ABDM', false),
+    ('docslot.abdm.records.create', docslot_product_id, 'abdm_records', 'create', 'tenant', 'Push (store) records locally for ABDM', false),
+    -- Linking PUBLISHES a stored record's care context to the national ABDM network (PHI egress to the NHA
+    -- exchange) — a materially higher privilege than local store, so is_dangerous=true keeps it OUT of the
+    -- tenant_admin auto-grant (non-dangerous sweep); only tenant_owner (all-perms sweep) + super_admin hold it.
+    ('docslot.abdm.records.link', docslot_product_id, 'abdm_records', 'link', 'tenant', 'Publish (link) records to the national ABDM network', true),
     ('docslot.abdm.consents.manage', docslot_product_id, 'abdm_consents', 'update', 'tenant', 'Manage ABDM consents', true),
 
     -- Analytics

@@ -141,6 +141,17 @@ public static class InfrastructureRegistration
             services.AddSingleton<IDrugInteractionSource, Clinical.CuratedDrugInteractionSource>();
         services.AddScoped<IDrugSafetyScreeningService, Application.Features.Docslot.Clinical.DrugSafetyScreeningService>();
 
+        // ABDM (NHA) gateway — publishes stored health records as care contexts to the national network. Dev =
+        // a deterministic sandbox (no network); prod swaps the real 'nha' adapter by config; 'none' disables
+        // linking (honest refusal, never a fake success). Singleton (stateless). Same seam as the payout rail.
+        services.Configure<mediq.Application.Options.AbdmGatewayOptions>(
+            config.GetSection(mediq.Application.Options.AbdmGatewayOptions.SectionName));
+        if (string.Equals(config[$"{mediq.Application.Options.AbdmGatewayOptions.SectionName}:Provider"],
+                "none", StringComparison.OrdinalIgnoreCase))
+            services.AddSingleton<IAbdmGateway, Abdm.DisabledAbdmGateway>();
+        else
+            services.AddSingleton<IAbdmGateway, Abdm.SandboxAbdmGateway>();
+
         // Lab-report blob storage (PHI artifacts). Bytes are envelope-ENCRYPTED by the app BEFORE storage, so
         // the adapter only ever holds ciphertext. Dev = local filesystem (default) or in-memory (tests); prod
         // swaps in an object store (S3/GCS/Azure + provider SSE/KMS) by config (same pattern as the payout

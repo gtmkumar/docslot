@@ -316,14 +316,34 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
     public async Task<IReadOnlyList<AbdmHealthRecord>> ListAbdmRecordsAsync(Guid tenantId, Guid patientId, CancellationToken ct) =>
         await ReadAbdmAsync("WHERE tenant_id = @p0 AND patient_id = @p1 ORDER BY created_at DESC", ct, ("@p0", tenantId), ("@p1", patientId));
 
+    /// <summary>Single-winner conditional flip to LINKED (publishes the care context). Matches only an as-yet
+    /// unlinked record in the tenant → a concurrent second link returns false (idempotent at the handler).
+    /// Runs in the caller's tenant-scoped tx (the link command's settle phase).</summary>
+    public async Task<bool> MarkAbdmRecordLinkedAsync(Guid recordId, Guid tenantId, string? careContextId, DateTime nowUtc, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<LinkedRow>(
+                """
+                UPDATE docslot.abdm_health_records
+                SET is_linked_to_phr = true, linked_at = @p2, care_context_id = @p3
+                WHERE record_id = @p0 AND tenant_id = @p1 AND is_linked_to_phr = false
+                RETURNING care_context_id AS "CareContextId"
+                """,
+                Params(("@p0", recordId), ("@p1", tenantId), ("@p2", nowUtc), ("@p3", (object?)careContextId ?? DBNull.Value)))
+            .ToListAsync(ct);
+        return rows.Count > 0;
+    }
+
     private async Task<List<AbdmHealthRecord>> ReadAbdmAsync(string where, CancellationToken ct, params (string Name, object Value)[] ps)
     {
         var conn = (NpgsqlConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
             "SELECT record_id, patient_id, tenant_id, booking_id, abha_number, record_type, " +
-            "fhir_bundle #>> '{}', is_linked_to_phr, consent_id, created_at " +
+            "fhir_bundle #>> '{}', is_linked_to_phr, consent_id, created_at, care_context_id, linked_at " +
             "FROM docslot.abdm_health_records " + where, conn);
+        // Enlist the ambient tenant-scoped tx when reading inside a command (e.g. the link command's load phase);
+        // null in a plain query path → runs on the connection scoped by the query behavior (house pattern).
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
         foreach (var (n, v) in ps) cmd.Parameters.AddWithValue(n, v);
         await using var rd = await cmd.ExecuteReaderAsync(ct);
         var result = new List<AbdmHealthRecord>();
@@ -331,7 +351,8 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
             result.Add(AbdmHealthRecord.FromRow(
                 rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.IsDBNull(3) ? null : rd.GetGuid(3),
                 rd.GetString(4), rd.GetString(5), rd.GetString(6), rd.GetBoolean(7),
-                rd.IsDBNull(8) ? null : rd.GetString(8), rd.GetDateTime(9)));
+                rd.IsDBNull(8) ? null : rd.GetString(8), rd.GetDateTime(9),
+                rd.IsDBNull(10) ? null : rd.GetString(10), rd.IsDBNull(11) ? null : rd.GetDateTime(11)));
         return result;
     }
 
@@ -459,5 +480,6 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
     private sealed record LabListRow(Guid ReportId, string? ReportNumber, string TestName, string Status, bool HasCriticalFindings, DateTime CreatedAt);
     private sealed record DeliverRow(string Status, DateTime? DeliveredAt);
     private sealed record AmendedRow(string Status);
+    private sealed record LinkedRow(string? CareContextId);
     private sealed record ConsentRow(Guid PatientId, string? Phone, bool ClinicalConsentActive, bool AbdmConsentActive, DateTime? AbdmConsentExpiresAt);
 }

@@ -45,6 +45,10 @@ public interface IClinicalRepository
     Task AddAbdmRecordAsync(AbdmHealthRecord record, CancellationToken ct);
     Task<AbdmHealthRecord?> GetAbdmRecordAsync(Guid recordId, Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<AbdmHealthRecord>> ListAbdmRecordsAsync(Guid tenantId, Guid patientId, CancellationToken ct);
+    /// <summary>Marks an ABDM record LINKED (published to the national network): single-winner conditional flip
+    /// (is_linked_to_phr=true, linked_at, care_context_id) on an as-yet-unlinked record in the tenant. Returns
+    /// false if it was already linked / not found (→ idempotent re-link at the handler).</summary>
+    Task<bool> MarkAbdmRecordLinkedAsync(Guid recordId, Guid tenantId, string? careContextId, DateTime nowUtc, CancellationToken ct);
 
     // ---- Drug-safety alerts (generated at prescription issue/amend) -------------------------------
 

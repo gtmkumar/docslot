@@ -429,6 +429,90 @@ public sealed class GetAbdmRecordQueryHandler(
         var encCtx = new EncryptionContext(userId, q.TenantId, "abdm_record", r.PatientId, ctx.IpAddress);
         var fhir = await encryption.DecryptAsync(ClinicalFields.FhirBundle, r.FhirBundleEnc, encCtx, ct);
         return new AbdmRecordDto(r.RecordId, r.PatientId, r.AbhaNumber, r.RecordType, fhir, r.IsLinkedToPhr,
-            new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)));
+            r.CareContextId, new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)));
+    }
+}
+
+// ---- ABDM care-context LINK (publish a stored record to the national network; consent-REQUIRED) --------
+
+/// <summary>
+/// Publishes a stored ABDM record's care context to the national ABDM network via <see cref="IAbdmGateway"/>
+/// (HIP data push). ISelfManagedTransaction so the gateway call runs OUTSIDE any DB transaction (no row lock
+/// held across network I/O — the payout-rail pattern): phase 1 load + ABDM-consent gate (own committed scope),
+/// phase 2 the gateway call, phase 3 the single-winner linkage flip + audit + event (own committed scope).
+/// </summary>
+public sealed record LinkAbdmRecordCommand(Guid TenantId, Guid RecordId) : ICommand<LinkAbdmRecordResult>, ISelfManagedTransaction;
+
+public sealed class LinkAbdmRecordValidator : AbstractValidator<LinkAbdmRecordCommand>
+{
+    public LinkAbdmRecordValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.RecordId).NotEmpty();
+    }
+}
+
+public sealed class LinkAbdmRecordCommandHandler(
+    IClinicalRepository clinical, IAbdmConsentService consent, IAbdmGateway gateway,
+    IBookingEventPublisher events, IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock, IUnitOfWork uow)
+    : ICommandHandler<LinkAbdmRecordCommand, LinkAbdmRecordResult>
+{
+    public async Task<LinkAbdmRecordResult> Handle(LinkAbdmRecordCommand command, CancellationToken ct)
+    {
+        var userId = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
+
+        // ── Phase 1 — load + ABDM-consent gate in an own committed scope; release before the gateway call.
+        AbdmHealthRecord record;
+        await using (var load = await uow.BeginTenantScopeAsync(command.TenantId, ct))
+        {
+            record = await clinical.GetAbdmRecordAsync(command.RecordId, command.TenantId, ct)
+                ?? throw new KeyNotFoundException("ABDM record not found.");   // RLS also blocks cross-tenant
+
+            // Linking DISCLOSES the care context to the national ABDM network → an active ABDM consent is MANDATORY.
+            if (await consent.GetActiveConsentIdAsync(record.PatientId, command.TenantId, ct) is null)
+                throw new ForbiddenException("No active ABDM consent for this patient/tenant; ABDM link denied.");
+
+            if (record.IsLinkedToPhr)   // already published → idempotent
+            {
+                await load.CommitAsync(ct);
+                return new LinkAbdmRecordResult(record.RecordId, true, record.CareContextId, gateway.ProviderName);
+            }
+            await load.CommitAsync(ct);
+        }
+
+        // ── Phase 2 — publish to the ABDM network OUTSIDE any DB tx (no lock held across the network I/O).
+        var result = await gateway.LinkCareContextAsync(
+            new AbdmLinkRequest(command.TenantId, record.PatientId, record.RecordId, record.AbhaNumber, record.RecordType, record.ConsentId), ct);
+
+        if (!result.Linked)
+            throw new BusinessRuleException($"ABDM link was not completed: {result.FailureReason ?? "gateway declined"}");
+
+        // ── Phase 3 — persist the linkage in a fresh committed tx; the conditional UPDATE is the single-winner gate.
+        await using (var settle = await uow.BeginTenantScopeAsync(command.TenantId, ct))
+        {
+            // false → a concurrent link already won (record already linked). Idempotent: do NOT write a second
+            // audit row or re-publish the event — return the persisted care context.
+            if (!await clinical.MarkAbdmRecordLinkedAsync(record.RecordId, command.TenantId, result.CareContextId, clock.UtcNow, ct))
+            {
+                var current = await clinical.GetAbdmRecordAsync(record.RecordId, command.TenantId, ct);
+                await settle.CommitAsync(ct);
+                return new LinkAbdmRecordResult(record.RecordId, true, current?.CareContextId ?? result.CareContextId, gateway.ProviderName);
+            }
+
+            // Single winner only — exactly one audit row + one event per real linkage.
+            await audit.RecordAsync(new AuditEntry(
+                "link", "abdm_record", record.RecordId, null, userId, command.TenantId,
+                ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+                ChangeSummary: $"ABDM care-context linked via {gateway.ProviderName} (care_context_id set)",
+                Purpose: "treatment", LegalBasis: "consent"), ct);
+
+            // Integration event — IDs ONLY, NO PHI / no ABDM identifiers.
+            await events.PublishAsync("docslot.abdm.record.linked", command.TenantId, record.RecordId, null,
+                new { record_id = record.RecordId, patient_id = record.PatientId, booking_id = record.BookingId }, ct);
+
+            await settle.CommitAsync(ct);
+        }
+
+        return new LinkAbdmRecordResult(record.RecordId, true, result.CareContextId, gateway.ProviderName);
     }
 }
