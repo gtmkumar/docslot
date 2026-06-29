@@ -68,6 +68,7 @@ GRANT DELETE ON
     platform_api.api_tokens,
     platform_api.webhook_subscriptions,
     platform_api.webhook_deliveries,
+    platform_api.integration_event_outbox,
     docslot.slot_holds,
     docslot.patient_tenant_links,
     commission.referral_clicks,

@@ -58,6 +58,13 @@ if (string.Equals(builder.Configuration["Messaging:Provider"], "rabbitmq", Strin
 if (builder.Configuration.GetValue("Messaging:DrainWorkerEnabled", false))
     builder.Services.AddHostedService<mediq.Api.Workers.IntegrationEventDrainWorker>();
 
+// --- Retention pruner worker: physically deletes AGED terminal status='success' rows from the two append-only
+// platform_api operational tables (integration_event_outbox / webhook_deliveries) on a slow sweep, closing the
+// unbounded-growth ops hazard. DEFAULT-OFF (Retention:PrunerEnabled=false) — physical deletion is opt-in;
+// 'failed'/'pending'/'processing' are never deleted and 'abandoned' dead-letters are kept (forensic). ---
+if (builder.Configuration.GetValue("Retention:PrunerEnabled", false))
+    builder.Services.AddHostedService<mediq.Api.Workers.RetentionPruneWorker>();
+
 // --- Cross-cutting / web ---
 builder.Services.AddRequestContext();
 builder.Services.AddPlatformJwtAuth(builder.Configuration);

@@ -96,6 +96,14 @@ public static class InfrastructureRegistration
         services.AddScoped<IIntegrationOutboxStore, Messaging.IntegrationOutboxStore>();
         services.AddScoped<IIntegrationEventOutboxDrainStore, Messaging.IntegrationEventOutboxDrainStore>();
 
+        // Retention pruner (phase-4): a config-gated SWEEP worker (RetentionPruneWorker, registered in Program
+        // behind Retention:PrunerEnabled) physically deletes AGED, terminal status='success' rows from the two
+        // append-only platform_api operational tables (integration_event_outbox / webhook_deliveries), closing the
+        // unbounded-growth ops hazard. DEFAULT-OFF; only success rows past the retention window are removed.
+        services.Configure<mediq.Application.Options.RetentionPruneOptions>(
+            config.GetSection(mediq.Application.Options.RetentionPruneOptions.SectionName));
+        services.AddScoped<IRetentionPruneStore, Messaging.RetentionPruneStore>();
+
         // docslot (slice 03 — booking core). Repositories, read services, slot holds, OPD tokens,
         // purpose-of-use, booking-event publisher. Clinical PHI services deferred to 03b/05.
         services.AddScoped<IBookingRepository, Docslot.BookingRepository>();
