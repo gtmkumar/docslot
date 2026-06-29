@@ -30,7 +30,19 @@ public sealed class FieldEncryptionService(PlatformDbContext db, IKeyManagementS
                 new NpgsqlParameter("@p2", field.Column))
             .ToListAsync(ct) is [{ Value: true }, ..];
 
-    public async Task<string> EncryptAsync(FieldRef field, Guid? tenantId, string plaintext, EncryptionContext ctx, CancellationToken ct)
+    public Task<string> EncryptAsync(FieldRef field, Guid? tenantId, string plaintext, EncryptionContext ctx, CancellationToken ct)
+        => EncryptCoreAsync(field, tenantId, Encoding.UTF8.GetBytes(plaintext), ctx, ct);
+
+    public Task<string> EncryptBytesAsync(FieldRef field, Guid? tenantId, byte[] plaintext, EncryptionContext ctx, CancellationToken ct)
+        => EncryptCoreAsync(field, tenantId, plaintext, ctx, ct);
+
+    public async Task<string> DecryptAsync(FieldRef field, string envelope, EncryptionContext ctx, CancellationToken ct)
+        => Encoding.UTF8.GetString(await DecryptCoreAsync(envelope, ctx, ct));
+
+    public Task<byte[]> DecryptBytesAsync(FieldRef field, string envelope, EncryptionContext ctx, CancellationToken ct)
+        => DecryptCoreAsync(envelope, ctx, ct);
+
+    private async Task<string> EncryptCoreAsync(FieldRef field, Guid? tenantId, byte[] plainBytes, EncryptionContext ctx, CancellationToken ct)
     {
         var dataClass = await ResolveDataClassAsync(field, ct);
         var key = await kms.GetActiveKeyAsync(tenantId, dataClass, ct);
@@ -39,7 +51,6 @@ public sealed class FieldEncryptionService(PlatformDbContext db, IKeyManagementS
         var dataKey = RandomNumberGenerator.GetBytes(32);
         var wrapped = kms.WrapDataKey(key, dataKey);
         var nonce = RandomNumberGenerator.GetBytes(12);
-        var plainBytes = Encoding.UTF8.GetBytes(plaintext);
         var ciphertext = new byte[plainBytes.Length];
         var tag = new byte[16];
         using (var aes = new AesGcm(dataKey, 16))
@@ -55,7 +66,7 @@ public sealed class FieldEncryptionService(PlatformDbContext db, IKeyManagementS
         return payload;
     }
 
-    public async Task<string> DecryptAsync(FieldRef field, string envelope, EncryptionContext ctx, CancellationToken ct)
+    private async Task<byte[]> DecryptCoreAsync(string envelope, EncryptionContext ctx, CancellationToken ct)
     {
         Envelope env;
         try
@@ -82,7 +93,7 @@ public sealed class FieldEncryptionService(PlatformDbContext db, IKeyManagementS
             CryptographicOperations.ZeroMemory(dataKey);
 
             await LogUsageAsync(key.KeyId, "decrypt", ctx, success: true, error: null, ct);
-            return Encoding.UTF8.GetString(plain);
+            return plain;
         }
         catch (Exception ex)
         {

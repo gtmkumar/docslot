@@ -126,17 +126,43 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         await using var cmd = new NpgsqlCommand(
             """
             SELECT report_id, report_number, booking_id, patient_id, tenant_id, test_id, file_name,
+                   file_url, file_size_bytes, file_mime_type,
                    structured_results #>> '{}', status, has_critical_findings, created_at
             FROM docslot.lab_reports WHERE report_id = @p0 AND tenant_id = @p1
             """, conn);
         cmd.Parameters.AddWithValue("@p0", reportId);
         cmd.Parameters.AddWithValue("@p1", tenantId);
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;   // ambient tx (house pattern)
         await using var rd = await cmd.ExecuteReaderAsync(ct);
         if (!await rd.ReadAsync(ct)) return null;
         return LabReport.FromRow(
             rd.GetGuid(0), rd.IsDBNull(1) ? null : rd.GetString(1), rd.GetGuid(2), rd.GetGuid(3), rd.GetGuid(4),
             rd.IsDBNull(5) ? null : rd.GetGuid(5), rd.IsDBNull(6) ? null : rd.GetString(6),
-            rd.IsDBNull(7) ? null : rd.GetString(7), rd.GetString(8), rd.GetBoolean(9), rd.GetDateTime(10));
+            rd.IsDBNull(7) ? null : rd.GetString(7), rd.IsDBNull(8) ? (long?)null : rd.GetInt64(8),
+            rd.IsDBNull(9) ? null : rd.GetString(9), rd.IsDBNull(10) ? null : rd.GetString(10),
+            rd.GetString(11), rd.GetBoolean(12), rd.GetDateTime(13));
+    }
+
+    public async Task<bool> SetLabReportFileAsync(
+        Guid reportId, Guid tenantId, string storageKey, string fileName, long sizeBytes, string mimeType,
+        Guid? uploadedByUserId, DateTime nowUtc, CancellationToken ct)
+    {
+        // Attach (or replace) the stored PHI artifact reference on a tenant-scoped report. pending → ready.
+        var rows = await db.Database.SqlQueryRaw<AmendedRow>(
+                """
+                UPDATE docslot.lab_reports
+                SET file_url = @p2, file_name = @p3, file_size_bytes = @p4, file_mime_type = @p5,
+                    status = CASE WHEN status = 'pending' THEN 'ready' ELSE status END,
+                    uploaded_at = @p7, uploaded_by_user_id = @p6, updated_at = @p7
+                WHERE report_id = @p0 AND tenant_id = @p1
+                RETURNING status AS "Status"
+                """,
+                Params(
+                    ("@p0", reportId), ("@p1", tenantId), ("@p2", storageKey), ("@p3", fileName),
+                    ("@p4", sizeBytes), ("@p5", mimeType),
+                    ("@p6", (object?)uploadedByUserId ?? DBNull.Value), ("@p7", nowUtc)))
+            .ToListAsync(ct);
+        return rows.Count > 0;
     }
 
     public async Task<IReadOnlyList<LabReportListRow>> ListLabReportsAsync(Guid tenantId, Guid patientId, CancellationToken ct)

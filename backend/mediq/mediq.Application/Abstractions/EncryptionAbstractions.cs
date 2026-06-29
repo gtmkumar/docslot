@@ -44,6 +44,13 @@ public interface IFieldEncryptionService
     /// <summary>Decrypts an envelope produced by <see cref="EncryptAsync"/>. Throws if the key was destroyed.</summary>
     Task<string> DecryptAsync(FieldRef field, string envelope, EncryptionContext ctx, CancellationToken ct);
 
+    /// <summary>Encrypts raw bytes (e.g. a PHI file blob) under the field's data_class key. Same envelope as
+    /// <see cref="EncryptAsync"/>, so the same key resolution + DPDP cryptographic erasure apply.</summary>
+    Task<string> EncryptBytesAsync(FieldRef field, Guid? tenantId, byte[] plaintext, EncryptionContext ctx, CancellationToken ct);
+
+    /// <summary>Decrypts an envelope produced by <see cref="EncryptBytesAsync"/> back to raw bytes.</summary>
+    Task<byte[]> DecryptBytesAsync(FieldRef field, string envelope, EncryptionContext ctx, CancellationToken ct);
+
     /// <summary>True if the registry marks (schema.table.column) as encryption-required.</summary>
     Task<bool> IsRegisteredAsync(FieldRef field, CancellationToken ct);
 }

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using mediq.SharedDataModel.Docslot.Auth;
 using mediq.SharedDataModel.Docslot.Clinical;
 using Npgsql;
@@ -109,6 +110,63 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
         var missing = await client.PostAsJsonAsync($"/api/v1/prescriptions/{Guid.NewGuid()}/amend",
             new AmendPrescriptionRequest(null, null, "x", "[]", null, null, "amend a ghost prescription"));
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+    }
+
+    [Fact]
+    public async Task LabReport_File_Is_Encrypted_At_Rest_And_Download_Is_Consent_Gated()
+    {
+        var client = await AuthedClientAsync();
+
+        // Create the lab-report record, then attach the PHI artifact (a small fake PDF).
+        var upload = await client.PostAsJsonAsync("/api/v1/lab-reports", new UploadLabReportRequest(
+            factory.BookingId, factory.PatientId, null, "cbc.pdf", "{\"hb\":\"13.5\"}", false));
+        var report = await upload.Content.ReadFromJsonAsync<UploadLabReportResult>();
+        Assert.NotNull(report);
+
+        var pdfBytes = Encoding.UTF8.GetBytes("%PDF-1.7\nCBC RESULT Hemoglobin 13.5 g/dL [PHI lab artifact]\n%%EOF");
+        var setFile = await client.PostAsJsonAsync($"/api/v1/lab-reports/{report!.ReportId}/file",
+            new SetLabReportFileRequest("cbc.pdf", "application/pdf", Convert.ToBase64String(pdfBytes)));
+        Assert.Equal(HttpStatusCode.Created, setFile.StatusCode);
+        var fileResult = await setFile.Content.ReadFromJsonAsync<SetLabReportFileResult>();
+        Assert.Equal(pdfBytes.LongLength, fileResult!.SizeBytes);   // plaintext size recorded
+
+        // DB metadata: a storage key + plaintext size are recorded; the report is ready.
+        var fileUrl = await ScalarStrAsync("SELECT file_url FROM docslot.lab_reports WHERE report_id=@id", ("id", report.ReportId));
+        Assert.False(string.IsNullOrEmpty(fileUrl));
+        Assert.Equal("ready", await ScalarStrAsync("SELECT status FROM docslot.lab_reports WHERE report_id=@id", ("id", report.ReportId)));
+        Assert.Equal(pdfBytes.Length, await ScalarIntAsync("SELECT file_size_bytes::int FROM docslot.lab_reports WHERE report_id=@id", ("id", report.ReportId)));
+
+        // CIPHERTEXT AT REST: the bytes stored in the blob are an encryption envelope, NOT the plaintext PDF.
+        var onDisk = Encoding.UTF8.GetString(await File.ReadAllBytesAsync(Path.Combine(factory.BlobRoot, fileUrl!)));
+        Assert.DoesNotContain("Hemoglobin", onDisk);
+        Assert.DoesNotContain("%PDF", onDisk);
+        Assert.Contains("\"keyId\"", Encoding.UTF8.GetString(Convert.FromBase64String(onDisk)));   // self-describing envelope
+
+        // Authorized download (consent + purpose-of-use) → decrypts back to the EXACT original bytes.
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var download = await client.GetAsync($"/api/v1/lab-reports/{report.ReportId}/file");
+        Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+        Assert.Equal("application/pdf", download.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(pdfBytes, await download.Content.ReadAsByteArrayAsync());
+
+        // CONSENT GATE: with consent revoked the PHI download is refused (403). Restore after.
+        await ExecAsync("UPDATE docslot.patients SET consent_given_at=NULL WHERE patient_id=@p", ("p", factory.PatientId));
+        try
+        {
+            var denied = await client.GetAsync($"/api/v1/lab-reports/{report.ReportId}/file");
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        }
+        finally
+        {
+            await ExecAsync("UPDATE docslot.patients SET consent_given_at=NOW() WHERE patient_id=@p", ("p", factory.PatientId));
+        }
+
+        // A report with NO attached file → 404 on download (the gate passes; there is simply no artifact).
+        var upload2 = await client.PostAsJsonAsync("/api/v1/lab-reports", new UploadLabReportRequest(
+            factory.BookingId, factory.PatientId, null, null, null, false));
+        var report2 = await upload2.Content.ReadFromJsonAsync<UploadLabReportResult>();
+        var noFile = await client.GetAsync($"/api/v1/lab-reports/{report2!.ReportId}/file");
+        Assert.Equal(HttpStatusCode.NotFound, noFile.StatusCode);
     }
 
     [Fact]

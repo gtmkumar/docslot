@@ -49,6 +49,9 @@ public sealed class LabReportConfiguration : IEntityTypeConfiguration<LabReport>
         b.Property(x => x.TenantId).HasColumnName("tenant_id");
         b.Property(x => x.TestId).HasColumnName("test_id");
         b.Property(x => x.FileName).HasColumnName("file_name");
+        b.Property(x => x.FileUrl).HasColumnName("file_url");
+        b.Property(x => x.FileSizeBytes).HasColumnName("file_size_bytes");
+        b.Property(x => x.FileMimeType).HasColumnName("file_mime_type");
         b.Property(x => x.StructuredResultsEnc).HasColumnName("structured_results").HasColumnType("jsonb");
         b.Property(x => x.Status).HasColumnName("status");
         b.Property(x => x.HasCriticalFindings).HasColumnName("has_critical_findings");

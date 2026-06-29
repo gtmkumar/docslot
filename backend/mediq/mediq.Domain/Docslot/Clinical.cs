@@ -92,6 +92,11 @@ public sealed class LabReport
     public Guid TenantId { get; private set; }
     public Guid? TestId { get; private set; }
     public string? FileName { get; private set; }
+    // The stored PHI artifact (PDF/image): file_url holds the opaque blob storage KEY (not a public URL); the
+    // bytes at that key are an encrypted envelope. NULL until a file is attached via the file-upload endpoint.
+    public string? FileUrl { get; private set; }
+    public long? FileSizeBytes { get; private set; }
+    public string? FileMimeType { get; private set; }
     public string? StructuredResultsEnc { get; private set; }   // encrypted envelope
     public string Status { get; private set; } = "pending";
     public bool HasCriticalFindings { get; private set; }
@@ -114,11 +119,13 @@ public sealed class LabReport
 
     public static LabReport FromRow(
         Guid id, string? number, Guid bookingId, Guid patientId, Guid tenantId, Guid? testId, string? fileName,
+        string? fileUrl, long? fileSizeBytes, string? fileMimeType,
         string? resultsEnc, string status, bool hasCritical, DateTime createdAt)
         => new()
         {
             ReportId = id, ReportNumber = number, BookingId = bookingId, PatientId = patientId, TenantId = tenantId,
-            TestId = testId, FileName = fileName, StructuredResultsEnc = resultsEnc, Status = status,
+            TestId = testId, FileName = fileName, FileUrl = fileUrl, FileSizeBytes = fileSizeBytes,
+            FileMimeType = fileMimeType, StructuredResultsEnc = resultsEnc, Status = status,
             HasCriticalFindings = hasCritical, CreatedAt = createdAt, UpdatedAt = createdAt,
         };
 }

@@ -20,6 +20,10 @@ public interface IClinicalRepository
 
     Task<string?> AddLabReportAsync(LabReport report, CancellationToken ct);               // returns report_number
     Task<LabReport?> GetLabReportAsync(Guid reportId, Guid tenantId, CancellationToken ct);
+    /// <summary>Attaches (or replaces) the stored PHI artifact reference (blob key + file metadata) on a
+    /// tenant-scoped report; pending → ready. Returns false if the report was not found in this tenant.</summary>
+    Task<bool> SetLabReportFileAsync(Guid reportId, Guid tenantId, string storageKey, string fileName,
+        long sizeBytes, string mimeType, Guid? uploadedByUserId, DateTime nowUtc, CancellationToken ct);
     Task<IReadOnlyList<LabReportListRow>> ListLabReportsAsync(Guid tenantId, Guid patientId, CancellationToken ct);
     /// <summary>Marks a report delivered (status→delivered, delivered_at=now). Returns the new (status, deliveredAt) or null if not found.</summary>
     Task<(string Status, DateTime? DeliveredAt)?> DeliverLabReportAsync(Guid reportId, Guid tenantId, CancellationToken ct);
