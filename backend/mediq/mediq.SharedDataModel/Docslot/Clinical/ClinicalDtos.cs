@@ -59,6 +59,15 @@ public sealed record UploadLabReportRequest(
 
 public sealed record UploadLabReportResult(Guid ReportId, string? ReportNumber);
 
+// Attach the PHI artifact (PDF/image) to a lab report. Content is base64 in the JSON body (the internal
+// storage seam; a multipart/presigned-upload path is the prod follow-up for large files).
+public sealed record SetLabReportFileRequest(string FileName, string ContentType, string ContentBase64);
+
+public sealed record SetLabReportFileResult(Guid ReportId, long SizeBytes);
+
+// The decrypted file streamed back by the consent-gated download endpoint (never serialized as JSON).
+public sealed record LabReportFileDto(Guid ReportId, string FileName, string ContentType, byte[] Content);
+
 public sealed record LabReportDto(
     Guid ReportId, string? ReportNumber, Guid PatientId, Guid? TestId, string? FileName,
     string? StructuredResultsJson,   // decrypted

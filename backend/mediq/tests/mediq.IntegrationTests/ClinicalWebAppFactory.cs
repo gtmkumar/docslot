@@ -27,7 +27,16 @@ public sealed class ClinicalWebAppFactory : WebApplicationFactory<Program>, IAsy
     public string AdminEmail { get; } = $"slice03b.admin+{Guid.NewGuid():N}@docslot.test";
     public string PatientPhone { get; } = $"+9196{Random.Shared.Next(10000000, 99999999)}";
 
-    protected override void ConfigureWebHost(IWebHostBuilder builder) => builder.UseEnvironment("Development");
+    // Local-filesystem blob root for the test API, so the blob test can read the stored bytes off disk and
+    // prove the PHI artifact is ciphertext at rest. Cleaned up in DisposeAsync.
+    public string BlobRoot { get; } = Path.Combine(Path.GetTempPath(), $"docslot-blobtest-{Guid.NewGuid():N}");
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Development");
+        builder.UseSetting("BlobStorage:Provider", "local_fs");
+        builder.UseSetting("BlobStorage:RootPath", BlobRoot);
+    }
 
     public async Task InitializeAsync()
     {
@@ -131,6 +140,7 @@ public sealed class ClinicalWebAppFactory : WebApplicationFactory<Program>, IAsy
         await Exec(conn, "UPDATE platform.users SET deleted_at=NOW(), is_active=false, email=@a WHERE user_id=@u", ("a", $"del+{AdminUserId}@s03b.test"), ("u", AdminUserId));
         foreach (var t in new[] { TenantA, TenantB })
             await Exec(conn, "UPDATE platform.tenants SET deleted_at=NOW(), status='archived' WHERE tenant_id=@t", ("t", t));
+        if (Directory.Exists(BlobRoot)) Directory.Delete(BlobRoot, recursive: true);
         await base.DisposeAsync();
     }
 

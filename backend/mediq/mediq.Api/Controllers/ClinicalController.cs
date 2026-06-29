@@ -71,6 +71,30 @@ public sealed class ClinicalController(
     public async Task<ActionResult<LabReportDto>> GetReport(Guid reportId, CancellationToken ct)
         => Ok(await queries.Query(new GetLabReportQuery(RequireTenant(), reportId, Purpose()), ct));
 
+    // Attach the PHI artifact (PDF/image) — envelope-encrypted at rest in tenant-scoped blob storage.
+    // RequestSizeLimit bounds the body at the pipeline (before model binding buffers it) — defense-in-depth
+    // with the validator's base64-length cap against an unbounded-upload DoS (auditor finding).
+    [HttpPost("lab-reports/{reportId:guid}/file")]
+    [RequirePermission("docslot.report.upload")]
+    [RequestSizeLimit(30_000_000)]
+    [ProducesResponseType<SetLabReportFileResult>(StatusCodes.Status201Created)]
+    public async Task<ActionResult<SetLabReportFileResult>> SetReportFile(
+        Guid reportId, [FromBody] SetLabReportFileRequest request, CancellationToken ct)
+    {
+        var result = await commands.Send(new SetLabReportFileCommand(RequireTenant(), reportId, request), ct);
+        return CreatedAtAction(nameof(GetReport), new { reportId = result.ReportId }, result);
+    }
+
+    // Download the PHI artifact — consent + purpose-of-use + break-glass gated (same gate as reading results).
+    [HttpGet("lab-reports/{reportId:guid}/file")]
+    [RequirePermission("docslot.report.read")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<IActionResult> DownloadReportFile(Guid reportId, CancellationToken ct)
+    {
+        var file = await queries.Query(new GetLabReportFileQuery(RequireTenant(), reportId, Purpose()), ct);
+        return File(file.Content, file.ContentType, file.FileName);
+    }
+
     /// <summary>List a patient's lab reports — headers only (no decrypted body). Requires X-Purpose-Of-Use + consent.</summary>
     [HttpGet("patients/{patientId:guid}/lab-reports")]
     [RequirePermission("docslot.report.read")]

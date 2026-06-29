@@ -129,6 +129,18 @@ public static class InfrastructureRegistration
         services.AddScoped<IAbdmConsentService, Docslot.AbdmConsentService>();
         services.AddScoped<IAccessPolicyService, Docslot.AccessPolicyService>();
 
+        // Lab-report blob storage (PHI artifacts). Bytes are envelope-ENCRYPTED by the app BEFORE storage, so
+        // the adapter only ever holds ciphertext. Dev = local filesystem (default) or in-memory (tests); prod
+        // swaps in an object store (S3/GCS/Azure + provider SSE/KMS) by config (same pattern as the payout
+        // rail). Tenant-namespaced keys + a cross-tenant read guard. Singleton (stateless / process store).
+        services.Configure<mediq.Application.Options.BlobStorageOptions>(
+            config.GetSection(mediq.Application.Options.BlobStorageOptions.SectionName));
+        if (string.Equals(config[$"{mediq.Application.Options.BlobStorageOptions.SectionName}:Provider"],
+                "in_memory", StringComparison.OrdinalIgnoreCase))
+            services.AddSingleton<IBlobStorage, Storage.InMemoryBlobStorage>();
+        else
+            services.AddSingleton<IBlobStorage, Storage.LocalFileSystemBlobStorage>();
+
         // Commission / broker economy (slice 07) — PAN-encrypted KYC, attribution engine, payouts, disputes.
         services.AddScoped<IBrokerRepository, Commission.BrokerRepository>();
         services.AddScoped<IAttributionRepository, Commission.AttributionRepository>();

@@ -1,3 +1,4 @@
+using System.Text;
 using FluentValidation;
 using mediq.Application.Abstractions;
 using mediq.Application.Cqrs;
@@ -96,6 +97,108 @@ public sealed class GetLabReportQueryHandler(
 
         return new LabReportDto(r.ReportId, r.ReportNumber, r.PatientId, r.TestId, r.FileName,
             resultsJson, r.Status, r.HasCriticalFindings, new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)));
+    }
+}
+
+// ---- Lab report file: store the PHI artifact (encrypted-at-rest blob) ------------------------------
+
+public sealed record SetLabReportFileCommand(Guid TenantId, Guid ReportId, SetLabReportFileRequest Request) : ICommand<SetLabReportFileResult>;
+
+public sealed class SetLabReportFileValidator : AbstractValidator<SetLabReportFileCommand>
+{
+    // Bound the inline (base64-in-JSON) upload so a single request can't buffer an unbounded body (DoS).
+    // ~28M base64 chars ≈ a 20 MB file; larger files use the object-store/presigned path in prod.
+    internal const int MaxBase64Length = 28_000_000;
+
+    public SetLabReportFileValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.ReportId).NotEmpty();
+        RuleFor(x => x.Request.FileName).NotEmpty();
+        RuleFor(x => x.Request.ContentType).NotEmpty();
+        RuleFor(x => x.Request.ContentBase64).NotEmpty()
+            .Must(s => string.IsNullOrEmpty(s) || s.Length <= MaxBase64Length)
+            .WithMessage("File too large for the inline upload (max ~20 MB); use the object-store upload path for larger files.");
+    }
+}
+
+public sealed class SetLabReportFileCommandHandler(
+    IClinicalRepository clinical, IFieldEncryptionService encryption, IBlobStorage blobs,
+    IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    : ICommandHandler<SetLabReportFileCommand, SetLabReportFileResult>
+{
+    public async Task<SetLabReportFileResult> Handle(SetLabReportFileCommand command, CancellationToken ct)
+    {
+        var req = command.Request;
+        var report = await clinical.GetLabReportAsync(command.ReportId, command.TenantId, ct)
+            ?? throw new KeyNotFoundException("Lab report not found.");   // RLS/tenant filter blocks cross-tenant
+
+        byte[] content;
+        try { content = Convert.FromBase64String(req.ContentBase64); }
+        catch (FormatException)
+        {
+            throw new mediq.Utilities.Exceptions.ValidationException(new Dictionary<string, string[]> { ["contentBase64"] = ["File content must be valid base64."] });
+        }
+
+        // The artifact is PHI → envelope-encrypt the BYTES (medical_history data_class) BEFORE storage, so the
+        // blob store only holds ciphertext and DPDP key destruction renders it unrecoverable. file_size_bytes
+        // records the PLAINTEXT size; the stored envelope is larger.
+        var encCtx = new EncryptionContext(ctx.UserId, command.TenantId, "lab_report", report.PatientId, ctx.IpAddress);
+        var envelope = await encryption.EncryptBytesAsync(ClinicalFields.ReportResults, command.TenantId, content, encCtx, ct);
+        var stored = await blobs.PutAsync(command.TenantId, "lab_report", report.ReportId, req.FileName, Encoding.UTF8.GetBytes(envelope), ct);
+
+        await clinical.SetLabReportFileAsync(report.ReportId, command.TenantId, stored.StorageKey, req.FileName,
+            content.LongLength, req.ContentType, ctx.UserId, clock.UtcNow, ct);
+
+        await audit.RecordAsync(new AuditEntry(
+            "upload_file", "lab_report", report.ReportId, report.ReportNumber, ctx.UserId, command.TenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Lab-report file stored (encrypted; {content.LongLength} bytes)"), ct);
+
+        return new SetLabReportFileResult(report.ReportId, content.LongLength);
+    }
+}
+
+// ---- Lab report file download (decrypts; purpose + consent + break-glass — the file is PHI) ---------
+
+public sealed record GetLabReportFileQuery(Guid TenantId, Guid ReportId, string DeclaredPurpose) : IQuery<LabReportFileDto>;
+
+public sealed class GetLabReportFileQueryHandler(
+    IClinicalRepository clinical, IFieldEncryptionService encryption, IBlobStorage blobs,
+    IPatientRepository patients, IPurposeOfUseWriter purpose, IBreakGlassService breakGlass, ICurrentUserContext ctx)
+    : IQueryHandler<GetLabReportFileQuery, LabReportFileDto>
+{
+    public async Task<LabReportFileDto> Handle(GetLabReportFileQuery q, CancellationToken ct)
+    {
+        var userId = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
+        if (string.IsNullOrWhiteSpace(q.DeclaredPurpose))
+            throw new mediq.Utilities.Exceptions.ValidationException(new Dictionary<string, string[]> { ["X-Purpose-Of-Use"] = ["A purpose-of-use is required to download a lab report (DPDP)."] });
+
+        var r = await clinical.GetLabReportAsync(q.ReportId, q.TenantId, ct)
+            ?? throw new KeyNotFoundException("Lab report not found.");
+
+        // Same consent gate (+ break-glass) as reading the structured results: the file IS PHI.
+        var patient = await patients.GetByIdAsync(r.PatientId, ct);
+        BreakGlassGrant? grant = null;
+        if (patient is null || !patient.HasActiveConsent)
+        {
+            grant = await breakGlass.GetActiveGrantAsync(userId, q.TenantId, r.PatientId, "lab_report", r.ReportId, ct);
+            if (grant is null)
+                throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        }
+
+        await purpose.RecordAsync(new PurposeOfUseEntry(
+            userId, q.TenantId, "lab_report", r.ReportId, q.DeclaredPurpose, null, grant is not null, grant?.Justification), ct);
+
+        if (string.IsNullOrEmpty(r.FileUrl))
+            throw new KeyNotFoundException("No file attached to this lab report.");
+        var stored = await blobs.GetAsync(r.FileUrl, q.TenantId, ct)
+            ?? throw new KeyNotFoundException("Lab-report file not found in storage.");
+
+        var encCtx = new EncryptionContext(userId, q.TenantId, "lab_report", r.PatientId, ctx.IpAddress);
+        var content = await encryption.DecryptBytesAsync(ClinicalFields.ReportResults, Encoding.UTF8.GetString(stored), encCtx, ct);
+
+        return new LabReportFileDto(r.ReportId, r.FileName ?? "lab-report", r.FileMimeType ?? "application/octet-stream", content);
     }
 }
 
