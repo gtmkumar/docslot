@@ -54,6 +54,14 @@ public sealed class ClinicalController(
     public async Task<ActionResult<IReadOnlyList<PrescriptionListItemDto>>> ListPrescriptions(Guid patientId, CancellationToken ct)
         => Ok(await queries.Query(new ListPrescriptionsQuery(RequireTenant(), patientId), ct));
 
+    /// <summary>A prescription's drug-safety alerts (allergy/interaction/duplicate), generated at issue/amend.
+    /// PHI — consent + X-Purpose-Of-Use gated (break-glass aware), same gate as reading the prescription.</summary>
+    [HttpGet("prescriptions/{prescriptionId:guid}/drug-alerts")]
+    [RequirePermission("docslot.prescription.read")]
+    [ProducesResponseType<IReadOnlyList<DrugAlertDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<DrugAlertDto>>> GetDrugAlerts(Guid prescriptionId, CancellationToken ct)
+        => Ok(await queries.Query(new GetPrescriptionDrugAlertsQuery(RequireTenant(), prescriptionId, Purpose()), ct));
+
     // ---- Lab reports -----------------------------------------------------------------------------
 
     [HttpPost("lab-reports")]

@@ -52,6 +52,18 @@ public sealed record PrescriptionDto(
 public sealed record PrescriptionListItemDto(
     Guid PrescriptionId, string? PrescriptionNumber, Guid DoctorId, string Status, DateTimeOffset CreatedAt);
 
+/// <summary>A drug-safety alert generated for a prescription (allergy / interaction / duplicate / ...).
+/// medication_name is the just-prescribed drug; the conflicting allergen/current-med detail stays behind
+/// encryption (linked internally). Surfaced read-side as a clinical-safety banner on the prescription.</summary>
+public sealed record DrugAlertDto(
+    Guid AlertId,
+    string AlertType,               // allergy | interaction | contraindication | duplicate | pregnancy_warning | dosage
+    string Severity,                // low | moderate | high | critical
+    string MedicationName,
+    string Description,
+    bool Overridden,
+    DateTimeOffset CreatedAt);
+
 // ---- Lab reports ---------------------------------------------------------------------------------
 
 public sealed record UploadLabReportRequest(

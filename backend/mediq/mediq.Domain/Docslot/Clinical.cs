@@ -213,3 +213,47 @@ public sealed class AbdmHealthRecord
             IsLinkedToPhr = isLinkedToPhr, ConsentId = consentId, CreatedAt = createdAt,
         };
 }
+
+/// <summary>
+/// Drug-safety alert (maps to <c>docslot.drug_alerts</c>) — generated at prescription issue/amend by screening
+/// the prescribed medications against the patient's recorded allergies + current medications. No own tenant_id;
+/// RLS confines it via the parent prescription's tenant. <c>medication_name</c> is the just-prescribed drug;
+/// <c>conflicting_record_id</c> links the encrypted medical-history record the conflict is with (the allergen /
+/// current-med detail stays behind encryption rather than being copied into this row).
+/// </summary>
+public sealed class DrugAlert
+{
+    public Guid AlertId { get; private set; }
+    public Guid PrescriptionId { get; private set; }
+    public Guid PatientId { get; private set; }
+    public string AlertType { get; private set; } = default!;     // allergy|interaction|contraindication|duplicate|pregnancy_warning|dosage
+    public string Severity { get; private set; } = default!;      // low|moderate|high|critical
+    public string MedicationName { get; private set; } = default!;
+    public Guid? ConflictingRecordId { get; private set; }
+    public string Description { get; private set; } = default!;
+    public bool Overridden { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+
+    private DrugAlert() { }
+
+    public static DrugAlert Create(
+        Guid prescriptionId, Guid patientId, string alertType, string severity,
+        string medicationName, Guid? conflictingRecordId, string description, DateTime nowUtc)
+        => new()
+        {
+            AlertId = Guid.CreateVersion7(),
+            PrescriptionId = prescriptionId, PatientId = patientId, AlertType = alertType, Severity = severity,
+            MedicationName = medicationName, ConflictingRecordId = conflictingRecordId, Description = description,
+            Overridden = false, CreatedAt = nowUtc,
+        };
+
+    public static DrugAlert FromRow(
+        Guid id, Guid prescriptionId, Guid patientId, string alertType, string severity,
+        string medicationName, Guid? conflictingRecordId, string description, bool overridden, DateTime createdAt)
+        => new()
+        {
+            AlertId = id, PrescriptionId = prescriptionId, PatientId = patientId, AlertType = alertType,
+            Severity = severity, MedicationName = medicationName, ConflictingRecordId = conflictingRecordId,
+            Description = description, Overridden = overridden, CreatedAt = createdAt,
+        };
+}

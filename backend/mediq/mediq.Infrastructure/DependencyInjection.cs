@@ -129,6 +129,18 @@ public static class InfrastructureRegistration
         services.AddScoped<IAbdmConsentService, Docslot.AbdmConsentService>();
         services.AddScoped<IAccessPolicyService, Docslot.AccessPolicyService>();
 
+        // Drug-safety screening — generates docslot.drug_alerts at prescription issue/amend by screening the
+        // prescribed meds against recorded allergies + current meds. Dev = a curated, well-known ruleset; prod
+        // swaps a licensed interaction database (FDB/Medi-Span) by config; 'none' disables (fail-SAFE no-op).
+        services.Configure<mediq.Application.Options.DrugInteractionOptions>(
+            config.GetSection(mediq.Application.Options.DrugInteractionOptions.SectionName));
+        if (string.Equals(config[$"{mediq.Application.Options.DrugInteractionOptions.SectionName}:Provider"],
+                "none", StringComparison.OrdinalIgnoreCase))
+            services.AddSingleton<IDrugInteractionSource, Clinical.NullDrugInteractionSource>();
+        else
+            services.AddSingleton<IDrugInteractionSource, Clinical.CuratedDrugInteractionSource>();
+        services.AddScoped<IDrugSafetyScreeningService, Application.Features.Docslot.Clinical.DrugSafetyScreeningService>();
+
         // Lab-report blob storage (PHI artifacts). Bytes are envelope-ENCRYPTED by the app BEFORE storage, so
         // the adapter only ever holds ciphertext. Dev = local filesystem (default) or in-memory (tests); prod
         // swaps in an object store (S3/GCS/Azure + provider SSE/KMS) by config (same pattern as the payout
