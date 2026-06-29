@@ -236,5 +236,15 @@ export const getAbdmRecord = USE_REAL_API ? real.getAbdmRecord : mock.getAbdmRec
 export const pushAbdmRecord = USE_REAL_API ? real.pushAbdmRecord : mock.pushAbdmRecord;
 export const breakGlass = USE_REAL_API ? real.breakGlass : mock.breakGlass;
 
+// ── AI ASSIST (no-show risk + triage) ─────────────────────────────────────────
+// Two already-shipped backend capabilities surfaced read-only at the reception
+// desk. getNoShowRisk: GET /bookings/{id}/no-show-risk (docslot.booking.read, NO
+// PHI). submitTriage: POST /triage (docslot.booking.create); the X-Purpose-Of-Use
+// header is forwarded only when the call is patient/booking-bound (server 422
+// gate). Mock side is deterministic + clearly labelled (source 'mock-ui') so the
+// app works flag-off without ever implying a real model ran.
+export const getNoShowRisk = USE_REAL_API ? real.getNoShowRisk : mock.getNoShowRisk;
+export const submitTriage = USE_REAL_API ? real.submitTriage : mock.submitTriage;
+
 export { USE_REAL_API } from './flag';
 export { toUserError } from './real';

@@ -7,7 +7,7 @@
 // The final create runs through useCreateBooking → idempotencyKey() on the POST
 // (no double-booking on retry). Footer Back/Continue/Confirm reflects the step.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -18,6 +18,7 @@ import { inr, istSlot } from '@/lib/format';
 import { idempotencyKey } from '@/lib/api-client';
 import { DEPARTMENTS } from '@/lib/data';
 import { Stepper } from './Stepper';
+import { TriageAssist } from './TriageAssist';
 import { patientStepSchema, type PatientStep } from '../schema';
 import { usePractitioners, useSlots, useCreateBooking } from '../api';
 import { toUserError } from '@/lib/backend';
@@ -37,6 +38,10 @@ export function NewBookingPanel({ open, onClose }: { open: boolean; onClose: () 
   // to the time string (the mock create ignores the draft).
   const [slot, setSlot] = useState<Slot | null>(null);
   const [sendWhatsapp, setSendWhatsapp] = useState(true);
+  // A triage-suggested doctor the user tapped on the patient step. It's resolved
+  // best-effort against the loaded practitioner list once the slot step opens (if
+  // the doctor isn't in the list it stays advisory — no forced selection).
+  const [suggestedDoctorId, setSuggestedDoctorId] = useState<string | null>(null);
   const create = useCreateBooking();
 
   const form = useForm<PatientStep>({
@@ -122,7 +127,15 @@ export function NewBookingPanel({ open, onClose }: { open: boolean; onClose: () 
       footer={footer}
     >
       {step === 0 ? (
-        <PatientStepBody form={form} />
+        <PatientStepBody
+          form={form}
+          onPickDoctor={(doctorId) => {
+            // Best-effort hand-off to the slot step: remember the suggested doctor
+            // and advance; the slot step resolves it against its loaded list.
+            setSuggestedDoctorId(doctorId);
+            setStep(1);
+          }}
+        />
       ) : step === 1 ? (
         <SlotStepBody
           deptId={deptId}
@@ -138,6 +151,8 @@ export function NewBookingPanel({ open, onClose }: { open: boolean; onClose: () 
           }}
           slot={slot}
           onSlot={setSlot}
+          suggestedDoctorId={suggestedDoctorId}
+          onConsumeSuggested={() => setSuggestedDoctorId(null)}
         />
       ) : (
         <ConfirmStepBody
@@ -153,7 +168,13 @@ export function NewBookingPanel({ open, onClose }: { open: boolean; onClose: () 
 }
 
 // ── Step 1: Patient ──────────────────────────────────────────────────────────
-function PatientStepBody({ form }: { form: ReturnType<typeof useForm<PatientStep>> }) {
+function PatientStepBody({
+  form,
+  onPickDoctor,
+}: {
+  form: ReturnType<typeof useForm<PatientStep>>;
+  onPickDoctor: (doctorId: string) => void;
+}) {
   const { t } = useTranslation();
   const { register, formState, watch, setValue } = form;
   const errKey = (k: keyof PatientStep) => {
@@ -162,6 +183,11 @@ function PatientStepBody({ form }: { form: ReturnType<typeof useForm<PatientStep
   };
   const sex = watch('sex');
   const lang = watch('lang');
+  // Live complaint (PHI) + age drive triage. Read from the form, not persisted.
+  const reason = watch('reason');
+  const ageRaw = watch('age');
+  const ageNum = Number.parseInt(ageRaw, 10);
+  const patientAge = Number.isFinite(ageNum) ? ageNum : undefined;
 
   return (
     <form className="flex flex-col gap-4" onSubmit={(e) => e.preventDefault()}>
@@ -199,6 +225,10 @@ function PatientStepBody({ form }: { form: ReturnType<typeof useForm<PatientStep
       <FieldShell label={t('newBooking.reason')} htmlFor="nb-reason" optional={t('common.optional')}>
         <TextArea id="nb-reason" rows={3} placeholder={t('newBooking.reasonPlaceholder')} {...register('reason')} />
       </FieldShell>
+
+      {/* AI triage assist — advisory; free-text path (no patient/booking id → no
+          purpose-of-use). The complaint is PHI, read live and passed only on submit. */}
+      <TriageAssist complaint={reason} patientAge={patientAge} onPickDoctor={onPickDoctor} />
     </form>
   );
 }
@@ -211,6 +241,8 @@ function SlotStepBody({
   onDoctor,
   slot,
   onSlot,
+  suggestedDoctorId,
+  onConsumeSuggested,
 }: {
   deptId: string;
   onDept: (id: string) => void;
@@ -218,11 +250,25 @@ function SlotStepBody({
   onDoctor: (d: Practitioner) => void;
   slot: Slot | null;
   onSlot: (s: Slot) => void;
+  /** A triage-suggested doctor id to pre-select if present in this list. */
+  suggestedDoctorId: string | null;
+  /** Called once the suggestion has been resolved (matched or not) so it fires once. */
+  onConsumeSuggested: () => void;
 }) {
   const { t } = useTranslation();
   const { data: practitioners, isLoading: pLoading, isError: pError, refetch: pRefetch } = usePractitioners(deptId);
   const { data: slots, isLoading: sLoading, isError: sError, refetch: sRefetch } = useSlots(doctor?.id);
   const dept = DEPARTMENTS.find((d) => d.id === deptId);
+
+  // Best-effort pre-select of a triage-suggested doctor: once practitioners load,
+  // if the suggested id is in the list, select it; either way consume the
+  // suggestion so this runs once (no forced selection if the doctor isn't listed).
+  useEffect(() => {
+    if (!suggestedDoctorId || !practitioners) return;
+    const match = practitioners.find((p) => p.id === suggestedDoctorId);
+    if (match) onDoctor(match);
+    onConsumeSuggested();
+  }, [suggestedDoctorId, practitioners, onDoctor, onConsumeSuggested]);
 
   return (
     <div className="flex flex-col gap-5">

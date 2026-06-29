@@ -258,6 +258,75 @@ export const PaymentLinkResultSchema = z.object({
 export type PaymentLinkResult = z.infer<typeof PaymentLinkResultSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AI ASSIST — no-show risk + triage. Two ALREADY-SHIPPED backend capabilities
+// surfaced read-only in the reception desk. Both DTOs carry an `available` flag:
+// false means the AI sibling service is unreachable, so the UI renders an
+// "unavailable" state and NEVER a fabricated score/assessment. Mirrors
+// NoShowRiskDto / TriageResultDto (camelCase wire). NO PHI in the no-show DTO; the
+// triage `complaint` IS PHI and is the REQUEST only — it is never echoed in these
+// result shapes and is never persisted/keyed client-side.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Risk band — shared by no-show (low/medium/high) and triage urgency (+emergency). */
+export const RiskBandSchema = z.enum(['low', 'medium', 'high']);
+export type RiskBand = z.infer<typeof RiskBandSchema>;
+
+/** `GET /api/v1/bookings/{bookingId}/no-show-risk` → NoShowRiskDto. NO PHI. When
+ *  available=false the model is unreachable (probability/band null) → "unavailable"
+ *  chip. probability is a 0..1 fraction (rendered as a %). */
+export const NoShowRiskSchema = z.object({
+  bookingId: z.string(),
+  available: z.boolean(),
+  probability: z.number().nullable(),
+  band: RiskBandSchema.nullable(),
+  modelName: z.string().nullable(),
+  source: z.string().nullable(),
+});
+export type NoShowRisk = z.infer<typeof NoShowRiskSchema>;
+
+/** Triage urgency band — adds 'emergency' above the shared low/medium/high. */
+export const UrgencyBandSchema = z.enum(['low', 'medium', 'high', 'emergency']);
+export type UrgencyBand = z.infer<typeof UrgencyBandSchema>;
+
+/** A doctor the triage suggested. consultationFee/nextAvailableSlot may be null.
+ *  Mirrors SuggestedDoctorDto. */
+export const SuggestedDoctorSchema = z.object({
+  doctorId: z.string(),
+  fullName: z.string(),
+  specialization: z.string().nullable(),
+  consultationFee: z.number().nullable(),
+  nextAvailableSlot: z.string().nullable(),
+});
+export type SuggestedDoctor = z.infer<typeof SuggestedDoctorSchema>;
+
+/** `POST /api/v1/triage` → TriageResultDto. available=false → "triage unavailable"
+ *  (never a fabricated assessment). redFlags/symptoms default to [] so an absent
+ *  array still parses. */
+export const TriageResultSchema = z.object({
+  available: z.boolean(),
+  urgencyBand: UrgencyBandSchema.nullable(),
+  department: z.string().nullable(),
+  redFlags: z.array(z.string()).default([]),
+  symptoms: z.array(z.string()).default([]),
+  suggestedDoctors: z.array(SuggestedDoctorSchema).default([]),
+  runId: z.string().nullable(),
+  source: z.string().nullable(),
+});
+export type TriageResult = z.infer<typeof TriageResultSchema>;
+
+/** `POST /api/v1/triage` body. The `complaint` is PHI. patientId/bookingId are
+ *  optional; when EITHER is present the server REQUIRES X-Purpose-Of-Use (422
+ *  without it). The reception intake path passes neither (pure free-text). */
+export interface TriageRequestInput {
+  complaint: string;
+  patientId?: string;
+  bookingId?: string;
+  patientAge?: number;
+  /** Forwarded to X-Purpose-Of-Use ONLY for the patient/booking-bound call. */
+  purposeOfUse?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AUTH — mirrors mediq.SharedDataModel/Docslot/Auth/AuthDtos.cs (camelCase wire)
 // ─────────────────────────────────────────────────────────────────────────────
 
