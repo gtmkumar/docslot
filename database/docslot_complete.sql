@@ -1145,8 +1145,11 @@ CREATE TABLE platform_api.webhook_deliveries (
     delivered_at        TIMESTAMPTZ
 );
 
+-- Due-set scan for the drain claim: pending/failed-past-backoff/stranded-processing-past-lease.
+-- 'processing' is included so the worker's expired-lease reclaim (status='processing' AND
+-- next_retry_at <= now) stays index-covered — parity with idx_integration_outbox_due (TABLE 27).
 CREATE INDEX idx_webhook_deliveries_pending ON platform_api.webhook_deliveries(next_retry_at)
-    WHERE status IN ('pending', 'failed');
+    WHERE status IN ('pending', 'failed', 'processing');
 CREATE INDEX idx_webhook_deliveries_webhook ON platform_api.webhook_deliveries(webhook_id, created_at DESC);
 CREATE INDEX idx_webhook_deliveries_event_dedup ON platform_api.webhook_deliveries(event_id);
 
