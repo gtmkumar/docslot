@@ -134,7 +134,12 @@ public sealed record PushAbdmRecordResult(Guid RecordId);
 public sealed record AbdmRecordDto(
     Guid RecordId, Guid PatientId, string AbhaNumber, string RecordType,
     string FhirBundleJson,           // decrypted
-    bool IsLinkedToPhr, DateTimeOffset CreatedAt);
+    bool IsLinkedToPhr,
+    string? CareContextId,           // ABDM network linkage reference (set once published to the national network)
+    DateTimeOffset CreatedAt);
+
+/// <summary>Result of linking a stored ABDM record's care context to the national network (HIP data push).</summary>
+public sealed record LinkAbdmRecordResult(Guid RecordId, bool Linked, string? CareContextId, string Provider);
 
 /// <summary>List row — NO clinical content (headers only). Mirrors FE AbdmRecordListItemSchema.</summary>
 public sealed record AbdmRecordListItemDto(

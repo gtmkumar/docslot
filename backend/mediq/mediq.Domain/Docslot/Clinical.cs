@@ -187,6 +187,10 @@ public sealed class AbdmHealthRecord
     public string RecordType { get; private set; } = default!;
     public string FhirBundleEnc { get; private set; } = default!;   // NOT NULL jsonb → encrypted envelope text
     public bool IsLinkedToPhr { get; private set; }
+    // ABDM network linkage (set when the record is published to the national network via the ABDM gateway).
+    // care_context_id is the network's linkage reference (NOT PHI); NULL until linked.
+    public string? CareContextId { get; private set; }
+    public DateTime? LinkedAt { get; private set; }
     public string? ConsentId { get; private set; }
     public DateTime CreatedAt { get; private set; }
 
@@ -205,12 +209,14 @@ public sealed class AbdmHealthRecord
 
     public static AbdmHealthRecord FromRow(
         Guid id, Guid patientId, Guid tenantId, Guid? bookingId, string abhaNumber, string recordType,
-        string fhirBundleEnc, bool isLinkedToPhr, string? consentId, DateTime createdAt)
+        string fhirBundleEnc, bool isLinkedToPhr, string? consentId, DateTime createdAt,
+        string? careContextId, DateTime? linkedAt)
         => new()
         {
             RecordId = id, PatientId = patientId, TenantId = tenantId, BookingId = bookingId,
             AbhaNumber = abhaNumber, RecordType = recordType, FhirBundleEnc = fhirBundleEnc,
             IsLinkedToPhr = isLinkedToPhr, ConsentId = consentId, CreatedAt = createdAt,
+            CareContextId = careContextId, LinkedAt = linkedAt,
         };
 }
 

@@ -200,6 +200,129 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
     }
 
     [Fact]
+    public async Task Abdm_Record_Links_Care_Context_To_Network_Idempotently_And_Declines_Invalid_Abha()
+    {
+        var client = await AuthedClientAsync();
+        var pushed = new List<Guid>();
+        try
+        {
+            // Push a record (tenant A has an active ABDM consent) with a valid 14-digit ABHA.
+            var push = await client.PostAsJsonAsync("/api/v1/abdm/records", new PushAbdmRecordRequest(
+                factory.PatientId, factory.BookingId, "12-3456-7890-1234", "OPConsultation", "{\"resourceType\":\"Bundle\"}"));
+            Assert.Equal(HttpStatusCode.OK, push.StatusCode);
+            var recordId = (await push.Content.ReadFromJsonAsync<PushAbdmRecordResult>())!.RecordId;
+            pushed.Add(recordId);
+
+            // Before linking: not yet published to the network.
+            Assert.Equal(0, await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM docslot.abdm_health_records WHERE record_id=@id AND is_linked_to_phr=true", ("id", recordId)));
+
+            // Link → publishes the care context to the (sandbox) ABDM network.
+            var link = await client.PostAsync($"/api/v1/abdm/records/{recordId}/link", null);
+            Assert.Equal(HttpStatusCode.OK, link.StatusCode);
+            var linkResult = (await link.Content.ReadFromJsonAsync<LinkAbdmRecordResult>())!;
+            Assert.True(linkResult.Linked);
+            Assert.False(string.IsNullOrEmpty(linkResult.CareContextId));
+            Assert.Equal("sandbox-dev", linkResult.Provider);
+
+            // DB: linkage flipped + care_context_id + linked_at persisted.
+            var cc = await ScalarStrAsync(
+                "SELECT care_context_id FROM docslot.abdm_health_records WHERE record_id=@id AND is_linked_to_phr=true AND linked_at IS NOT NULL",
+                ("id", recordId));
+            Assert.Equal(linkResult.CareContextId, cc);
+
+            // Read reflects the linkage (consent + purpose gated).
+            client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+            var dto = (await (await client.GetAsync($"/api/v1/abdm/records/{recordId}")).Content.ReadFromJsonAsync<AbdmRecordDto>())!;
+            Assert.True(dto.IsLinkedToPhr);
+            Assert.Equal(linkResult.CareContextId, dto.CareContextId);
+
+            // Idempotent re-link → same care context, no error.
+            var relink = await client.PostAsync($"/api/v1/abdm/records/{recordId}/link", null);
+            Assert.Equal(HttpStatusCode.OK, relink.StatusCode);
+            Assert.Equal(linkResult.CareContextId, (await relink.Content.ReadFromJsonAsync<LinkAbdmRecordResult>())!.CareContextId);
+
+            // A record with a malformed ABHA → the gateway DECLINES → 422, and it stays UNLINKED (honest, no fake link).
+            var badPush = await client.PostAsJsonAsync("/api/v1/abdm/records", new PushAbdmRecordRequest(
+                factory.PatientId, factory.BookingId, "not-a-valid-abha", "OPConsultation", "{\"resourceType\":\"Bundle\"}"));
+            var badId = (await badPush.Content.ReadFromJsonAsync<PushAbdmRecordResult>())!.RecordId;
+            pushed.Add(badId);
+            var badLink = await client.PostAsync($"/api/v1/abdm/records/{badId}/link", null);
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, badLink.StatusCode);
+            Assert.Equal(0, await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM docslot.abdm_health_records WHERE record_id=@id AND is_linked_to_phr=true", ("id", badId)));
+        }
+        finally
+        {
+            foreach (var id in pushed)
+                await ExecAsync("DELETE FROM docslot.abdm_health_records WHERE record_id=@id", ("id", id));
+        }
+    }
+
+    [Fact]
+    public async Task Abdm_Link_Requires_Dangerous_Link_Permission_Not_Just_Create()
+    {
+        // A tenant_admin holds docslot.abdm.records.create (non-dangerous → auto-granted) but NOT the dangerous
+        // docslot.abdm.records.link (excluded from the tenant_admin auto-grant). So it can PUSH (store locally)
+        // but cannot LINK (publish to the national network) → 403. This is the privilege separation the auditor required.
+        var owner = await AuthedClientAsync();
+        var ownerPush = await owner.PostAsJsonAsync("/api/v1/abdm/records", new PushAbdmRecordRequest(
+            factory.PatientId, factory.BookingId, "12-3456-7890-1234", "OPConsultation", "{\"resourceType\":\"Bundle\"}"));
+        var recordId = (await ownerPush.Content.ReadFromJsonAsync<PushAbdmRecordResult>())!.RecordId;
+
+        var tadminEmail = $"slice03b.tadmin+{Guid.NewGuid():N}@docslot.test";
+        var tadminId = Guid.NewGuid();
+        Guid? adminRecordId = null;
+        try
+        {
+            await ExecAsync(
+                """
+                INSERT INTO platform.users (user_id, email, password_hash, full_name, is_active, is_platform_user, created_at, updated_at)
+                VALUES (@id, @email, crypt(@pwd, gen_salt('bf', 10)), 'Slice03b TenantAdmin', true, true, NOW(), NOW())
+                """, ("id", tadminId), ("email", tadminEmail), ("pwd", ClinicalWebAppFactory.AdminPassword));
+            await ExecAsync(
+                """
+                INSERT INTO platform.user_tenant_roles (user_tenant_role_id, user_id, tenant_id, role_id, is_primary, granted_at)
+                SELECT gen_random_uuid(), @uid, @tid, r.role_id, true, NOW()
+                FROM platform.roles r WHERE r.role_key='tenant_admin' AND r.is_system ON CONFLICT DO NOTHING
+                """, ("uid", tadminId), ("tid", factory.TenantA));
+
+            var client = factory.CreateClient();
+            var login = await client.PostAsJsonAsync("/api/v1/auth/login",
+                new LoginRequest(tadminEmail, ClinicalWebAppFactory.AdminPassword, factory.TenantA));
+            login.EnsureSuccessStatusCode();
+            var token = (await login.Content.ReadFromJsonAsync<TokenResponse>())!;
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+
+            // Has .create → CAN push (store locally).
+            var adminPush = await client.PostAsJsonAsync("/api/v1/abdm/records", new PushAbdmRecordRequest(
+                factory.PatientId, factory.BookingId, "12-3456-7890-1234", "OPConsultation", "{\"resourceType\":\"Bundle\"}"));
+            Assert.Equal(HttpStatusCode.OK, adminPush.StatusCode);
+            adminRecordId = (await adminPush.Content.ReadFromJsonAsync<PushAbdmRecordResult>())!.RecordId;
+
+            // Lacks the dangerous .link → CANNOT publish to the national network → 403.
+            var link = await client.PostAsync($"/api/v1/abdm/records/{recordId}/link", null);
+            Assert.Equal(HttpStatusCode.Forbidden, link.StatusCode);
+
+            // And the record stays unlinked.
+            Assert.Equal(0, await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM docslot.abdm_health_records WHERE record_id=@id AND is_linked_to_phr=true", ("id", recordId)));
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.abdm_health_records WHERE record_id=@id", ("id", recordId));
+            if (adminRecordId is Guid arid)
+                await ExecAsync("DELETE FROM docslot.abdm_health_records WHERE record_id=@id", ("id", arid));
+            await ExecAsync("DELETE FROM platform.user_tenant_roles WHERE user_id=@u", ("u", tadminId));
+            await ExecAsync("DELETE FROM platform.user_sessions WHERE user_id=@u", ("u", tadminId));
+            await ExecAsync("DELETE FROM platform.login_attempts WHERE email=@e", ("e", tadminEmail));
+            // Soft-delete (the tenant_admin push wrote an audit_log row → never hard-DELETE a user referenced by audit).
+            await ExecAsync("UPDATE platform.users SET deleted_at=NOW(), is_active=false, email=@a WHERE user_id=@u",
+                ("a", $"del+{tadminId}@s03b.test"), ("u", tadminId));
+        }
+    }
+
+    [Fact]
     public async Task RLS_Blocks_Cross_Tenant_Clinical_Read()
     {
         // Insert a prescription for tenant B directly (bypassing the app, as gtmkumar).
