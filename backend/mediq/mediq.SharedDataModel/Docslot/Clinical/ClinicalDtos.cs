@@ -62,6 +62,31 @@ public sealed record MedicalHistoryDto(
     Guid HistoryId, string RecordType, string Title, string? Description,   // title/description decrypted
     bool IsActive, bool IsCritical, DateTimeOffset AddedAt);
 
+/// <summary>Create a medical-history record. title/description are encrypted at rest by the handler. PatientId comes from the route.</summary>
+public sealed record CreateMedicalHistoryRequest(
+    string RecordType,                 // allergy | chronic_condition | surgery | medication | vaccination | family_history | lifestyle
+    string Title,
+    string? Description,
+    string? Severity,                  // mild | moderate | severe | critical
+    string? Icd10Code,
+    DateOnly? StartedDate,
+    DateOnly? EndedDate,
+    bool IsCritical);
+
+public sealed record CreateMedicalHistoryResult(Guid HistoryId);
+
+/// <summary>Update a medical-history record in place. Set IsActive=false to retire it (no physical delete).</summary>
+public sealed record UpdateMedicalHistoryRequest(
+    string RecordType,
+    string Title,
+    string? Description,
+    string? Severity,
+    string? Icd10Code,
+    DateOnly? StartedDate,
+    DateOnly? EndedDate,
+    bool IsActive,
+    bool IsCritical);
+
 // ---- ABDM health records (consent-gated) ---------------------------------------------------------
 
 public sealed record PushAbdmRecordRequest(

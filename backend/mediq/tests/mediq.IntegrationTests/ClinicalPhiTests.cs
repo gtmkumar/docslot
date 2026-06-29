@@ -288,6 +288,68 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
         }
     }
 
+    [Fact]
+    public async Task MedicalHistory_Create_Encrypts_At_Rest_Read_Decrypts_Update_And_Retire()
+    {
+        var client = await AuthedClientAsync();                 // tenant A; tenant_owner+doctor → create/update/read
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+        const string title = "Penicillin allergy";
+        const string desc = "Anaphylaxis on exposure (2019)";
+        var create = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history",
+            new CreateMedicalHistoryRequest("allergy", title, desc, "severe", "T78.0", new DateOnly(2019, 5, 1), null, true));
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        var created = (await create.Content.ReadFromJsonAsync<CreateMedicalHistoryResult>())!;
+        Assert.NotEqual(Guid.Empty, created.HistoryId);
+
+        try
+        {
+            // CIPHERTEXT AT REST — the raw title/description columns must NOT hold the plaintext.
+            var rawTitle = await ScalarStrAsync("SELECT title FROM docslot.patient_medical_history WHERE history_id=@id", ("id", created.HistoryId));
+            Assert.NotNull(rawTitle);
+            Assert.DoesNotContain(title, rawTitle!);
+            var rawDesc = await ScalarStrAsync("SELECT description FROM docslot.patient_medical_history WHERE history_id=@id", ("id", created.HistoryId));
+            Assert.DoesNotContain(desc, rawDesc!);
+
+            // Read (list) decrypts back to plaintext (consent + purpose-of-use upstream).
+            var list1 = await (await client.GetAsync($"/api/v1/patients/{factory.PatientId}/medical-history"))
+                .Content.ReadFromJsonAsync<List<MedicalHistoryDto>>();
+            var item = list1!.Single(h => h.HistoryId == created.HistoryId);
+            Assert.Equal("allergy", item.RecordType);
+            Assert.Equal(title, item.Title);
+            Assert.Equal(desc, item.Description);
+            Assert.True(item.IsCritical);
+
+            // UPDATE re-encrypts; the read reflects the change and the column is still ciphertext.
+            const string newTitle = "Penicillin + sulfa allergy";
+            var upd = await client.PutAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history/{created.HistoryId}",
+                new UpdateMedicalHistoryRequest("allergy", newTitle, "Updated note", "critical", "T78.0", new DateOnly(2019, 5, 1), null, true, true));
+            Assert.Equal(HttpStatusCode.OK, upd.StatusCode);
+            var rawTitle2 = await ScalarStrAsync("SELECT title FROM docslot.patient_medical_history WHERE history_id=@id", ("id", created.HistoryId));
+            Assert.DoesNotContain(newTitle, rawTitle2!);
+            var list2 = await (await client.GetAsync($"/api/v1/patients/{factory.PatientId}/medical-history"))
+                .Content.ReadFromJsonAsync<List<MedicalHistoryDto>>();
+            Assert.Equal(newTitle, list2!.Single(h => h.HistoryId == created.HistoryId).Title);
+
+            // Update of a record not in the caller's tenant → 404 (RLS + WHERE history_id+tenant_id).
+            var notFound = await client.PutAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history/{Guid.NewGuid()}",
+                new UpdateMedicalHistoryRequest("allergy", "x", null, null, null, null, null, true, false));
+            Assert.Equal(HttpStatusCode.NotFound, notFound.StatusCode);
+
+            // Retire (is_active=false) → drops out of the active list (soft delete, no physical row removal).
+            await client.PutAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history/{created.HistoryId}",
+                new UpdateMedicalHistoryRequest("allergy", newTitle, null, null, null, null, null, false, false));
+            var list3 = await (await client.GetAsync($"/api/v1/patients/{factory.PatientId}/medical-history"))
+                .Content.ReadFromJsonAsync<List<MedicalHistoryDto>>();
+            Assert.DoesNotContain(list3!, h => h.HistoryId == created.HistoryId);
+            Assert.Equal(1, await ScalarIntAsync("SELECT COUNT(*)::int FROM docslot.patient_medical_history WHERE history_id=@id", ("id", created.HistoryId)));
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE history_id=@id", ("id", created.HistoryId));
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     /// <summary>Seeds a break-glass grant directly (privileged role) for the negative/positive scope tests.</summary>

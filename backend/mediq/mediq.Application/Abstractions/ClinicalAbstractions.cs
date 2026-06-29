@@ -21,6 +21,18 @@ public interface IClinicalRepository
     Task<(string Status, DateTime? DeliveredAt)?> DeliverLabReportAsync(Guid reportId, Guid tenantId, CancellationToken ct);
 
     Task<IReadOnlyList<MedicalHistory>> ListMedicalHistoryAsync(Guid tenantId, Guid patientId, CancellationToken ct);
+    /// <summary>Inserts a medical-history record (title/description already ciphertext). Returns the new history_id.</summary>
+    Task<Guid> AddMedicalHistoryAsync(MedicalHistory history, CancellationToken ct);
+    /// <summary>Fetches one record (existence + patient_id for the encryption context) within the tenant, or null.</summary>
+    Task<MedicalHistory?> GetMedicalHistoryAsync(Guid historyId, Guid tenantId, CancellationToken ct);
+    /// <summary>
+    /// Updates a record in place (title/description already ciphertext) within the tenant. Returns true if a
+    /// row matched (history_id + tenant_id). No physical delete — set <paramref name="isActive"/>=false to retire.
+    /// </summary>
+    Task<bool> UpdateMedicalHistoryAsync(
+        Guid historyId, Guid tenantId, string recordType, string titleEnc, string? descEnc,
+        string? severity, string? icd10Code, DateOnly? startedDate, DateOnly? endedDate,
+        bool isActive, bool isCritical, CancellationToken ct);
 
     Task AddAbdmRecordAsync(AbdmHealthRecord record, CancellationToken ct);
     Task<AbdmHealthRecord?> GetAbdmRecordAsync(Guid recordId, Guid tenantId, CancellationToken ct);

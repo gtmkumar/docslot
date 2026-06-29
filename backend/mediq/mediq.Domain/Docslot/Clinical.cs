@@ -106,11 +106,30 @@ public sealed class MedicalHistory
     public string RecordType { get; private set; } = default!;
     public string TitleEnc { get; private set; } = default!;        // NOT NULL → encrypted envelope
     public string? DescriptionEnc { get; private set; }             // encrypted envelope
+    public string? Severity { get; private set; }
+    public string? Icd10Code { get; private set; }
+    public DateOnly? StartedDate { get; private set; }
+    public DateOnly? EndedDate { get; private set; }
     public bool IsActive { get; private set; }
     public bool IsCritical { get; private set; }
+    public Guid? AddedByUserId { get; private set; }
     public DateTime AddedAt { get; private set; }
 
     private MedicalHistory() { }
+
+    /// <summary>New record. title/description arrive ALREADY ENCRYPTED (the handler encrypts before calling).</summary>
+    public static MedicalHistory Create(
+        Guid patientId, Guid tenantId, string recordType, string titleEnc, string? descEnc,
+        string? severity, string? icd10Code, DateOnly? startedDate, DateOnly? endedDate,
+        bool isCritical, Guid addedByUserId, DateTime nowUtc)
+        => new()
+        {
+            HistoryId = Guid.CreateVersion7(),
+            PatientId = patientId, TenantId = tenantId, RecordType = recordType,
+            TitleEnc = titleEnc, DescriptionEnc = descEnc, Severity = severity, Icd10Code = icd10Code,
+            StartedDate = startedDate, EndedDate = endedDate, IsActive = true, IsCritical = isCritical,
+            AddedByUserId = addedByUserId, AddedAt = nowUtc,
+        };
 
     public static MedicalHistory FromRow(
         Guid id, Guid patientId, Guid tenantId, string recordType, string titleEnc, string? descEnc,
