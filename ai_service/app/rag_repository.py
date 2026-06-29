@@ -194,9 +194,21 @@ def insert_embedding(
 
 
 def fetch_patient_embeddings(
-    tenant_id: str, patient_id: str, user_id: str | None = None
+    tenant_id: str,
+    patient_id: str,
+    embedding_model: str,
+    embedding_dimensions: int,
+    user_id: str | None = None,
 ) -> list[dict]:
     """Load this patient's stored embeddings (tenant + patient scoped).
+
+    Filtered to the SAME vector space as the live query (bug #12): an embedding is
+    only a valid retrieval candidate if it was produced by the same
+    embedding_model AND embedding_dimensions as the query embedder. Otherwise a
+    query embedded with model A (e.g. semantic bge-small) would be cosine-compared
+    against rows embedded with model B (e.g. the lexical hashing fallback) that
+    merely share a dimension — meaningless ranking — or against a different
+    dimension entirely, which would crash np.vstack.
 
     The encrypted float32 vector is decrypted to a numpy array under 'vector'
     (needed to rank). chunk_text stays as its ENCRYPTED payload under
@@ -215,9 +227,16 @@ def fetch_patient_embeddings(
                 WHERE tenant_id = %(tenant_id)s
                   AND patient_id = %(patient_id)s
                   AND source_type = 'patient_medical_history'
+                  AND embedding_model = %(model)s
+                  AND embedding_dimensions = %(dims)s
                   AND deleted_at IS NULL
                 """,
-                {"tenant_id": tenant_id, "patient_id": patient_id},
+                {
+                    "tenant_id": tenant_id,
+                    "patient_id": patient_id,
+                    "model": embedding_model,
+                    "dims": embedding_dimensions,
+                },
             )
             rows = list(cur.fetchall())
         out: list[dict] = []

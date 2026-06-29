@@ -14,6 +14,7 @@ import numpy as np
 from . import rag_repository as repo
 from .config import get_settings
 from .embeddings import get_embedder
+from .model_config import RAG_USE_CASE, get_phi_model_config
 
 logger = logging.getLogger("ai_service.rag")
 
@@ -105,12 +106,16 @@ def retrieve(
     hits actually surfaced is then decrypted (each decrypt logged to key_usage_log).
     """
     embedder = get_embedder()
-    stored = repo.fetch_patient_embeddings(tenant_id, patient_id, user_id=user_id)
-    stored = [s for s in stored if s["vector"] is not None and s["vector"].size]
+    qvec = embedder.embed_one(question)  # already L2-normalized
+    # Same vector space only (bug #12): a query embedded with this model/dim is only
+    # comparable to rows embedded with the SAME model/dim.
+    stored = repo.fetch_patient_embeddings(
+        tenant_id, patient_id, embedder.model_label, embedder.dim, user_id=user_id
+    )
+    stored = [s for s in stored if s["vector"] is not None and s["vector"].size == qvec.size]
     if not stored:
         return []
 
-    qvec = embedder.embed_one(question)  # already L2-normalized
     matrix = np.vstack([s["vector"] for s in stored]).astype("<f4")
     # Vectors are L2-normalized -> cosine == dot product.
     scores = matrix @ qvec
@@ -178,16 +183,29 @@ def _extractive_answer(question: str, hits: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _llm_answer(question: str, hits: list[dict]) -> str | None:
+def _llm_answer(question: str, hits: list[dict], tenant_id: str) -> str | None:
     """Optional LLM synthesis over retrieved chunks. None on any failure/no-key.
 
-    Uses an Anthropic-style messages endpoint by default; configurable base URL +
-    model via Settings. Strictly grounded in the retrieved chunks (no outside
-    knowledge) to keep PHI answers faithful.
+    Strictly grounded in the retrieved chunks (no outside knowledge) to keep PHI
+    answers faithful. PHI-egress is GOVERNED (bug #10): the chunks are patient PHI,
+    so this only calls an EXTERNAL model that ai.ai_model_configs explicitly
+    approves for PHI (allows_phi AND a signed BAA), read at request time (TTL
+    cached) so a revoked approval / rotated model takes effect without a restart.
+    With no approved model we return None -> the caller falls back to the LOCAL
+    extractive answer, so PHI never leaves the boundary.
     """
     settings = get_settings()
     api_key = settings.llm_api_key or settings.openai_api_key
     if not api_key:
+        return None
+
+    cfg = get_phi_model_config(RAG_USE_CASE, tenant_id)
+    if cfg is None:
+        logger.info(
+            "No PHI-approved rag_medical model for tenant %s; keeping PHI local "
+            "(extractive answer, no external egress).",
+            tenant_id,
+        )
         return None
 
     context = "\n".join(f"- {h['chunkText']}" for h in hits)
@@ -201,7 +219,8 @@ def _llm_answer(question: str, hits: list[dict]) -> str | None:
     try:
         import httpx
 
-        base = settings.llm_base_url.rstrip("/")
+        # Model + endpoint come from the DB-approved config (not stale process state).
+        base = (cfg.endpoint_url or settings.llm_base_url).rstrip("/")
         # Anthropic Messages API shape (default). Override base/model for others.
         resp = httpx.post(
             f"{base}/v1/messages",
@@ -211,7 +230,7 @@ def _llm_answer(question: str, hits: list[dict]) -> str | None:
                 "content-type": "application/json",
             },
             json={
-                "model": settings.llm_model,
+                "model": cfg.model_name,
                 "max_tokens": 400,
                 "system": system,
                 "messages": [{"role": "user", "content": user}],
@@ -236,7 +255,7 @@ def answer(tenant_id: str, patient_id: str, question: str, user_id: str | None =
     mode = "extractive"
     text = None
     if hits:
-        text = _llm_answer(question, hits)
+        text = _llm_answer(question, hits, tenant_id)
         if text is not None:
             mode = "llm"
     if text is None:
