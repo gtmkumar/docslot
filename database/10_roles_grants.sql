@@ -171,6 +171,42 @@ BEGIN
     RAISE NOTICE 'super_admin holds ALL % permissions (universal sweep verified).', v_total;
 END $sa$;
 
+-- ----------------------------------------------------------------------------
+-- FUTURE: least-privilege `docslot_ai` role for the Python AI sibling service
+-- ----------------------------------------------------------------------------
+-- TODAY the AI service (ai_service/) connects as the DB OWNER (dev), which
+-- BYPASSES RLS — so tenant isolation lives in application code (every query
+-- filters tenant_id; see ai_service/app/db.py). The AI PHI-at-rest slice keeps
+-- that connection model but encrypts PHI at rest and enforces the consent gate in
+-- code. When the service is moved onto a dedicated NOSUPERUSER/NOBYPASSRLS role
+-- (so ai.* RLS becomes load-bearing rather than code-enforced), it needs exactly
+-- the grants below. Left COMMENTED so the grant surface is reviewed now (the
+-- security-compliance-auditor signs off on the least-privilege footprint) without
+-- creating an unused login role. Uncomment + provision the role when wiring the
+-- least-privilege connection (and add `SET LOCAL app.tenant_id` per request).
+--
+-- DO $ai_role$ BEGIN
+--     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'docslot_ai') THEN
+--         CREATE ROLE docslot_ai LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
+--     ELSE
+--         ALTER ROLE docslot_ai NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
+--     END IF;
+-- END $ai_role$;
+-- GRANT CONNECT ON DATABASE docslot_platform TO docslot_ai;
+-- GRANT USAGE ON SCHEMA ai, platform, docslot TO docslot_ai;
+-- -- AI-owned PHI stores it writes (encrypted) + reads:
+-- GRANT SELECT, INSERT, UPDATE ON ai.embeddings, ai.ai_document_extractions, ai.ai_knowledge_bases TO docslot_ai;
+-- -- Read-only inputs to the RAG/OCR PHI gate + encryption:
+-- GRANT SELECT ON platform.encryption_keys, platform.break_glass_grants,
+--                 docslot.patients, docslot.patient_tenant_links, docslot.patient_medical_history TO docslot_ai;
+-- -- Forensic + compliance append-only logs it writes (NO update/delete — same posture as docslot_app):
+-- GRANT INSERT ON platform.key_usage_log, platform.purpose_of_use_log, platform.audit_log TO docslot_ai;
+-- GRANT SELECT ON platform.key_usage_log, platform.purpose_of_use_log TO docslot_ai;
+-- -- RBAC resolution for the medical-history read permission check:
+-- GRANT EXECUTE ON FUNCTION platform.resolve_user_permissions(UUID, UUID) TO docslot_ai;
+-- NOTE: docslot_ai gets NO UPDATE/DELETE on key_usage_log/purpose_of_use_log/audit_log (append-only),
+-- and NO DELETE anywhere (soft-delete via deleted_at), mirroring docslot_app's least-privilege footprint.
+
 -- ============================================================================
 -- END OF ROLES & GRANTS
 -- ============================================================================

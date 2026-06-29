@@ -29,11 +29,12 @@ def _sha256(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Indexing
 # ---------------------------------------------------------------------------
-def index_patient(tenant_id: str, patient_id: str) -> dict:
+def index_patient(tenant_id: str, patient_id: str, user_id: str | None = None) -> dict:
     """Embed + upsert this patient's medical-history rows (idempotent).
 
-    Caller MUST have already verified the patient is linked to the tenant and has
-    history. Returns indexing stats including the active embedding backend.
+    Caller MUST have already verified the patient is linked to the tenant, has
+    history, and passed the consent/break-glass gate. Embeddings are written
+    ENCRYPTED at rest. Returns indexing stats including the active embedding backend.
     """
     embedder = get_embedder()
     rows = repo.fetch_medical_history(tenant_id, patient_id)
@@ -70,6 +71,7 @@ def index_patient(tenant_id: str, patient_id: str) -> dict:
                     "icd10_code": row["icd10_code"],
                     "is_critical": bool(row["is_critical"]),
                 },
+                user_id=user_id,
             )
             indexed += 1
 
@@ -94,10 +96,16 @@ def index_patient(tenant_id: str, patient_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # Retrieval
 # ---------------------------------------------------------------------------
-def retrieve(tenant_id: str, patient_id: str, question: str, k: int = TOP_K) -> list[dict]:
-    """Cosine top-k over this patient's stored embeddings (tenant + patient scoped)."""
+def retrieve(
+    tenant_id: str, patient_id: str, question: str, user_id: str | None = None, k: int = TOP_K
+) -> list[dict]:
+    """Cosine top-k over this patient's stored embeddings (tenant + patient scoped).
+
+    Vectors are decrypted to rank; the chunk_text + title PHI of ONLY the top-k
+    hits actually surfaced is then decrypted (each decrypt logged to key_usage_log).
+    """
     embedder = get_embedder()
-    stored = repo.fetch_patient_embeddings(tenant_id, patient_id)
+    stored = repo.fetch_patient_embeddings(tenant_id, patient_id, user_id=user_id)
     stored = [s for s in stored if s["vector"] is not None and s["vector"].size]
     if not stored:
         return []
@@ -107,19 +115,28 @@ def retrieve(tenant_id: str, patient_id: str, question: str, k: int = TOP_K) -> 
     # Vectors are L2-normalized -> cosine == dot product.
     scores = matrix @ qvec
 
-    order = np.argsort(-scores)[:k]
+    order = [int(i) for i in np.argsort(-scores)[:k]]
+    top = [stored[i] for i in order]
+    # Decrypt only the disclosed top-k PHI (chunk_text + title) in one transaction.
+    chunk_texts = repo.decrypt_payloads(
+        [s["chunk_text_enc"] for s in top], tenant_id=tenant_id, patient_id=patient_id, user_id=user_id
+    )
+    titles = repo.decrypt_payloads(
+        [(s["metadata"] or {}).get("title_enc") for s in top],
+        tenant_id=tenant_id, patient_id=patient_id, user_id=user_id,
+    )
+
     results = []
-    for idx in order:
-        s = stored[int(idx)]
+    for s, idx, chunk_text, title in zip(top, order, chunk_texts, titles):
         meta = s["metadata"] or {}
         results.append(
             {
                 "historyId": str(s["source_id"]),
                 "recordType": meta.get("record_type"),
-                "title": meta.get("title"),
+                "title": title,
                 "severity": meta.get("severity"),
-                "score": round(float(scores[int(idx)]), 4),
-                "chunkText": s["chunk_text"],
+                "score": round(float(scores[idx]), 4),
+                "chunkText": chunk_text,
             }
         )
     return results
@@ -212,9 +229,9 @@ def _llm_answer(question: str, hits: list[dict]) -> str | None:
         return None
 
 
-def answer(tenant_id: str, patient_id: str, question: str) -> dict:
+def answer(tenant_id: str, patient_id: str, question: str, user_id: str | None = None) -> dict:
     """Retrieve + synthesize. Returns answer, mode, citations, retrieved count."""
-    hits = retrieve(tenant_id, patient_id, question)
+    hits = retrieve(tenant_id, patient_id, question, user_id=user_id)
 
     mode = "extractive"
     text = None

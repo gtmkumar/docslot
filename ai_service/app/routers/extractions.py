@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import Principal, get_principal
 from ..config import get_settings
-from .. import ocr, ocr_repository as repo, sample_docs
+from .. import ocr, ocr_repository as repo, phi_access, sample_docs
 from ..schemas import (
     Analyte,
     ExtractionListItem,
@@ -50,15 +50,37 @@ def extract_lab_report(
 ) -> LabReportExtractResponse:
     settings = get_settings()
 
-    # Cross-tenant guard for a supplied patient.
-    patient_id: str | None = None
-    if body.relatedPatientId:
-        patient_id = _validate_uuid_or_404(body.relatedPatientId, "Patient")
-        if not repo.patient_linked_to_tenant(principal.tenant_id, patient_id):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Patient not found in this tenant.",
-            )
+    # A lab report is PHI: it MUST be patient-linked so it is never stored unlinked
+    # and the consent gate + purpose-of-use record have a subject (accessed_resource_id
+    # is NOT NULL). Reject an unlinked extraction (422) rather than storing orphan PHI.
+    if not body.relatedPatientId:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="relatedPatientId is required for lab-report extraction (PHI must be patient-linked).",
+        )
+    patient_id = _validate_uuid_or_404(body.relatedPatientId, "Patient")
+    if not repo.patient_linked_to_tenant(principal.tenant_id, patient_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found in this tenant.",
+        )
+
+    # Consent-or-break-glass gate BEFORE any PHI is extracted/persisted (403 if denied).
+    grant = phi_access.enforce_phi_gate(
+        user_id=principal.user_id,
+        tenant_id=principal.tenant_id,
+        patient_id=patient_id,
+        resource_type=phi_access.RESOURCE_LAB_REPORT,
+    )
+    phi_access.record_purpose_of_use(
+        user_id=principal.user_id,
+        tenant_id=principal.tenant_id,
+        patient_id=patient_id,
+        resource_type=phi_access.RESOURCE_LAB_REPORT,
+        purpose=purpose,
+        grant=grant,
+    )
+
     booking_id: str | None = None
     if body.relatedBookingId:
         booking_id = _validate_uuid_or_404(body.relatedBookingId, "Booking")
@@ -117,14 +139,9 @@ def extract_lab_report(
         overall_confidence=confidence,
         requires_human_review=requires_review,
         status=db_status,
+        user_id=principal.user_id,
     )
 
-    repo.log_purpose_of_use_best_effort(
-        user_id=principal.user_id,
-        tenant_id=principal.tenant_id,
-        patient_id=patient_id,
-        purpose=purpose,
-    )
     repo.write_audit_best_effort(
         user_id=principal.user_id,
         tenant_id=principal.tenant_id,
