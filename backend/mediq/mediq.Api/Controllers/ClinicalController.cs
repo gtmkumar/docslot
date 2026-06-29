@@ -36,6 +36,18 @@ public sealed class ClinicalController(
     public async Task<ActionResult<PrescriptionDto>> GetPrescription(Guid prescriptionId, CancellationToken ct)
         => Ok(await queries.Query(new GetPrescriptionQuery(RequireTenant(), prescriptionId, Purpose()), ct));
 
+    // Amend an ISSUED prescription: mints a new prescription that supersedes the original (which is marked
+    // 'amended'). Distinct 'amend' permission (separation from issue); the original is never overwritten.
+    [HttpPost("prescriptions/{prescriptionId:guid}/amend")]
+    [RequirePermission("docslot.prescription.amend")]
+    [ProducesResponseType<AmendPrescriptionResult>(StatusCodes.Status201Created)]
+    public async Task<ActionResult<AmendPrescriptionResult>> AmendPrescription(
+        Guid prescriptionId, [FromBody] AmendPrescriptionRequest request, CancellationToken ct)
+    {
+        var result = await commands.Send(new AmendPrescriptionCommand(RequireTenant(), prescriptionId, request), ct);
+        return CreatedAtAction(nameof(GetPrescription), new { prescriptionId = result.PrescriptionId }, result);
+    }
+
     [HttpGet("patients/{patientId:guid}/prescriptions")]
     [RequirePermission("docslot.prescription.read")]
     [ProducesResponseType<IReadOnlyList<PrescriptionListItemDto>>(StatusCodes.Status200OK)]

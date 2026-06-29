@@ -76,6 +76,88 @@ public sealed class IssuePrescriptionCommandHandler(
         => string.IsNullOrEmpty(value) ? null : await encryption.EncryptAsync(field, tenantId, value, c, ct);
 }
 
+// ---- Amend prescription (mint-new-supersedes-original; emits docslot.prescription.amended) ---------
+
+public sealed record AmendPrescriptionCommand(Guid TenantId, Guid PrescriptionId, AmendPrescriptionRequest Request) : ICommand<AmendPrescriptionResult>;
+
+public sealed class AmendPrescriptionValidator : AbstractValidator<AmendPrescriptionCommand>
+{
+    public AmendPrescriptionValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.PrescriptionId).NotEmpty();
+        RuleFor(x => x.Request.MedicationsJson).NotEmpty();
+        RuleFor(x => x.Request.AmendmentReason).NotEmpty().MinimumLength(10)
+            .WithMessage("An amendment reason (>= 10 chars) is required — amending an issued prescription is auditable.");
+    }
+}
+
+public sealed class AmendPrescriptionCommandHandler(
+    IClinicalRepository clinical,
+    IFieldEncryptionService encryption,
+    IBookingEventPublisher events,
+    IAuditTrailWriter audit,
+    ICurrentUserContext ctx,
+    IClock clock)
+    : ICommandHandler<AmendPrescriptionCommand, AmendPrescriptionResult>
+{
+    private static readonly HashSet<string> Amendable = new(StringComparer.Ordinal) { "finalized", "delivered" };
+
+    public async Task<AmendPrescriptionResult> Handle(AmendPrescriptionCommand command, CancellationToken ct)
+    {
+        var req = command.Request;
+
+        // Load the original (RLS + tenant filter also block cross-tenant → 404). We never decrypt or return
+        // its PHI here — only its lineage (booking/patient/doctor/status) — so this is not a PHI disclosure.
+        var original = await clinical.GetPrescriptionAsync(command.PrescriptionId, command.TenantId, ct)
+            ?? throw new KeyNotFoundException("Prescription not found.");
+
+        if (!Amendable.Contains(original.Status))
+            throw new BusinessRuleException(
+                $"Prescription cannot be amended (status: {original.Status}). Only an issued (finalized/delivered) prescription can be amended.");
+
+        // Single-winner: flip the original to 'amended' FIRST (conditional UPDATE). If a concurrent amend
+        // already won, nothing updates → 409. This + the insert run in the command's UnitOfWork transaction,
+        // so a later failure rolls BOTH back (the original is never left superseded with no successor).
+        if (!await clinical.MarkPrescriptionSupersededAsync(original.PrescriptionId, command.TenantId, ct))
+            throw new ConflictException("Prescription is no longer amendable (it was amended concurrently).");
+
+        var encCtx = new EncryptionContext(ctx.UserId, command.TenantId, "prescription", original.PatientId, ctx.IpAddress);
+        var diagnosisEnc = await EncOrNull(req.Diagnosis, PrescriptionFields.Diagnosis, command.TenantId, encCtx, ct);
+        var examinationEnc = await EncOrNull(req.Examination, PrescriptionFields.Examination, command.TenantId, encCtx, ct);
+        var chiefEnc = await EncOrNull(req.ChiefComplaints, PrescriptionFields.ChiefComplaints, command.TenantId, encCtx, ct);
+        var medsEnc = await encryption.EncryptAsync(PrescriptionFields.Medications, command.TenantId, req.MedicationsJson, encCtx, ct);
+
+        var amendment = Prescription.Amend(
+            original.BookingId, original.PatientId, original.DoctorId, command.TenantId,
+            chiefEnc, examinationEnc, diagnosisEnc, medsEnc, req.Advice, req.FollowUpInDays,
+            original.PrescriptionId, req.AmendmentReason, clock.UtcNow);
+
+        var number = await clinical.AddPrescriptionAsync(amendment, ct);
+
+        await audit.RecordAsync(new AuditEntry(
+            "amend", "prescription", amendment.PrescriptionId, number, ctx.UserId, command.TenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Prescription amended (supersedes {original.PrescriptionNumber ?? original.PrescriptionId.ToString()}; PHI encrypted)",
+            Purpose: "treatment", LegalBasis: "consent"), ct);
+
+        // Integration event — IDs ONLY, NO PHI.
+        await events.PublishAsync("docslot.prescription.amended", command.TenantId, amendment.PrescriptionId, number,
+            new
+            {
+                prescription_id = amendment.PrescriptionId,
+                supersedes_prescription_id = original.PrescriptionId,
+                patient_id = original.PatientId,
+                booking_id = original.BookingId,
+            }, ct);
+
+        return new AmendPrescriptionResult(amendment.PrescriptionId, number, original.PrescriptionId);
+    }
+
+    private async Task<string?> EncOrNull(string? value, FieldRef field, Guid tenantId, EncryptionContext c, CancellationToken ct)
+        => string.IsNullOrEmpty(value) ? null : await encryption.EncryptAsync(field, tenantId, value, c, ct);
+}
+
 // ---- Read prescription (decrypts; purpose-of-use + consent gated) ---------------------------------
 
 public sealed record GetPrescriptionQuery(Guid TenantId, Guid PrescriptionId, string DeclaredPurpose) : IQuery<PrescriptionDto>;
@@ -121,7 +203,8 @@ public sealed class GetPrescriptionQueryHandler(
             await DecOrNull(p.ExaminationEnc, PrescriptionFields.Examination, encCtx, ct),
             await DecOrNull(p.DiagnosisEnc, PrescriptionFields.Diagnosis, encCtx, ct),
             await encryption.DecryptAsync(PrescriptionFields.Medications, p.MedicationsEnc, encCtx, ct),
-            p.Advice, p.FollowUpInDays, p.Status, new DateTimeOffset(DateTime.SpecifyKind(p.CreatedAt, DateTimeKind.Utc)));
+            p.Advice, p.FollowUpInDays, p.Status, p.SupersedesPrescriptionId,
+            new DateTimeOffset(DateTime.SpecifyKind(p.CreatedAt, DateTimeKind.Utc)));
     }
 
     private async Task<string?> DecOrNull(string? envelope, FieldRef field, EncryptionContext c, CancellationToken ct)

@@ -29,6 +29,8 @@ public sealed class PrescriptionConfiguration : IEntityTypeConfiguration<Prescri
         b.Property(x => x.Advice).HasColumnName("advice");
         b.Property(x => x.FollowUpInDays).HasColumnName("follow_up_in_days");
         b.Property(x => x.Status).HasColumnName("status");
+        b.Property(x => x.SupersedesPrescriptionId).HasColumnName("supersedes_prescription_id");
+        b.Property(x => x.AmendmentReason).HasColumnName("amendment_reason");
         b.Property(x => x.CreatedAt).HasColumnName("created_at");
         b.Property(x => x.UpdatedAt).HasColumnName("updated_at");
     }
