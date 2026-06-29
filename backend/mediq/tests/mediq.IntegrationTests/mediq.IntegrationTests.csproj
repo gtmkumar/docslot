@@ -33,6 +33,11 @@
     <ProjectReference Include="..\..\mediq.Infrastructure\mediq.Infrastructure.csproj" />
     <ProjectReference Include="..\..\mediq.Application\mediq.Application.csproj" />
     <ProjectReference Include="..\..\mediq.SharedDataModel\mediq.SharedDataModel.csproj" />
+    <!-- The gateway also exposes a global `Program` (its top-level statements). mediq.Api exposes one too, and
+         this test project references both — aliasing the gateway reference as `Gateway` keeps the two `Program`
+         types distinct so the gateway factory boots Gateway::Program while every existing factory keeps using
+         the (mediq.Api) global Program unchanged. -->
+    <ProjectReference Include="..\..\mediq.Gateway\mediq.Gateway.csproj" Aliases="Gateway" />
   </ItemGroup>
 
 </Project>
