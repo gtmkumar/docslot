@@ -136,6 +136,7 @@ CREATE TABLE platform.tenants (
     -- Regulatory (India-specific, extensible via JSONB)
     gstin               VARCHAR(15),                          -- GST number
     pan                 VARCHAR(10),                          -- Permanent Account Number
+    tan                 VARCHAR(10),                          -- Tax Deduction Account Number (deductor TAN for Form 16A / TDS)
     cin                 VARCHAR(21),                          -- Corporate Identification Number
     regulatory_metadata JSONB NOT NULL DEFAULT '{}',         -- HFR ID, ABDM IDs, license numbers per country
 

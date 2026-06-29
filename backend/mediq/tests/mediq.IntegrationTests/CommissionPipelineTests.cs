@@ -607,6 +607,147 @@ public sealed class CommissionPipelineTests(CommissionPipelineWebAppFactory fact
         finally { await CleanCampaignAsync(campaignId); await CleanBookingAsync(bookingId, slotId); }
     }
 
+    // ---- 9. INVOICE NUMBERING + FORM 16A (TDS u/s 194H) ----------------------------------------------
+
+    [Fact]
+    public async Task Payout_GetsAutoInvoiceNumber_AndForm16ADocumentIs404BeforeIssue()
+    {
+        var super = await ClientAsync(factory.SuperEmail);
+        var finance = await ClientAsync(factory.FinanceEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        try
+        {
+            var payout = await DriveToPaidPayoutAsync(super, finance, bookingId);
+            Assert.Matches(@"^INV-\d{6}-\d{5}$", await PayoutInvoiceNumberAsync(payout.PayoutId));   // auto-generated
+            // The document 404s until a certificate is issued.
+            var doc = await finance.GetAsync($"/api/v1/commission/payouts/{payout.PayoutId}/form-16a/document");
+            Assert.Equal(HttpStatusCode.NotFound, doc.StatusCode);
+        }
+        finally { await CleanBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task Form16A_IssuedForPaidPayout_IsProvisional_WithFyQuarterPanLast4_TanOnDocument()
+    {
+        var super = await ClientAsync(factory.SuperEmail);
+        var finance = await ClientAsync(factory.FinanceEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        await SetTenantTanAsync(factory.TenantId, "BLRT00123A");
+        await SetBrokerPanAsync(factory.BrokerId, "ABCPK1234M");
+        try
+        {
+            var payout = await DriveToPaidPayoutAsync(super, finance, bookingId);
+
+            var resp = await finance.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/form-16a", new { });
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var cert = await resp.Content.ReadFromJsonAsync<Form16ACertificateDto>();
+            Assert.Equal("194H", cert!.Section);
+            Assert.Equal("provisional", cert.Status);                 // never fabricates a TRACES number
+            Assert.Null(cert.TracesCertificateNumber);
+            Assert.False(string.IsNullOrWhiteSpace(cert.FinancialYear));
+            Assert.Matches("^Q[1-4]$", cert.Quarter);
+            Assert.Equal(payout.GrossAmountInr, cert.GrossAmountInr);
+            Assert.Equal(payout.TdsAmountInr, cert.TdsAmountInr);
+            Assert.Equal("BLRT00123A", cert.DeductorTan);
+            Assert.Equal("234M", cert.DeducteePanLast4);              // last 4 of ABCPK1234M only
+            Assert.Contains($"/payouts/{payout.PayoutId}/form-16a/document", cert.DocumentUrl);
+            Assert.Equal(cert.DocumentUrl, await PayoutForm16AUrlAsync(payout.PayoutId));
+
+            // Render the legal document — full PAN appears here (transiently decrypted), NOT in the stored row.
+            var doc = await finance.GetAsync($"/api/v1/commission/payouts/{payout.PayoutId}/form-16a/document");
+            Assert.Equal(HttpStatusCode.OK, doc.StatusCode);
+            Assert.StartsWith("text/html", doc.Content.Headers.ContentType!.ToString());
+            var html = await doc.Content.ReadAsStringAsync();
+            Assert.Contains("FORM NO. 16A", html);
+            Assert.Contains("PROVISIONAL", html);
+            Assert.Contains("ABCPK1234M", html);                     // full PAN on the certificate
+            Assert.Contains("BLRT00123A", html);                     // deductor TAN
+            // The stored cert row holds only the last 4, never the full PAN.
+            Assert.Equal("234M", await ScalarAsync<string>("SELECT deductee_pan_last4 FROM commission.tds_certificates WHERE payout_id=@p", ("p", payout.PayoutId)));
+            Assert.Equal(0L, await ScalarAsync<long>("SELECT count(*) FROM commission.tds_certificates WHERE payout_id=@p AND deductee_pan_last4='ABCPK1234M'", ("p", payout.PayoutId)));
+        }
+        finally
+        {
+            await ExecAsync("UPDATE commission.brokers SET pan_number=NULL WHERE broker_id=@b", ("b", factory.BrokerId));
+            await SetTenantTanAsync(factory.TenantId, null);
+            await CleanBookingAsync(bookingId, slotId);
+        }
+    }
+
+    [Fact]
+    public async Task Form16A_Document_WithIdempotencyKeyHeader_NeverPersistsFullPanToIdempotencyStore()
+    {
+        // Regression (auditor HIGH): the document command must NOT have its full-PAN response cached in the
+        // durable (plaintext, non-crypto-erasable) idempotency store, even when the request carries an
+        // Idempotency-Key header. The IDoNotCacheResponse marker bypasses the cache for this command.
+        var super = await ClientAsync(factory.SuperEmail);
+        var finance = await ClientAsync(factory.FinanceEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        await SetBrokerPanAsync(factory.BrokerId, "ABCPK1234M");
+        try
+        {
+            var payout = await DriveToPaidPayoutAsync(super, finance, bookingId);
+            await finance.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/form-16a", new { });
+
+            var req = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/commission/payouts/{payout.PayoutId}/form-16a/document");
+            req.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+            var doc = await finance.SendAsync(req);
+            Assert.Equal(HttpStatusCode.OK, doc.StatusCode);
+            Assert.Contains("ABCPK1234M", await doc.Content.ReadAsStringAsync());   // full PAN served in the document
+
+            // ...but never written at rest to the idempotency store.
+            Assert.Equal(0L, await ScalarAsync<long>("SELECT count(*) FROM platform.idempotency_keys WHERE response_payload LIKE '%ABCPK1234M%'"));
+        }
+        finally
+        {
+            await ExecAsync("UPDATE commission.brokers SET pan_number=NULL WHERE broker_id=@b", ("b", factory.BrokerId));
+            await CleanBookingAsync(bookingId, slotId);
+        }
+    }
+
+    [Fact]
+    public async Task Form16A_RejectedForNonPaidPayout_422()
+    {
+        var super = await ClientAsync(factory.SuperEmail);
+        var finance = await ClientAsync(factory.FinanceEmail);
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        try
+        {
+            await EarnAsync(super, bookingId);
+            await SettleAsync();
+            var batchResp = await finance.PostAsJsonAsync("/api/v1/commission/payouts/batch",
+                new CreatePayoutBatchRequest(factory.BrokerId, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-7)), DateOnly.FromDateTime(DateTime.UtcNow)));
+            var payout = await batchResp.Content.ReadFromJsonAsync<PayoutDto>();
+            await finance.PostAsJsonAsync($"/api/v1/commission/payouts/{payout!.PayoutId}/approve", new { });
+
+            // Approved but NOT executed → not 'paid' → Form 16A must be refused.
+            var resp = await finance.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/form-16a", new { });
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
+        }
+        finally { await CleanBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task Form16A_Issue_DeniedForUserWithoutTdsIssuePermission()
+    {
+        var super = await ClientAsync(factory.SuperEmail);
+        var finance = await ClientAsync(factory.FinanceEmail);
+        var readonlyClient = await ClientAsync(factory.ReadonlyEmail);   // tenant_staff — no commission.tds.issue
+        await ResetWalletAsync();
+        var (bookingId, slotId) = await SeedCompletableBookingAsync();
+        try
+        {
+            var payout = await DriveToPaidPayoutAsync(super, finance, bookingId);
+            var resp = await readonlyClient.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/form-16a", new { });
+            Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        }
+        finally { await CleanBookingAsync(bookingId, slotId); }
+    }
+
     // ================================ helpers ======================================================
 
     private Task<HttpClient> ClientAsync(string email) => BearerClientAsync(factory, email);
@@ -716,6 +857,40 @@ public sealed class CommissionPipelineTests(CommissionPipelineWebAppFactory fact
 
     private static Task<int> SettleAsync() =>
         ScalarAsync<int>("SELECT commission.settle_earned_attributions(make_interval(secs => 0))::int");
+
+    /// <summary>Earn → settle → batch → approve → execute, returning the now-PAID payout.</summary>
+    private async Task<PayoutDto> DriveToPaidPayoutAsync(HttpClient super, HttpClient finance, Guid bookingId)
+    {
+        await EarnAsync(super, bookingId);
+        await SettleAsync();
+        var batchResp = await finance.PostAsJsonAsync("/api/v1/commission/payouts/batch",
+            new CreatePayoutBatchRequest(factory.BrokerId,
+                DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-7)), DateOnly.FromDateTime(DateTime.UtcNow)));
+        var payout = await batchResp.Content.ReadFromJsonAsync<PayoutDto>();
+        await finance.PostAsJsonAsync($"/api/v1/commission/payouts/{payout!.PayoutId}/approve", new { });
+        var exec = await super.PostAsJsonAsync($"/api/v1/commission/payouts/{payout.PayoutId}/execute", new { });
+        Assert.Equal(HttpStatusCode.OK, exec.StatusCode);
+        return payout;
+    }
+
+    private static Task SetTenantTanAsync(Guid tenantId, string? tan) =>
+        ExecAsync("UPDATE platform.tenants SET tan=@v WHERE tenant_id=@t", ("t", tenantId), ("v", (object?)tan ?? DBNull.Value));
+
+    /// <summary>Encrypts a PAN via the app's real field-encryption service and stores the envelope on the broker.</summary>
+    private async Task SetBrokerPanAsync(Guid brokerId, string pan)
+    {
+        using var scope = factory.Services.CreateScope();
+        var enc = scope.ServiceProvider.GetRequiredService<IFieldEncryptionService>();
+        var env = await enc.EncryptAsync(new FieldRef("commission", "brokers", "pan_number"), factory.TenantId, pan,
+            new EncryptionContext(factory.SuperUserId, factory.TenantId, "broker", brokerId, null), default);
+        await ExecAsync("UPDATE commission.brokers SET pan_number=@e WHERE broker_id=@b", ("e", env), ("b", brokerId));
+    }
+
+    private static Task<string?> PayoutInvoiceNumberAsync(Guid payoutId) =>
+        ScalarOrNullAsync<string>("SELECT invoice_number FROM commission.payouts WHERE payout_id=@p", ("p", payoutId));
+
+    private static Task<string?> PayoutForm16AUrlAsync(Guid payoutId) =>
+        ScalarOrNullAsync<string>("SELECT form_16a_url FROM commission.payouts WHERE payout_id=@p", ("p", payoutId));
 
     /// <summary>Seeds an ACTIVE campaign (window now±1d, no targeting) in the fixture tenant; returns its id.</summary>
     private async Task<Guid> SeedCampaignAsync(string bonusType, decimal bonusValue, decimal? budget = null, int? minBookings = null)

@@ -110,6 +110,7 @@ public sealed class CommissionPipelineWebAppFactory : WebApplicationFactory<Prog
         await Exec(conn, "DELETE FROM commission.attribution_disputes WHERE tenant_id=@t", ("t", TenantId));
         // attributions may reference a payout — null the link first, then delete payouts + attributions.
         await Exec(conn, "UPDATE commission.attributions SET payout_id=NULL WHERE tenant_id=@t", ("t", TenantId));
+        await Exec(conn, "DELETE FROM commission.tds_certificates WHERE tenant_id=@t", ("t", TenantId));   // FK→payouts (cascade) but explicit
         await Exec(conn, "DELETE FROM commission.payouts WHERE tenant_id=@t", ("t", TenantId));
         await Exec(conn, "DELETE FROM commission.attributions WHERE tenant_id=@t", ("t", TenantId));
         await Exec(conn, "DELETE FROM commission.broker_campaigns WHERE tenant_id=@t", ("t", TenantId));

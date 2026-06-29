@@ -460,10 +460,81 @@ CREATE INDEX idx_payouts_failed ON commission.payouts(initiated_at DESC) WHERE s
 CREATE TRIGGER trg_payouts_updated_at BEFORE UPDATE ON commission.payouts
     FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
 
+-- Auto-generate a human-readable invoice number per payout batch: INV-YYYYMM-NNNNN. The sequence is global so
+-- the number is unique platform-wide (satisfying the UNIQUE constraint); the YYYYMM is the issue month. Mirrors
+-- docslot.generate_booking_number (no cross-schema read → no RLS/grant coupling in the trigger).
+CREATE SEQUENCE IF NOT EXISTS commission.invoice_number_seq;
+
+CREATE OR REPLACE FUNCTION commission.generate_payout_invoice_number()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.invoice_number IS NULL THEN
+        NEW.invoice_number := 'INV-' || TO_CHAR(NOW(), 'YYYYMM') || '-' ||
+                              LPAD(nextval('commission.invoice_number_seq')::text, 5, '0');
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_payout_invoice_number BEFORE INSERT ON commission.payouts
+    FOR EACH ROW EXECUTE FUNCTION commission.generate_payout_invoice_number();
+
 -- Add the FK from attributions.payout_id now that payouts table exists
 ALTER TABLE commission.attributions
     ADD CONSTRAINT fk_attribution_payout
     FOREIGN KEY (payout_id) REFERENCES commission.payouts(payout_id);
+
+-- ============================================================================
+-- TABLE C8b: TDS_CERTIFICATES (Form 16A — TDS u/s 194H on commission)
+-- ============================================================================
+-- When a tenant disburses a commission payout it deducts TDS u/s 194H and must issue the broker a Form 16A
+-- (TDS certificate). This row is the certificate METADATA. It is PROVISIONAL until the quarterly TDS return is
+-- filed on the govt TRACES portal and a real certificate number is recorded (traces_certificate_number) — an
+-- EXTERNAL step, so we never fabricate that number. PHI/PII discipline: only the LAST 4 of the deductee PAN is
+-- stored here; the legally-required FULL PAN appears solely on the rendered certificate document, which is
+-- generated ON DEMAND (PAN decrypted transiently from commission.brokers.pan_number, never persisted in plaintext).
+CREATE TABLE commission.tds_certificates (
+    certificate_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    payout_id           UUID NOT NULL REFERENCES commission.payouts(payout_id) ON DELETE CASCADE,
+    broker_id           UUID NOT NULL REFERENCES commission.brokers(broker_id),
+
+    section             VARCHAR(10) NOT NULL DEFAULT '194H',
+    financial_year      VARCHAR(9)  NOT NULL,                   -- '2026-27'
+    quarter             VARCHAR(2)  NOT NULL CHECK (quarter IN ('Q1','Q2','Q3','Q4')),
+
+    deductor_name       VARCHAR(200) NOT NULL,                  -- tenant legal name
+    deductor_tan        VARCHAR(10),                            -- tenant TAN (NULL until configured → stays provisional)
+    deductor_pan        VARCHAR(10),                            -- tenant PAN (not secret; printed on the form)
+    deductee_name       VARCHAR(200) NOT NULL,                  -- broker name
+    deductee_pan_last4  VARCHAR(4),                             -- ONLY the last 4 — full PAN never persisted here
+
+    gross_amount_inr    DECIMAL(12,2) NOT NULL,
+    tds_rate            DECIMAL(5,2)  NOT NULL,
+    tds_amount_inr      DECIMAL(12,2) NOT NULL,
+
+    status              VARCHAR(20) NOT NULL DEFAULT 'provisional'
+        CHECK (status IN ('provisional','filed','issued','revised')),
+    traces_certificate_number VARCHAR(20),                      -- from TRACES AFTER filing (external) — NULL until then
+
+    generated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    generated_by_user_id UUID REFERENCES platform.users(user_id),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (payout_id)                                          -- one certificate per payout (re-issue updates this row)
+);
+
+CREATE INDEX idx_tds_certificates_tenant ON commission.tds_certificates(tenant_id, generated_at DESC);
+CREATE INDEX idx_tds_certificates_broker ON commission.tds_certificates(broker_id);
+
+CREATE TRIGGER trg_tds_certificates_updated_at BEFORE UPDATE ON commission.tds_certificates
+    FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+ALTER TABLE commission.tds_certificates ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_tds_certificates ON commission.tds_certificates
+    FOR ALL USING (tenant_id = platform.current_tenant_id() OR tenant_id = platform.current_impersonated_tenant());
 
 -- ============================================================================
 -- TABLE C8: BROKER_WALLET (real-time balance, denormalized for speed)
@@ -815,6 +886,7 @@ BEGIN
     ('commission.payouts.read', commission_product_id, 'payouts', 'read', 'tenant', 'View payout history', false),
     ('commission.payouts.approve', commission_product_id, 'payouts', 'update', 'tenant', 'Approve payout for execution', true),
     ('commission.payouts.execute', commission_product_id, 'payouts', 'update', 'platform', 'Trigger actual UPI/bank transfer', true),
+    ('commission.tds.issue', commission_product_id, 'payouts', 'update', 'tenant', 'Issue a TDS / Form 16A certificate for a paid payout', true),
 
     -- Disputes
     ('commission.dispute.raise', commission_product_id, 'attribution_disputes', 'create', 'tenant', 'Raise a dispute', false),

@@ -166,6 +166,30 @@ public sealed class CommissionController(
     public async Task<ActionResult<PayoutActionResult>> ExecutePayout(Guid payoutId, CancellationToken ct)
         => Ok(await commands.Send(new ExecutePayoutCommand(RequireTenant(), payoutId), ct));
 
+    /// <summary>
+    /// Issue a TDS / Form 16A certificate (section 194H) for a PAID payout. The certificate is PROVISIONAL until
+    /// the quarterly TDS return is filed on TRACES. Gated by <c>commission.tds.issue</c>.
+    /// </summary>
+    [HttpPost("payouts/{payoutId:guid}/form-16a")]
+    [RequirePermission("commission.tds.issue")]
+    [ProducesResponseType<Form16ACertificateDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<Form16ACertificateDto>> IssueForm16A(Guid payoutId, CancellationToken ct)
+        => Ok(await commands.Send(new IssueForm16ACommand(RequireTenant(), payoutId), ct));
+
+    /// <summary>
+    /// Render the Form 16A document (full deductee PAN — the access is logged to key_usage_log). Dispatched as a
+    /// command so that access log commits. 404 until a certificate is issued. Gated by <c>commission.tds.issue</c>.
+    /// </summary>
+    [HttpGet("payouts/{payoutId:guid}/form-16a/document")]
+    [RequirePermission("commission.tds.issue")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetForm16ADocument(Guid payoutId, CancellationToken ct)
+    {
+        var doc = await commands.Send(new GetForm16ADocumentCommand(RequireTenant(), payoutId), ct);
+        return doc is null ? NotFound() : Content(doc.Content, doc.ContentType);
+    }
+
     // ---- Disputes & campaigns --------------------------------------------------------------------
 
     [HttpPost("disputes")]
