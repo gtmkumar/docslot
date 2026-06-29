@@ -51,6 +51,12 @@ public sealed class TenantScopeQueryBehavior<TRequest, TResponse>(IUnitOfWork uo
 {
     public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)
     {
+        // A self-managed query owns its tenant scope: it opens BeginTenantScopeAsync for its DB read and disposes
+        // it BEFORE doing any non-DB I/O (e.g. an external HTTP call), so no pooled connection is pinned across
+        // the network call. Wrapping it here would re-introduce that hazard — skip and let the handler manage it.
+        if (request is ISelfManagedTransaction)
+            return await next();
+
         await using var scope = await uow.BeginTenantScopeAsync(currentUser.TenantId, ct);
         return await next();   // disposing the scope rolls the read tx back → SET LOCAL is discarded
     }

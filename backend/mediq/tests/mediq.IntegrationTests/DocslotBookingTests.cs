@@ -163,6 +163,39 @@ public sealed class DocslotBookingTests(DocslotWebAppFactory factory) : IClassFi
 
     // ---- helpers -------------------------------------------------------------------------------
 
+    [Fact]
+    public async Task Booking_NoShow_Risk_Returns_Stub_Score_And_404_For_Unknown()
+    {
+        var client = await AuthedClientAsync();
+
+        // Book a fresh slot so this test doesn't contend for the shared seed slot.
+        var slotId = Guid.NewGuid();
+        await SeedSpareSlotAsync(slotId);
+        var key = Guid.NewGuid().ToString();
+        var createResp = await PostAsync(client, "/api/v1/bookings", key, new CreateBookingRequest(
+            slotId, factory.DoctorId, factory.DepartmentId, factory.PatientPhone,
+            "Risk Patient", 40, "female", "consultation", "dashboard", "Checkup", false, key));
+        Assert.Equal(HttpStatusCode.Created, createResp.StatusCode);
+        var created = (await createResp.Content.ReadFromJsonAsync<CreateBookingResult>())!;
+
+        // No-show risk via the AI sibling-service seam — the test host uses the deterministic stub provider, so
+        // the endpoint works WITHOUT the Python AI service running and returns a bounded, banded score.
+        var riskResp = await client.GetAsync($"/api/v1/bookings/{created.BookingId}/no-show-risk");
+        Assert.Equal(HttpStatusCode.OK, riskResp.StatusCode);
+        var risk = (await riskResp.Content.ReadFromJsonAsync<NoShowRiskDto>())!;
+        Assert.Equal(created.BookingId, risk.BookingId);
+        Assert.True(risk.Available);
+        Assert.Equal("stub-dev", risk.Source);
+        Assert.Equal("stub-heuristic-v1", risk.ModelName);
+        Assert.NotNull(risk.Probability);
+        Assert.InRange(risk.Probability!.Value, 0.0, 1.0);
+        Assert.Contains(risk.Band, new[] { "low", "medium", "high" });
+
+        // A booking not in the tenant → 404 (the feature read is tenant-scoped + RLS).
+        var missing = await client.GetAsync($"/api/v1/bookings/{Guid.NewGuid()}/no-show-risk");
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+    }
+
     private async Task<HttpClient> AuthedClientAsync()
     {
         var client = factory.CreateClient();
