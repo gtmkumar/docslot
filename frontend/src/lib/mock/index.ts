@@ -15,6 +15,8 @@ export * from './security';
 export * from './clinical';
 // Commission / Care Partners (Slice 07) live in ./commission.
 export * from './commission';
+// AI assist (no-show risk + triage) lives in ./ai.
+export * from './ai';
 
 import { BOOKINGS, CONVERSATIONS, DAYS, DEPARTMENTS, DOCTORS, TIMES, buildSlotGrid } from '@/lib/data';
 import { inr, maskPhone } from '@/lib/format';

@@ -21,6 +21,11 @@ import { MockApiError } from '@/lib/mock';
 import {
   AnalyticsDtoSchema,
   AnalyticsSchema,
+  NoShowRiskSchema,
+  TriageResultSchema,
+  type NoShowRisk,
+  type TriageRequestInput,
+  type TriageResult,
   ApiClientSchema,
   AttributionSchema,
   AuditAnchorSchema,
@@ -2082,4 +2087,48 @@ export async function breakGlass(req: BreakGlassRequest, idempotencyKey: string)
   });
   const grantId = typeof raw === 'string' ? raw : ((raw as { grantId?: string })?.grantId ?? crypto.randomUUID());
   return BreakGlassResultSchema.parse({ grantId });
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AI ASSIST (no-show risk + triage) — two already-shipped backend capabilities.
+// ─────────────────────────────────────────────────────────────────────────────
+// Both are pass-throughs: apiFetch → zod-parse the RAW DTO → return it. The DTO's
+// `available` flag (false = AI sibling unreachable) is preserved verbatim so the
+// UI can render an "unavailable" state instead of a fabricated value.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** GET /api/v1/bookings/{bookingId}/no-show-risk → NoShowRiskDto. Gated
+ *  docslot.booking.read; NO PHI, so NO purpose-of-use header. A 404 (booking not
+ *  in tenant) surfaces as an ApiError the caller's query handles. */
+export async function getNoShowRisk(bookingId: string): Promise<NoShowRisk> {
+  const raw = await apiFetch<unknown>(`/bookings/${bookingId}/no-show-risk`);
+  return NoShowRiskSchema.parse(raw);
+}
+
+/**
+ * POST /api/v1/triage → TriageResultDto. Gated docslot.booking.create. NOT
+ * idempotency-required (triage is advisory — no Idempotency-Key attached).
+ *
+ * DPDP purpose-of-use: the server REQUIRES X-Purpose-Of-Use (422 without it) when
+ * `patientId` OR `bookingId` is present in the body (a patient/booking-bound
+ * triage is a clinical access). When neither is present (pure free-text intake)
+ * NO purpose header is needed. We forward `purposeOfUse` to apiFetch ONLY in the
+ * bound case, mirroring the server's gate. PHI: `complaint` flows through the
+ * request body only — it is never logged here, never placed in a query key, and
+ * never returned in the result.
+ */
+export async function submitTriage(input: TriageRequestInput): Promise<TriageResult> {
+  const boundToSubject = Boolean(input.patientId || input.bookingId);
+  const raw = await apiFetch<unknown>('/triage', {
+    method: 'POST',
+    // Only the patient/booking-bound call carries the purpose header (server gate).
+    purposeOfUse: boundToSubject ? input.purposeOfUse : undefined,
+    body: {
+      complaint: input.complaint,
+      patientId: input.patientId ?? null,
+      bookingId: input.bookingId ?? null,
+      patientAge: input.patientAge ?? null,
+    },
+  });
+  return TriageResultSchema.parse(raw);
 }

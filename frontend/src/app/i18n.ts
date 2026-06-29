@@ -242,6 +242,39 @@ export const en = {
       slot: 'Select a slot',
     },
   },
+  // AI no-show risk badge (manage / approve slide-overs).
+  noShow: {
+    label: 'No-show risk',
+    unavailable: 'Risk unavailable',
+    band: {
+      low: 'Low',
+      medium: 'Medium',
+      high: 'High',
+    },
+  },
+  // AI triage assist (new-booking intake, complaint step).
+  triage: {
+    heading: 'AI triage',
+    run: 'Run triage',
+    running: 'Assessing…',
+    idleHint: 'Type the reason for visit, then run triage for an urgency read and suggested doctors.',
+    unavailable: 'Triage unavailable — the assessment service could not be reached.',
+    error: "Triage couldn't run. Please try again.",
+    urgency: 'Urgency',
+    band: {
+      low: 'Low',
+      medium: 'Medium',
+      high: 'High',
+      emergency: 'Emergency',
+    },
+    redFlags: 'Red flags',
+    noRedFlags: 'No red flags identified.',
+    symptoms: 'Symptoms',
+    suggestedDoctors: 'Suggested doctors',
+    noDoctors: 'No doctor suggestions.',
+    next: 'Next {{time}}',
+    advisoryNote: 'Advisory only — clinical judgement decides the final department and doctor.',
+  },
   bookTime: {
     eyebrow: 'Book time',
     title: 'Reserve a slot',
@@ -1824,6 +1857,39 @@ export const hi: typeof en = {
       name: 'मरीज़ का नाम आवश्यक है',
       slot: 'स्लॉट चुनें',
     },
+  },
+  // AI no-show risk badge (manage / approve slide-overs).
+  noShow: {
+    label: 'नो-शो जोखिम',
+    unavailable: 'जोखिम अनुपलब्ध',
+    band: {
+      low: 'कम',
+      medium: 'मध्यम',
+      high: 'उच्च',
+    },
+  },
+  // AI triage assist (new-booking intake, complaint step).
+  triage: {
+    heading: 'एआई ट्राइएज',
+    run: 'ट्राइएज चलाएँ',
+    running: 'मूल्यांकन हो रहा है…',
+    idleHint: 'आने का कारण लिखें, फिर तात्कालिकता और सुझाए गए डॉक्टरों के लिए ट्राइएज चलाएँ।',
+    unavailable: 'ट्राइएज अनुपलब्ध — मूल्यांकन सेवा तक नहीं पहुँचा जा सका।',
+    error: 'ट्राइएज नहीं चल सका। कृपया फिर से प्रयास करें।',
+    urgency: 'तात्कालिकता',
+    band: {
+      low: 'कम',
+      medium: 'मध्यम',
+      high: 'उच्च',
+      emergency: 'आपातकाल',
+    },
+    redFlags: 'चेतावनी संकेत',
+    noRedFlags: 'कोई चेतावनी संकेत नहीं मिला।',
+    symptoms: 'लक्षण',
+    suggestedDoctors: 'सुझाए गए डॉक्टर',
+    noDoctors: 'कोई डॉक्टर सुझाव नहीं।',
+    next: 'अगला {{time}}',
+    advisoryNote: 'केवल सलाह — अंतिम विभाग और डॉक्टर का निर्णय चिकित्सीय विवेक से होता है।',
   },
   bookTime: {
     eyebrow: 'समय बुक करें',

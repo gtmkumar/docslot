@@ -28,6 +28,7 @@ import { useUI } from '@/stores/ui';
 import type { Booking, PatientConsentStatus } from '@/lib/types';
 import { useApproveBooking, useCancelBooking, useCheckInBooking } from '../api';
 import { PatientChip } from './PatientChip';
+import { NoShowRiskBadge } from './NoShowRiskBadge';
 
 /** Consent states that BLOCK Approve (the server returns 422 for these). */
 const CONSENT_BLOCKS_APPROVE: ReadonlySet<PatientConsentStatus> = new Set<PatientConsentStatus>([
@@ -100,6 +101,11 @@ export function ManageAppointmentPanel({
     <SlideOver open={open} onClose={onClose} eyebrow={t('panel.manage')} title={booking.patient}>
       <div className="flex flex-col gap-5">
         <PatientChip booking={booking} />
+
+        {/* AI no-show risk (on-demand; loading/unavailable/error all handled inside). */}
+        <div>
+          <NoShowRiskBadge bookingId={booking.id} />
+        </div>
 
         {booking.bookedByType === 'behalf' ? <BehalfConsentSection booking={booking} /> : null}
 
