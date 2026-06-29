@@ -7,6 +7,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Aspire RabbitMQ client — registers the IConnection singleton via builder.AddRabbitMQClient("rabbitmq").
+         Only invoked when Messaging:Provider=rabbitmq; the dev/test default (none) never touches it. -->
+    <PackageReference Include="Aspire.RabbitMQ.Client" Version="13.4.3" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.3" />
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />

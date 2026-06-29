@@ -49,6 +49,15 @@ if (builder.Configuration.GetValue("Booking:MaintenanceWorkerEnabled", true))
 if (builder.Configuration.GetValue("Webhooks:DeliveryWorkerEnabled", true))
     builder.Services.AddHostedService<mediq.Api.Workers.WebhookDeliveryWorker>();
 
+// --- Integration-event drain worker: publishes platform_api.integration_event_outbox rows to the message
+// broker out-of-band. DEFAULT-OFF (Messaging:DrainWorkerEnabled=false) — the broker + consumer are deferred,
+// so the outbox safely CAPTURES every event but does not drain until explicitly enabled. When the provider is
+// 'rabbitmq', also register the Aspire RabbitMQ client (the IConnection the RabbitMqIntegrationEventBus needs). ---
+if (string.Equals(builder.Configuration["Messaging:Provider"], "rabbitmq", StringComparison.OrdinalIgnoreCase))
+    builder.AddRabbitMQClient("rabbitmq");   // Aspire: IConnection singleton + health/OTel, from the "rabbitmq" connection string
+if (builder.Configuration.GetValue("Messaging:DrainWorkerEnabled", false))
+    builder.Services.AddHostedService<mediq.Api.Workers.IntegrationEventDrainWorker>();
+
 // --- Cross-cutting / web ---
 builder.Services.AddRequestContext();
 builder.Services.AddPlatformJwtAuth(builder.Configuration);

@@ -78,6 +78,24 @@ public static class InfrastructureRegistration
         services.AddScoped<IWebhookHttpDispatcher, WebhookHttpDispatcher>();
         services.AddScoped<IWebhookPublisher, WebhookPublisher>();
 
+        // Durable transactional INTEGRATION-EVENT OUTBOX (phase-4 seam). WebhookPublisher captures EVERY event
+        // into platform_api.integration_event_outbox atomically with the business write (closing the lost-event
+        // gap: an event with no matching webhook subscription was previously discarded). The drain worker
+        // (IntegrationEventDrainWorker, registered in Program behind Messaging:DrainWorkerEnabled) publishes due
+        // rows via IIntegrationEventBus. Provider switch mirrors the AiService/Abdm honest-stub seam:
+        //   Messaging:Provider=none (dev/test DEFAULT) → NullIntegrationEventBus (no I/O, no broker needed)
+        //   Messaging:Provider=rabbitmq               → RabbitMqIntegrationEventBus (needs the Aspire IConnection;
+        //                                               Program registers it via AddRabbitMQClient under the same flag)
+        services.Configure<mediq.Application.Options.MessagingOptions>(
+            config.GetSection(mediq.Application.Options.MessagingOptions.SectionName));
+        if (string.Equals(config[$"{mediq.Application.Options.MessagingOptions.SectionName}:Provider"],
+                "rabbitmq", StringComparison.OrdinalIgnoreCase))
+            services.AddSingleton<IIntegrationEventBus, Messaging.RabbitMqIntegrationEventBus>();
+        else
+            services.AddSingleton<IIntegrationEventBus, Messaging.NullIntegrationEventBus>();
+        services.AddScoped<IIntegrationOutboxStore, Messaging.IntegrationOutboxStore>();
+        services.AddScoped<IIntegrationEventOutboxDrainStore, Messaging.IntegrationEventOutboxDrainStore>();
+
         // docslot (slice 03 — booking core). Repositories, read services, slot holds, OPD tokens,
         // purpose-of-use, booking-event publisher. Clinical PHI services deferred to 03b/05.
         services.AddScoped<IBookingRepository, Docslot.BookingRepository>();

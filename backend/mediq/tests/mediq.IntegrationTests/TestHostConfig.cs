@@ -30,5 +30,9 @@ internal static class TestHostConfig
         // seeded dead-URL subscription can never stall a booking POST. Delivery tests drive the drain store
         // explicitly. Default-ON for the app (Webhooks__DeliveryWorkerEnabled ⇒ Webhooks:DeliveryWorkerEnabled).
         Environment.SetEnvironmentVariable("Webhooks__DeliveryWorkerEnabled", "false");
+        // Integration-event drain worker stays off suite-wide (it's already DEFAULT-OFF, but make it explicit so
+        // no factory's config layering flips it on): the outbox tests drive IIntegrationEventOutboxDrainStore /
+        // IIntegrationOutboxStore directly, so no autonomous poller adds pool churn across the ~8 parallel hosts.
+        Environment.SetEnvironmentVariable("Messaging__DrainWorkerEnabled", "false");
     }
 }

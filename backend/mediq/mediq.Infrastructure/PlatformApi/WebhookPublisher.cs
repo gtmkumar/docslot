@@ -15,6 +15,7 @@ namespace mediq.Infrastructure.PlatformApi;
 /// </para>
 /// </summary>
 public sealed class WebhookPublisher(
+    IIntegrationOutboxStore outbox,
     IWebhookSubscriptionRepository subscriptions,
     IWebhookDeliveryStore deliveries,
     IClock clock,
@@ -23,6 +24,12 @@ public sealed class WebhookPublisher(
 {
     public async Task<IReadOnlyList<Guid>> PublishAsync(IntegrationEvent evt, CancellationToken ct)
     {
+        // Durable transactional capture FIRST: write the event to the integration-event outbox inside the
+        // command's ambient UnitOfWork transaction (atomic with the business write). This runs BEFORE the
+        // subscription fan-out so EVERY event is captured — including ones with NO matching webhook
+        // subscription, which the fan-out below would otherwise silently drop (the lost-event gap).
+        await outbox.RecordAsync(evt, ct);
+
         var matches = await subscriptions.FindDeliverableAsync(evt.EventType, evt.TenantId, ct);
         var created = new List<Guid>(matches.Count);
 
