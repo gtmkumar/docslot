@@ -84,6 +84,13 @@ REVOKE UPDATE, DELETE ON platform.audit_chain FROM docslot_app;
 GRANT  SELECT, INSERT  ON platform.audit_log   TO docslot_app;
 GRANT  SELECT, INSERT  ON platform.audit_chain TO docslot_app;   -- chain trigger INSERTs as the caller
 
+-- purpose_of_use_log is the purpose-of-use / break-glass trail (FR-MED-03). The app INSERTs only
+-- (the is_break_glass review row is the sole record of a consent-override read); it must not UPDATE
+-- it (tamper with is_break_glass / reviewed_at). A BEFORE UPDATE guard trigger backstops this
+-- (05_security_hardening.sql); DELETE is not granted here, so the app can neither edit nor erase it.
+REVOKE UPDATE ON platform.purpose_of_use_log FROM docslot_app;
+GRANT  SELECT, INSERT ON platform.purpose_of_use_log TO docslot_app;
+
 -- ----------------------------------------------------------------------------
 -- 5. Sequences (BIGSERIAL audit_chain.sequence_number, booking/prescription/
 --    report number sequences) — the triggers call nextval() as the caller.

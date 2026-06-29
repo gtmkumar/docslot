@@ -369,6 +369,31 @@ CREATE INDEX idx_purpose_user ON platform.purpose_of_use_log(user_id, accessed_a
 CREATE INDEX idx_purpose_break_glass ON platform.purpose_of_use_log(accessed_at DESC) WHERE is_break_glass = true;
 CREATE INDEX idx_purpose_review_pending ON platform.purpose_of_use_log(accessed_at) WHERE review_required = true AND reviewed_at IS NULL;
 
+-- APPEND-ONLY at the substrate (auditor Finding 1, break-glass slice). A break-glass read stamps
+-- is_break_glass=true here, and this row is the ONLY record that a consent-override PHI access
+-- occurred + what populates v_security_review_queue. So the access record must be tamper-evident:
+-- a guard trigger blocks UPDATE (e.g. flipping is_break_glass=false or back-dating reviewed_at to
+-- silently drop an emergency access from the review queue). The app role also has its UPDATE grant
+-- REVOKEd (10_roles_grants.sql) — defense in depth. The guard fires even for the table owner, EXCEPT
+-- a privileged review-close path (NOT the app role) that opts in via app.allow_purpose_review='on'
+-- (mirrors the audit_log maintenance escape hatch). DELETE is intentionally NOT blocked: docslot_app
+-- holds no DELETE grant on this table (least-privilege), and only the privileged owner prunes it.
+CREATE OR REPLACE FUNCTION platform.block_purpose_log_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF current_user <> 'docslot_app'
+       AND COALESCE(current_setting('app.allow_purpose_review', true), 'off') = 'on' THEN
+        RETURN NEW;   -- privileged review-close (e.g. mark reviewed) explicitly opted in — never the app role
+    END IF;
+    RAISE EXCEPTION 'platform.purpose_of_use_log is append-only: UPDATE is not permitted (use a privileged review-close path)'
+        USING ERRCODE = 'insufficient_privilege';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_purpose_log_no_update
+    BEFORE UPDATE ON platform.purpose_of_use_log
+    FOR EACH ROW EXECUTE FUNCTION platform.block_purpose_log_update();
+
 -- ----------------------------------------------------------------------------
 -- S8. IP_ALLOWLIST (per-user/per-tenant IP restrictions)
 -- ----------------------------------------------------------------------------
