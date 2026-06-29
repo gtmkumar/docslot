@@ -17,7 +17,7 @@ import type { PurposeOfUse } from '@/lib/mock/contracts';
 export function PrescriptionsTab({ patientId, purpose }: { patientId: string; purpose: PurposeOfUse }) {
   const { t } = useTranslation();
   const { can } = usePermissions();
-  const { data, isLoading, isError, refetch } = usePrescriptions(patientId);
+  const { data, isLoading, isError, refetch } = usePrescriptions(patientId, purpose);
   const openPanel = useUI((s) => s.openPanel);
 
   return (
@@ -44,7 +44,7 @@ export function PrescriptionsTab({ patientId, purpose }: { patientId: string; pu
               <li key={rx.prescriptionId}>
                 <button
                   type="button"
-                  onClick={() => openPanel({ type: 'prescriptionDetail', prescriptionId: rx.prescriptionId, purpose })}
+                  onClick={() => openPanel({ type: 'prescriptionDetail', prescriptionId: rx.prescriptionId, patientId, purpose })}
                   className="flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left transition-colors last:border-0 hover:bg-surface-sunk focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   <div className="min-w-0 flex-1">

@@ -9,6 +9,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { shortDate } from '@/lib/format';
 import { useLabReport } from '../api';
+import { ConsentBlocked, isConsentDenied } from './ConsentBlocked';
 import type { LabResultRow, PurposeOfUse } from '@/lib/mock/contracts';
 
 const FLAG_TONE: Record<NonNullable<LabResultRow['flag']>, string> = {
@@ -20,17 +21,20 @@ const FLAG_TONE: Record<NonNullable<LabResultRow['flag']>, string> = {
 
 export function LabReportDetailPanel({
   reportId,
+  patientId,
   purpose,
   open,
   onClose,
 }: {
   reportId: string;
+  patientId: string;
   purpose: PurposeOfUse;
   open: boolean;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const { data, isLoading, isError, refetch } = useLabReport(reportId, purpose);
+  const { data, isLoading, isError, error, refetch } = useLabReport(reportId, purpose);
+  const consentDenied = isError && isConsentDenied(error);
 
   return (
     <SlideOver
@@ -40,7 +44,16 @@ export function LabReportDetailPanel({
       title={data?.reportNumber ?? t('clinical.reports.detailTitle')}
       description={t('clinical.reports.detailTitle')}
     >
-      {isError ? (
+      {consentDenied ? (
+        <ConsentBlocked
+          patientId={patientId}
+          resourceType="lab_report"
+          resourceId={reportId}
+          reopen={{ type: 'labReportDetail', reportId, patientId, purpose }}
+          onRetry={() => void refetch()}
+          inPanel
+        />
+      ) : isError ? (
         <EmptyState title={t('error.genericTitle')} description={t('error.genericBody')} actionLabel={t('common.retry')} onAction={() => void refetch()} />
       ) : isLoading || !data ? (
         <div className="flex flex-col gap-3" role="status" aria-busy="true">

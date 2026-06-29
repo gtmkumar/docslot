@@ -133,11 +133,13 @@ public sealed class MedicalHistory
 
     public static MedicalHistory FromRow(
         Guid id, Guid patientId, Guid tenantId, string recordType, string titleEnc, string? descEnc,
+        string? severity, string? icd10Code, DateOnly? startedDate, DateOnly? endedDate,
         bool isActive, bool isCritical, DateTime addedAt)
         => new()
         {
             HistoryId = id, PatientId = patientId, TenantId = tenantId, RecordType = recordType,
-            TitleEnc = titleEnc, DescriptionEnc = descEnc, IsActive = isActive, IsCritical = isCritical, AddedAt = addedAt,
+            TitleEnc = titleEnc, DescriptionEnc = descEnc, Severity = severity, Icd10Code = icd10Code,
+            StartedDate = startedDate, EndedDate = endedDate, IsActive = isActive, IsCritical = isCritical, AddedAt = addedAt,
         };
 }
 

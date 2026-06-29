@@ -55,6 +55,8 @@ const IssuePrescriptionPanel = lazy(() => import('@/features/patients/components
 const LabReportDetailPanel = lazy(() => import('@/features/patients/components/LabReportDetailPanel').then((m) => ({ default: m.LabReportDetailPanel })));
 const UploadReportPanel = lazy(() => import('@/features/patients/components/UploadReportPanel').then((m) => ({ default: m.UploadReportPanel })));
 const AbdmDetailPanel = lazy(() => import('@/features/patients/components/AbdmDetailPanel').then((m) => ({ default: m.AbdmDetailPanel })));
+const MedicalHistoryPanel = lazy(() => import('@/features/patients/components/MedicalHistoryPanel').then((m) => ({ default: m.MedicalHistoryPanel })));
+const ClinicalBreakGlassPanel = lazy(() => import('@/features/patients/components/ClinicalBreakGlassPanel').then((m) => ({ default: m.ClinicalBreakGlassPanel })));
 const RegisterBrokerPanel = lazy(() => import('@/features/commission/components/RegisterBrokerPanel').then((m) => ({ default: m.RegisterBrokerPanel })));
 const ManageBrokerPanel = lazy(() => import('@/features/commission/components/ManageBrokerPanel').then((m) => ({ default: m.ManageBrokerPanel })));
 const CommissionRulePanel = lazy(() => import('@/features/commission/components/CommissionRulePanel').then((m) => ({ default: m.CommissionRulePanel })));
@@ -81,12 +83,18 @@ type TransientPanelType =
   | 'issuePrescription'
   | 'labReportDetail'
   | 'uploadReport'
-  | 'abdmDetail';
+  | 'abdmDetail'
+  | 'createHistory'
+  | 'editHistory'
+  | 'clinicalBreakGlass';
 /** URL-addressable panel types. */
 type UrlPanelType = Exclude<PanelType, TransientPanelType>;
 const TRANSIENT_SET = new Set<PanelType>([
   'clientSecret', 'deletionCertificate',
   'prescriptionDetail', 'issuePrescription', 'labReportDetail', 'uploadReport', 'abdmDetail',
+  // Medical-history create/edit + the clinical break-glass carry PHI and/or a
+  // declared purpose-of-use — never URL-encoded or restored from a refresh.
+  'createHistory', 'editHistory', 'clinicalBreakGlass',
 ]);
 /** Type guard: narrows a panel to the URL-addressable subset. */
 function isUrlPanel(type: PanelType): type is UrlPanelType {
@@ -280,15 +288,21 @@ function renderPanel(panel: Panel, closePanel: () => void) {
     case 'breakGlass':
       return <BreakGlassPanel open onClose={closePanel} />;
     case 'prescriptionDetail':
-      return <PrescriptionDetailPanel prescriptionId={panel.prescriptionId} purpose={panel.purpose} open onClose={closePanel} />;
+      return <PrescriptionDetailPanel prescriptionId={panel.prescriptionId} patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
     case 'issuePrescription':
       return <IssuePrescriptionPanel patientId={panel.patientId} open onClose={closePanel} />;
     case 'labReportDetail':
-      return <LabReportDetailPanel reportId={panel.reportId} purpose={panel.purpose} open onClose={closePanel} />;
+      return <LabReportDetailPanel reportId={panel.reportId} patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
     case 'uploadReport':
       return <UploadReportPanel patientId={panel.patientId} open onClose={closePanel} />;
     case 'abdmDetail':
       return <AbdmDetailPanel recordId={panel.recordId} patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
+    case 'createHistory':
+      return <MedicalHistoryPanel patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
+    case 'editHistory':
+      return <MedicalHistoryPanel patientId={panel.patientId} purpose={panel.purpose} entry={panel.entry} open onClose={closePanel} />;
+    case 'clinicalBreakGlass':
+      return <ClinicalBreakGlassPanel patientId={panel.patientId} resourceType={panel.resourceType} resourceId={panel.resourceId} reopen={panel.reopen} open onClose={closePanel} />;
     case 'registerBroker':
       return <RegisterBrokerPanel open onClose={closePanel} />;
     case 'manageBroker':

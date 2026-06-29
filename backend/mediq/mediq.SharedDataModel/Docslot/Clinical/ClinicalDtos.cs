@@ -60,6 +60,7 @@ public sealed record DeliverLabReportResult(Guid ReportId, string Status, DateTi
 
 public sealed record MedicalHistoryDto(
     Guid HistoryId, string RecordType, string Title, string? Description,   // title/description decrypted
+    string? Severity, string? Icd10Code, DateOnly? StartedDate, DateOnly? EndedDate,   // non-encrypted scalars — surfaced so an edit round-trips losslessly
     bool IsActive, bool IsCritical, DateTimeOffset AddedAt);
 
 /// <summary>Create a medical-history record. title/description are encrypted at rest by the handler. PatientId comes from the route.</summary>

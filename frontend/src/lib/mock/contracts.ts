@@ -1033,17 +1033,93 @@ export const UploadLabReportResultSchema = z.object({
 export type UploadLabReportResult = z.infer<typeof UploadLabReportResultSchema>;
 
 // ---- Medical history --------------------------------------------------------
-/** Decrypted timeline entry. Mirrors MedicalHistoryDto. */
+/** Record-type enum for a NEW medical-history entry. Mirrors the SQL CHECK on
+ *  docslot.medical_history.record_type. The READ shape keeps recordType as a free
+ *  string (tolerant of server tokens); the WRITE form is constrained to this set. */
+export const MedicalHistoryRecordTypeSchema = z.enum([
+  'allergy',
+  'chronic_condition',
+  'surgery',
+  'medication',
+  'vaccination',
+  'family_history',
+  'lifestyle',
+]);
+export type MedicalHistoryRecordType = z.infer<typeof MedicalHistoryRecordTypeSchema>;
+
+/** Severity enum for a medical-history entry (nullable — not every type carries one). */
+export const MedicalHistorySeveritySchema = z.enum(['mild', 'moderate', 'severe', 'critical']);
+export type MedicalHistorySeverity = z.infer<typeof MedicalHistorySeveritySchema>;
+
+/** Decrypted timeline entry. Mirrors MedicalHistoryDto (non-encrypted scalars).
+ *  Field order matches the C# record: historyId, recordType, title, description,
+ *  severity, icd10Code, startedDate, endedDate, isActive, isCritical, addedAt.
+ *  severity/icd10Code/startedDate/endedDate must round-trip on EDIT — the form
+ *  edits severity but carries icd10Code/dates back from the read so a PUT (which
+ *  treats missing as null) never silently wipes them. severity is read tolerantly
+ *  (free-string→enum coerced in the form), the others are plain nullable strings. */
 export const MedicalHistorySchema = z.object({
   historyId: z.string(),
   recordType: z.string(),
   title: z.string(),
   description: z.string().nullable(),
+  severity: z.string().nullable(),
+  icd10Code: z.string().nullable(),
+  startedDate: z.string().nullable(),
+  endedDate: z.string().nullable(),
   isActive: z.boolean(),
   isCritical: z.boolean(),
   addedAt: z.string(),
 });
 export type MedicalHistory = z.infer<typeof MedicalHistorySchema>;
+
+/** Create body. Mirrors CreateMedicalHistoryRequest. title/description are PHI. */
+export const CreateMedicalHistoryRequestSchema = z.object({
+  recordType: MedicalHistoryRecordTypeSchema,
+  title: z.string(),
+  description: z.string().nullable().optional(),
+  severity: MedicalHistorySeveritySchema.nullable().optional(),
+  icd10Code: z.string().nullable().optional(),
+  startedDate: z.string().nullable().optional(),
+  endedDate: z.string().nullable().optional(),
+  isCritical: z.boolean(),
+});
+export type CreateMedicalHistoryRequest = z.infer<typeof CreateMedicalHistoryRequestSchema>;
+
+export const CreateMedicalHistoryResultSchema = z.object({ historyId: z.string() });
+export type CreateMedicalHistoryResult = z.infer<typeof CreateMedicalHistoryResultSchema>;
+
+/** Update body (PUT). isActive=false retires the record. Mirrors UpdateMedicalHistoryRequest. */
+export const UpdateMedicalHistoryRequestSchema = z.object({
+  recordType: MedicalHistoryRecordTypeSchema,
+  title: z.string(),
+  description: z.string().nullable().optional(),
+  severity: MedicalHistorySeveritySchema.nullable().optional(),
+  icd10Code: z.string().nullable().optional(),
+  startedDate: z.string().nullable().optional(),
+  endedDate: z.string().nullable().optional(),
+  isActive: z.boolean(),
+  isCritical: z.boolean(),
+});
+export type UpdateMedicalHistoryRequest = z.infer<typeof UpdateMedicalHistoryRequestSchema>;
+
+/** Break-glass (emergency access) request. resourceId is null for a whole-patient
+ *  grant; justification is server-validated to >=10 chars. Mirrors the
+ *  /security/break-glass body. Returns a grant id (Guid). */
+export const BreakGlassResourceTypeSchema = z.enum(['prescription', 'lab_report', 'medical_history']);
+export type BreakGlassResourceType = z.infer<typeof BreakGlassResourceTypeSchema>;
+
+export const BreakGlassRequestSchema = z.object({
+  patientId: z.string(),
+  resourceType: BreakGlassResourceTypeSchema,
+  resourceId: z.string().nullable(),
+  justification: z.string().min(10),
+});
+export type BreakGlassRequest = z.infer<typeof BreakGlassRequestSchema>;
+
+/** Result of a break-glass POST — the emergency-access grant id. */
+export const BreakGlassResultSchema = z.object({ grantId: z.string() });
+export type BreakGlassResult = z.infer<typeof BreakGlassResultSchema>;
 
 // ---- ABDM (consent-gated) ---------------------------------------------------
 /** List row — NO clinical content. (No backend list endpoint yet — flagged.) */

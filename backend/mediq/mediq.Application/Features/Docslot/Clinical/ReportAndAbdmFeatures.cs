@@ -249,8 +249,9 @@ public sealed class ListMedicalHistoryQueryHandler(
         {
             var title = await encryption.DecryptAsync(ClinicalFields.HistoryTitle, h.TitleEnc, encCtx, ct);
             var desc = string.IsNullOrEmpty(h.DescriptionEnc) ? null : await encryption.DecryptAsync(ClinicalFields.HistoryDescription, h.DescriptionEnc, encCtx, ct);
-            result.Add(new MedicalHistoryDto(h.HistoryId, h.RecordType, title, desc, h.IsActive, h.IsCritical,
-                new DateTimeOffset(DateTime.SpecifyKind(h.AddedAt, DateTimeKind.Utc))));
+            result.Add(new MedicalHistoryDto(h.HistoryId, h.RecordType, title, desc,
+                h.Severity, h.Icd10Code, h.StartedDate, h.EndedDate,
+                h.IsActive, h.IsCritical, new DateTimeOffset(DateTime.SpecifyKind(h.AddedAt, DateTimeKind.Utc))));
         }
         return result;
     }

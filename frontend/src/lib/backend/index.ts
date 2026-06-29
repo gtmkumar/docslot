@@ -213,5 +213,28 @@ export const revokeRolePermission = USE_REAL_API ? real.revokeRolePermission : m
 export const duplicateRole = USE_REAL_API ? real.duplicateRole : mock.duplicateRole;
 export const getEffectiveAccess = USE_REAL_API ? real.getEffectiveAccess : mock.getEffectiveAccess;
 
+// ── CLINICAL PHI + ABDM + CONSENT (Phase-3 slice 4) ───────────────────────────
+// The most PHI-sensitive surface, now on the live seam. Clinical READS send the
+// declared X-Purpose-Of-Use header (the feature query stays DISABLED until the
+// purpose gate declares one); the CONSENT read is the only clinical GET without a
+// purpose. WRITES carry an Idempotency-Key. A consent-denied read 403s; the UI
+// posts /security/break-glass then re-fetches. Mock side is byte-for-byte parity.
+export const getPatientConsent = USE_REAL_API ? real.getPatientConsent : mock.getPatientConsent;
+export const listPrescriptions = USE_REAL_API ? real.listPrescriptions : mock.listPrescriptions;
+export const getPrescription = USE_REAL_API ? real.getPrescription : mock.getPrescription;
+export const issuePrescription = USE_REAL_API ? real.issuePrescription : mock.issuePrescription;
+export const listLabReports = USE_REAL_API ? real.listLabReports : mock.listLabReports;
+export const getLabReport = USE_REAL_API ? real.getLabReport : mock.getLabReport;
+export const uploadLabReport = USE_REAL_API ? real.uploadLabReport : mock.uploadLabReport;
+export const deliverLabReport = USE_REAL_API ? real.deliverLabReport : mock.deliverLabReport;
+export const listMedicalHistory = USE_REAL_API ? real.listMedicalHistory : mock.listMedicalHistory;
+// NEW (this slice) — medical-history create/update + the contextual break-glass.
+export const createMedicalHistory = USE_REAL_API ? real.createMedicalHistory : mock.createMedicalHistory;
+export const updateMedicalHistory = USE_REAL_API ? real.updateMedicalHistory : mock.updateMedicalHistory;
+export const listAbdmRecords = USE_REAL_API ? real.listAbdmRecords : mock.listAbdmRecords;
+export const getAbdmRecord = USE_REAL_API ? real.getAbdmRecord : mock.getAbdmRecord;
+export const pushAbdmRecord = USE_REAL_API ? real.pushAbdmRecord : mock.pushAbdmRecord;
+export const breakGlass = USE_REAL_API ? real.breakGlass : mock.breakGlass;
+
 export { USE_REAL_API } from './flag';
 export { toUserError } from './real';

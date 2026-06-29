@@ -157,7 +157,8 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
             """
-            SELECT history_id, patient_id, tenant_id, record_type, title, description, is_active, is_critical, added_at
+            SELECT history_id, patient_id, tenant_id, record_type, title, description,
+                   severity, icd10_code, started_date, ended_date, is_active, is_critical, added_at
             FROM docslot.patient_medical_history WHERE tenant_id = @p0 AND patient_id = @p1 AND is_active = true
             ORDER BY added_at DESC
             """, conn);
@@ -168,7 +169,10 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         while (await rd.ReadAsync(ct))
             result.Add(MedicalHistory.FromRow(
                 rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.GetString(3), rd.GetString(4),
-                rd.IsDBNull(5) ? null : rd.GetString(5), rd.GetBoolean(6), rd.GetBoolean(7), rd.GetDateTime(8)));
+                rd.IsDBNull(5) ? null : rd.GetString(5),
+                rd.IsDBNull(6) ? null : rd.GetString(6), rd.IsDBNull(7) ? null : rd.GetString(7),
+                rd.IsDBNull(8) ? null : rd.GetFieldValue<DateOnly>(8), rd.IsDBNull(9) ? null : rd.GetFieldValue<DateOnly>(9),
+                rd.GetBoolean(10), rd.GetBoolean(11), rd.GetDateTime(12)));
         return result;
     }
 
@@ -198,7 +202,8 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
             """
-            SELECT history_id, patient_id, tenant_id, record_type, title, description, is_active, is_critical, added_at
+            SELECT history_id, patient_id, tenant_id, record_type, title, description,
+                   severity, icd10_code, started_date, ended_date, is_active, is_critical, added_at
             FROM docslot.patient_medical_history WHERE history_id = @p0 AND tenant_id = @p1
             """, conn);
         // Enlist the ambient tenant-scoped tx (this read runs inside the Update COMMAND's UoW tx) so app.tenant_id
@@ -210,7 +215,10 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         if (!await rd.ReadAsync(ct)) return null;
         return MedicalHistory.FromRow(
             rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.GetString(3), rd.GetString(4),
-            rd.IsDBNull(5) ? null : rd.GetString(5), rd.GetBoolean(6), rd.GetBoolean(7), rd.GetDateTime(8));
+            rd.IsDBNull(5) ? null : rd.GetString(5),
+            rd.IsDBNull(6) ? null : rd.GetString(6), rd.IsDBNull(7) ? null : rd.GetString(7),
+            rd.IsDBNull(8) ? null : rd.GetFieldValue<DateOnly>(8), rd.IsDBNull(9) ? null : rd.GetFieldValue<DateOnly>(9),
+            rd.GetBoolean(10), rd.GetBoolean(11), rd.GetDateTime(12));
     }
 
     public async Task<bool> UpdateMedicalHistoryAsync(

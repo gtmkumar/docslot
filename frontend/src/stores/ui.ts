@@ -4,7 +4,14 @@
 
 import { create } from 'zustand';
 import type { Booking } from '@/lib/types';
-import type { ApiClientSecretResult, CreateWebhookResult, ErasureResult, PurposeOfUse } from '@/lib/mock/contracts';
+import type {
+  ApiClientSecretResult,
+  BreakGlassResourceType,
+  CreateWebhookResult,
+  ErasureResult,
+  MedicalHistory,
+  PurposeOfUse,
+} from '@/lib/mock/contracts';
 
 export type Theme = 'light' | 'dark';
 export type Density = 'comfortable' | 'compact';
@@ -65,11 +72,31 @@ export type Panel =
   // Clinical records (Slice 03b). NONE are URL-addressable: clinical detail
   // carries the declared purpose-of-use + a PHI record id, neither of which may
   // appear in the URL or survive a refresh (re-entry must re-declare purpose).
-  | { type: 'prescriptionDetail'; prescriptionId: string; purpose: PurposeOfUse }
+  // Detail panels carry the patientId too, so a consent-denied (403) read can open
+  // the contextual break-glass for the right patient + resource.
+  | { type: 'prescriptionDetail'; prescriptionId: string; patientId: string; purpose: PurposeOfUse }
   | { type: 'issuePrescription'; patientId: string }
-  | { type: 'labReportDetail'; reportId: string; purpose: PurposeOfUse }
+  | { type: 'labReportDetail'; reportId: string; patientId: string; purpose: PurposeOfUse }
   | { type: 'uploadReport'; patientId: string }
   | { type: 'abdmDetail'; recordId: string; patientId: string; purpose: PurposeOfUse }
+  // Medical-history create/edit (Phase-3 slice 4). The EDIT panel carries the row's
+  // title/description (decrypted PHI) pre-loaded into the form + the declared
+  // purpose; the CREATE panel carries only the patientId but is grouped with the
+  // clinical panels as transient (not URL-addressable) for a uniform PHI posture.
+  | { type: 'createHistory'; patientId: string; purpose: PurposeOfUse }
+  | { type: 'editHistory'; patientId: string; purpose: PurposeOfUse; entry: MedicalHistory }
+  // Break-glass (emergency access) bound to a clinical read's context. Carries the
+  // patientId + the consent-denied resource (type + optional id). `reopen` is the
+  // gated detail panel to restore on success (so the now-unblocked read re-runs in
+  // place); omitted when the trigger was a screen-level list. Transient: never
+  // URL-encoded (PHI/emergency context).
+  | {
+      type: 'clinicalBreakGlass';
+      patientId: string;
+      resourceType: BreakGlassResourceType;
+      resourceId: string | null;
+      reopen?: Panel;
+    }
   // Commission / Care Partners (Slice 07). URL-addressable (no PHI/secret payload).
   | { type: 'registerBroker' }
   | { type: 'manageBroker'; brokerId: string }

@@ -19,7 +19,7 @@ import type { LabReportListItem, PurposeOfUse } from '@/lib/mock/contracts';
 export function ReportsTab({ patientId, purpose }: { patientId: string; purpose: PurposeOfUse }) {
   const { t } = useTranslation();
   const { can } = usePermissions();
-  const { data, isLoading, isError, refetch } = useLabReports(patientId);
+  const { data, isLoading, isError, refetch } = useLabReports(patientId, purpose);
   const openPanel = useUI((s) => s.openPanel);
 
   return (
@@ -73,7 +73,7 @@ function ReportRow({ report, patientId, purpose }: { report: LabReportListItem; 
     <li className="flex items-center gap-3 border-b border-line px-4 py-3 last:border-0">
       <button
         type="button"
-        onClick={() => openPanel({ type: 'labReportDetail', reportId: report.reportId, purpose })}
+        onClick={() => openPanel({ type: 'labReportDetail', reportId: report.reportId, patientId, purpose })}
         className="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none"
       >
         <div className="min-w-0">
