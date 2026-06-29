@@ -472,6 +472,89 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
         }
     }
 
+    [Fact]
+    public async Task Issue_Prescription_Generates_Allergy_And_Interaction_DrugAlerts()
+    {
+        var client = await AuthedClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+        // Seed a recorded penicillin allergy (encrypted at rest, via the real API).
+        const string allergyTitle = "Penicillin allergy";
+        const string allergyDesc = "Anaphylaxis on exposure (2019)";
+        var seed = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history",
+            new CreateMedicalHistoryRequest("allergy", allergyTitle, allergyDesc, "severe", "T78.0", new DateOnly(2019, 5, 1), null, true));
+        Assert.Equal(HttpStatusCode.Created, seed.StatusCode);
+        var allergy = (await seed.Content.ReadFromJsonAsync<CreateMedicalHistoryResult>())!;
+
+        Guid? prescriptionId = null;
+        try
+        {
+            // Issue a prescription that BOTH conflicts with the allergy (amoxicillin = penicillin class) AND
+            // contains a classic dangerous interaction (warfarin + aspirin → bleeding).
+            const string meds = "[{\"name\":\"Amoxicillin\",\"dose\":\"500mg\"},{\"name\":\"Warfarin\",\"dose\":\"5mg\"},{\"name\":\"Aspirin\",\"dose\":\"75mg\"}]";
+            var issue = await client.PostAsJsonAsync("/api/v1/prescriptions", new IssuePrescriptionRequest(
+                factory.BookingId, factory.PatientId, factory.DoctorId, "AF", "Irregular pulse", "Atrial fibrillation", meds, "Review", 7));
+            Assert.Equal(HttpStatusCode.Created, issue.StatusCode);
+            prescriptionId = (await issue.Content.ReadFromJsonAsync<IssuePrescriptionResult>())!.PrescriptionId;
+
+            // Read the alerts via the (consent + purpose-gated) endpoint.
+            var alertsResp = await client.GetAsync($"/api/v1/prescriptions/{prescriptionId}/drug-alerts");
+            Assert.Equal(HttpStatusCode.OK, alertsResp.StatusCode);
+            var alerts = (await alertsResp.Content.ReadFromJsonAsync<List<DrugAlertDto>>())!;
+
+            // Allergy alert: critical, names the prescribed drug, and does NOT leak the encrypted allergy free-text.
+            var allergyAlert = Assert.Single(alerts, a => a.AlertType == "allergy");
+            Assert.Equal("critical", allergyAlert.Severity);                 // 'severe' allergy → critical alert
+            Assert.Contains("Amoxicillin", allergyAlert.MedicationName);
+            Assert.DoesNotContain(allergyDesc, allergyAlert.Description);     // the encrypted note is never copied out
+
+            // Interaction alert: high severity, involves the prescribed anticoagulant.
+            var interaction = Assert.Single(alerts, a => a.AlertType == "interaction");
+            Assert.Equal("high", interaction.Severity);
+            Assert.Contains("Warfarin", interaction.MedicationName);
+
+            // The allergy alert links the encrypted source record (detail stays behind encryption).
+            var conflictId = await ScalarStrAsync(
+                "SELECT conflicting_record_id::text FROM docslot.drug_alerts WHERE alert_id=@id", ("id", allergyAlert.AlertId));
+            Assert.Equal(allergy.HistoryId.ToString(), conflictId);
+
+            // The decrypt-for-screening was recorded in the purpose-of-use ledger (DPDP): a 'treatment' read of
+            // the patient's medical_history, tagged in the notes as the automated drug-safety screen.
+            Assert.True(await ScalarIntAsync(
+                """
+                SELECT COUNT(*)::int FROM platform.purpose_of_use_log
+                WHERE accessed_resource_id=@p AND accessed_resource_type='medical_history'
+                  AND declared_purpose='treatment' AND purpose_notes='automated drug-safety screening'
+                """,
+                ("p", factory.PatientId)) >= 1);
+
+            // A benign prescription (no allergy/interaction match) generates NO alerts — not a false "all clear", a no-op.
+            var benign = await client.PostAsJsonAsync("/api/v1/prescriptions", new IssuePrescriptionRequest(
+                factory.BookingId, factory.PatientId, factory.DoctorId, "Fever", "Febrile", "Viral fever",
+                "[{\"name\":\"Paracetamol\",\"dose\":\"500mg\"}]", "Fluids", 3));
+            var benignId = (await benign.Content.ReadFromJsonAsync<IssuePrescriptionResult>())!.PrescriptionId;
+            try
+            {
+                Assert.Equal(0, await ScalarIntAsync(
+                    "SELECT COUNT(*)::int FROM docslot.drug_alerts WHERE prescription_id=@id", ("id", benignId)));
+            }
+            finally
+            {
+                await ExecAsync("DELETE FROM docslot.drug_alerts WHERE prescription_id=@id", ("id", benignId));
+                await ExecAsync("DELETE FROM docslot.prescriptions WHERE prescription_id=@id", ("id", benignId));
+            }
+        }
+        finally
+        {
+            if (prescriptionId is Guid pid)
+            {
+                await ExecAsync("DELETE FROM docslot.drug_alerts WHERE prescription_id=@id", ("id", pid));
+                await ExecAsync("DELETE FROM docslot.prescriptions WHERE prescription_id=@id", ("id", pid));
+            }
+            await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE history_id=@id", ("id", allergy.HistoryId));
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     /// <summary>Seeds a break-glass grant directly (privileged role) for the negative/positive scope tests.</summary>

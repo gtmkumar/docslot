@@ -576,6 +576,19 @@ CREATE TABLE docslot.drug_alerts (
 
 CREATE INDEX idx_drug_alerts_critical ON docslot.drug_alerts(patient_id) WHERE severity = 'critical' AND NOT overridden;
 
+-- PHI design (DELIBERATE — do not change without security review): drug_alerts is an OPERATIONAL clinical-safety
+-- record protected by RLS (tenant_isolation_drug_alerts, via the parent prescription), NOT envelope-encrypted —
+-- it is intentionally absent from platform.encrypted_fields_registry (unlike prescriptions.medications) so the
+-- critical-severity partial index above stays queryable. To avoid re-introducing plaintext PHI, the generator
+-- writes ONLY: medication_name = the just-PRESCRIBED drug (already cleartext on the Rx face / in the prescriber's
+-- own input), and description = that drug + a DERIVED CLASS label (e.g. 'penicillin-class'). The patient's
+-- recorded allergen / current-medication free-text (which IS encrypted in patient_medical_history) must NEVER be
+-- copied into these columns — reference it via conflicting_record_id instead.
+COMMENT ON COLUMN docslot.drug_alerts.medication_name IS
+    'The just-prescribed drug that triggered the alert (cleartext by design; RLS-protected). Never the patient''s encrypted allergen text.';
+COMMENT ON COLUMN docslot.drug_alerts.description IS
+    'Prescribed drug + a DERIVED risk/class label only (e.g. ''penicillin-class''). Never copy the encrypted allergen/current-med free-text here — link it via conflicting_record_id.';
+
 -- ============================================================================
 -- TABLE D18: LAB_REPORTS
 -- ============================================================================

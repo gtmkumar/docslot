@@ -37,6 +37,7 @@ public sealed class IssuePrescriptionValidator : AbstractValidator<IssuePrescrip
 public sealed class IssuePrescriptionCommandHandler(
     IClinicalRepository clinical,
     IFieldEncryptionService encryption,
+    IDrugSafetyScreeningService screening,
     IBookingEventPublisher events,
     IAuditTrailWriter audit,
     ICurrentUserContext ctx,
@@ -59,6 +60,10 @@ public sealed class IssuePrescriptionCommandHandler(
             chiefEnc, examinationEnc, diagnosisEnc, medsEnc, req.Advice, req.FollowUpInDays, clock.UtcNow);
 
         var number = await clinical.AddPrescriptionAsync(prescription, ct);
+
+        // Drug-safety screen against recorded allergies + current meds (in the same UoW tx → alerts are atomic
+        // with the prescription). Uses the plaintext meds we already hold; does not re-decrypt the prescription.
+        await screening.ScreenPrescriptionAsync(prescription.PrescriptionId, req.PatientId, command.TenantId, req.MedicationsJson, ct);
 
         await audit.RecordAsync(new AuditEntry(
             "issue", "prescription", prescription.PrescriptionId, number, ctx.UserId, command.TenantId,
@@ -95,6 +100,7 @@ public sealed class AmendPrescriptionValidator : AbstractValidator<AmendPrescrip
 public sealed class AmendPrescriptionCommandHandler(
     IClinicalRepository clinical,
     IFieldEncryptionService encryption,
+    IDrugSafetyScreeningService screening,
     IBookingEventPublisher events,
     IAuditTrailWriter audit,
     ICurrentUserContext ctx,
@@ -134,6 +140,9 @@ public sealed class AmendPrescriptionCommandHandler(
             original.PrescriptionId, req.AmendmentReason, clock.UtcNow);
 
         var number = await clinical.AddPrescriptionAsync(amendment, ct);
+
+        // Re-screen the amended medication list (atomic with the amendment, same UoW tx).
+        await screening.ScreenPrescriptionAsync(amendment.PrescriptionId, original.PatientId, command.TenantId, req.MedicationsJson, ct);
 
         await audit.RecordAsync(new AuditEntry(
             "amend", "prescription", amendment.PrescriptionId, number, ctx.UserId, command.TenantId,
@@ -224,5 +233,47 @@ public sealed class ListPrescriptionsQueryHandler(IClinicalRepository clinical)
         return rows.Select(r => new PrescriptionListItemDto(
             r.PrescriptionId, r.PrescriptionNumber, r.DoctorId, r.Status,
             new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)))).ToList();
+    }
+}
+
+// ---- Read a prescription's drug-safety alerts (PHI — purpose-of-use + consent/break-glass gated) ---
+
+public sealed record GetPrescriptionDrugAlertsQuery(Guid TenantId, Guid PrescriptionId, string DeclaredPurpose)
+    : IQuery<IReadOnlyList<DrugAlertDto>>;
+
+public sealed class GetPrescriptionDrugAlertsQueryHandler(
+    IClinicalRepository clinical,
+    IPatientRepository patients,
+    IPurposeOfUseWriter purpose,
+    IBreakGlassService breakGlass,
+    ICurrentUserContext ctx)
+    : IQueryHandler<GetPrescriptionDrugAlertsQuery, IReadOnlyList<DrugAlertDto>>
+{
+    public async Task<IReadOnlyList<DrugAlertDto>> Handle(GetPrescriptionDrugAlertsQuery q, CancellationToken ct)
+    {
+        var userId = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
+        if (string.IsNullOrWhiteSpace(q.DeclaredPurpose))
+            throw new mediq.Utilities.Exceptions.ValidationException(new Dictionary<string, string[]> { ["X-Purpose-Of-Use"] = ["A purpose-of-use is required to read drug alerts (DPDP)."] });
+
+        var p = await clinical.GetPrescriptionAsync(q.PrescriptionId, q.TenantId, ct)
+            ?? throw new KeyNotFoundException("Prescription not found.");   // RLS also blocks cross-tenant
+
+        // Alerts encode allergy↔prescription PHI → same consent gate as reading the prescription (break-glass aware).
+        var patient = await patients.GetByIdAsync(p.PatientId, ct);
+        BreakGlassGrant? grant = null;
+        if (patient is null || !patient.HasActiveConsent)
+        {
+            grant = await breakGlass.GetActiveGrantAsync(userId, q.TenantId, p.PatientId, "prescription", p.PrescriptionId, ct);
+            if (grant is null)
+                throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        }
+
+        await purpose.RecordAsync(new PurposeOfUseEntry(
+            userId, q.TenantId, "prescription", p.PrescriptionId, q.DeclaredPurpose, null, grant is not null, grant?.Justification), ct);
+
+        var alerts = await clinical.ListDrugAlertsAsync(q.PrescriptionId, q.TenantId, ct);
+        return alerts.Select(a => new DrugAlertDto(
+            a.AlertId, a.AlertType, a.Severity, a.MedicationName, a.Description, a.Overridden,
+            new DateTimeOffset(DateTime.SpecifyKind(a.CreatedAt, DateTimeKind.Utc)))).ToList();
     }
 }

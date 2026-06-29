@@ -363,6 +363,92 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         return new ConsentContextRow(r.PatientId, PhoneMasker.Mask(r.Phone), r.ClinicalConsentActive, r.AbdmConsentActive, r.AbdmConsentExpiresAt);
     }
 
+    // ---- Drug-safety alerts ----------------------------------------------------------------------
+
+    public async Task<IReadOnlyList<MedicalHistory>> ListSafetyHistoryAsync(Guid tenantId, Guid patientId, CancellationToken ct)
+    {
+        var conn = (NpgsqlConnection)db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            """
+            SELECT history_id, patient_id, tenant_id, record_type, title, description,
+                   severity, icd10_code, started_date, ended_date, is_active, is_critical, added_at
+            FROM docslot.patient_medical_history
+            WHERE tenant_id = @p0 AND patient_id = @p1 AND is_active = true
+              AND record_type IN ('allergy', 'medication')
+            ORDER BY added_at DESC
+            """, conn);
+        // Runs inside the issue/amend COMMAND's UoW tx → enlist it so app.tenant_id is in scope for RLS (house pattern).
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
+        cmd.Parameters.AddWithValue("@p0", tenantId);
+        cmd.Parameters.AddWithValue("@p1", patientId);
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<MedicalHistory>();
+        while (await rd.ReadAsync(ct))
+            result.Add(MedicalHistory.FromRow(
+                rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.GetString(3), rd.GetString(4),
+                rd.IsDBNull(5) ? null : rd.GetString(5),
+                rd.IsDBNull(6) ? null : rd.GetString(6), rd.IsDBNull(7) ? null : rd.GetString(7),
+                rd.IsDBNull(8) ? null : rd.GetFieldValue<DateOnly>(8), rd.IsDBNull(9) ? null : rd.GetFieldValue<DateOnly>(9),
+                rd.GetBoolean(10), rd.GetBoolean(11), rd.GetDateTime(12)));
+        return result;
+    }
+
+    public async Task<int> AddDrugAlertsAsync(IReadOnlyList<DrugAlert> alerts, CancellationToken ct)
+    {
+        if (alerts.Count == 0) return 0;
+        // Runs in the command's tenant-scoped UoW tx; the parent prescription is already inserted in the same tx,
+        // so the drug_alerts RLS policy (EXISTS prescription with the current tenant) admits these rows.
+        var values = new List<string>(alerts.Count);
+        var ps = new List<NpgsqlParameter>(alerts.Count * 9);
+        for (var i = 0; i < alerts.Count; i++)
+        {
+            var a = alerts[i];
+            var b = i * 9;
+            values.Add($"(@p{b},@p{b + 1},@p{b + 2},@p{b + 3},@p{b + 4},@p{b + 5},@p{b + 6},@p{b + 7},@p{b + 8})");
+            ps.Add(new NpgsqlParameter($"@p{b}", a.AlertId));
+            ps.Add(new NpgsqlParameter($"@p{b + 1}", a.PrescriptionId));
+            ps.Add(new NpgsqlParameter($"@p{b + 2}", a.PatientId));
+            ps.Add(new NpgsqlParameter($"@p{b + 3}", a.AlertType));
+            ps.Add(new NpgsqlParameter($"@p{b + 4}", a.Severity));
+            ps.Add(new NpgsqlParameter($"@p{b + 5}", a.MedicationName));
+            ps.Add(new NpgsqlParameter($"@p{b + 6}", (object?)a.ConflictingRecordId ?? DBNull.Value));
+            ps.Add(new NpgsqlParameter($"@p{b + 7}", a.Description));
+            ps.Add(new NpgsqlParameter($"@p{b + 8}", a.CreatedAt));
+        }
+        var sql = "INSERT INTO docslot.drug_alerts " +
+                  "(alert_id, prescription_id, patient_id, alert_type, severity, medication_name, conflicting_record_id, description, created_at) " +
+                  "VALUES " + string.Join(",", values);
+        return await db.Database.ExecuteSqlRawAsync(sql, ps, ct);
+    }
+
+    public async Task<IReadOnlyList<DrugAlert>> ListDrugAlertsAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct)
+    {
+        var conn = (NpgsqlConnection)db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
+        // Tenant scope via the prescription join (drug_alerts has no tenant_id); RLS enforces it too.
+        await using var cmd = new NpgsqlCommand(
+            """
+            SELECT da.alert_id, da.prescription_id, da.patient_id, da.alert_type, da.severity,
+                   da.medication_name, da.conflicting_record_id, da.description, da.overridden, da.created_at
+            FROM docslot.drug_alerts da
+            WHERE da.prescription_id = @p0
+              AND EXISTS (SELECT 1 FROM docslot.prescriptions p
+                          WHERE p.prescription_id = da.prescription_id AND p.tenant_id = @p1)
+            ORDER BY CASE da.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'moderate' THEN 2 ELSE 3 END, da.created_at
+            """, conn);
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
+        cmd.Parameters.AddWithValue("@p0", prescriptionId);
+        cmd.Parameters.AddWithValue("@p1", tenantId);
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<DrugAlert>();
+        while (await rd.ReadAsync(ct))
+            result.Add(DrugAlert.FromRow(
+                rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.GetString(3), rd.GetString(4),
+                rd.GetString(5), rd.IsDBNull(6) ? null : rd.GetGuid(6), rd.GetString(7), rd.GetBoolean(8), rd.GetDateTime(9)));
+        return result;
+    }
+
     // ---- helpers ---------------------------------------------------------------------------------
 
     private static object[] Params(params (string Name, object Value)[] ps) =>

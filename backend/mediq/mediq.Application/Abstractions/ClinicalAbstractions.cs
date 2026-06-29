@@ -46,6 +46,23 @@ public interface IClinicalRepository
     Task<AbdmHealthRecord?> GetAbdmRecordAsync(Guid recordId, Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<AbdmHealthRecord>> ListAbdmRecordsAsync(Guid tenantId, Guid patientId, CancellationToken ct);
 
+    // ---- Drug-safety alerts (generated at prescription issue/amend) -------------------------------
+
+    /// <summary>
+    /// Active allergy + current-medication history records for safety screening (record_type IN
+    /// ('allergy','medication')), with their CIPHERTEXT title/description for in-process decryption by the
+    /// screening service. Enlists the ambient command tx so app.tenant_id is in scope for RLS (it is called
+    /// from inside the issue/amend command's unit of work).
+    /// </summary>
+    Task<IReadOnlyList<MedicalHistory>> ListSafetyHistoryAsync(Guid tenantId, Guid patientId, CancellationToken ct);
+
+    /// <summary>Bulk-inserts generated drug alerts inside the command tx (RLS admits them via the parent
+    /// prescription's tenant — the prescription must already be persisted in the same tx). Returns the count written.</summary>
+    Task<int> AddDrugAlertsAsync(IReadOnlyList<DrugAlert> alerts, CancellationToken ct);
+
+    /// <summary>Lists a prescription's drug alerts (tenant-scoped via the prescription join + RLS). Read path.</summary>
+    Task<IReadOnlyList<DrugAlert>> ListDrugAlertsAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct);
+
     /// <summary>
     /// Clinical-access context for a patient in a tenant: masked phone + general-clinical consent state
     /// (patients.consent_given_at) + ABDM consent state/expiry. No PHI beyond the masked phone.
