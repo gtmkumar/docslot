@@ -3,6 +3,7 @@
 - [Recurring Frontend/Contract Drift](drift-watchlist.md) — anti-patterns to re-check every wave (raw phone in list DTO, source enum drift, partial idempotency)
 - [Backend Slice 01 platform_core](backend-slice01-platform-core.md) — auth/RBAC/tenant/audit security facts + the X-Tenant-Id header-trust cross-tenant blocker (RESOLVED, cleared)
 - [Backend Slice 02 platform_api](backend-slice02-platform-api.md) — OAuth client-credentials + webhooks; cleared PASS; consent gate deferred to slice 03, AES key/replay/SSRF tracked
+- [Phase-4 Per-Day Rate Limit](backend-phase4-rate-limit-day.md) — clean PASS no conditions: enforces dead rate_limit_per_day column + first limiter tests; no bypass (limiter post-auth, client-token-only), one-query FILTER count, no PHI; INFO = 429-row self-counts + per-req COUNT cost
 - [Backend Slice 03 docslot booking](backend-slice03-docslot-booking.md) — booking core, first real PHI; consent/PoU + webhook-PHI verified; app-owned tables → promote-to-canonical condition
 - [Backend Slice 05 security_hardening](backend-slice05-security-hardening.md) — field encryption + crypto-erasure verified; audit-chain concurrency race + GUC/BYPASSRLS hardening tracked
 - [Backend Slice 03b clinical PHI](backend-slice03b-clinical-phi.md) — RLS real under least-privilege docslot_app, encrypted clinical fields, audit-chain lock fixed; access_policies column-gate tracked

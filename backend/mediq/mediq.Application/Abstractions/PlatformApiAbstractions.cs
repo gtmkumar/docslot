@@ -49,6 +49,10 @@ public interface IApiRequestLogWriter
 
     /// <summary>Count of requests for a client within the trailing window — backs per-client rate limiting.</summary>
     Task<int> CountRecentAsync(Guid clientId, TimeSpan window, CancellationToken ct);
+
+    /// <summary>Counts a client's requests in BOTH the trailing minute and day windows in ONE query (a single
+    /// index range-scan over the day window, filtered for the minute) — backs the per-minute + per-day limits.</summary>
+    Task<(int Minute, int Day)> CountWindowsAsync(Guid clientId, DateTime minuteSinceUtc, DateTime daySinceUtc, CancellationToken ct);
 }
 
 public sealed record ApiRequestLogEntry(

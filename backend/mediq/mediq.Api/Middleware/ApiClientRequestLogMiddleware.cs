@@ -26,15 +26,27 @@ public sealed class ApiClientRequestLogMiddleware(RequestDelegate next)
             return;
         }
 
-        // Per-client minute window rate limit (defense in depth; the gateway also limits at the edge).
+        // Per-client rate limiting (defense in depth; the gateway also limits at the edge). Enforce BOTH the
+        // trailing-minute and trailing-day windows (api_clients.rate_limit_per_minute / rate_limit_per_day),
+        // counted in one query. NOTE: this is a sliding window over api_requests — correct + durable, but a
+        // per-request COUNT; at scale the prod path is a distributed counter / the YARP edge limiter.
         var client = await clients.GetByIdAsync(clientId, context.RequestAborted);
         if (client is not null)
         {
-            var recent = await requestLog.CountRecentAsync(clientId, TimeSpan.FromMinutes(1), context.RequestAborted);
-            if (recent >= client.RateLimitPerMinute)
+            var now = DateTime.UtcNow;
+            var (perMinute, perDay) = await requestLog.CountWindowsAsync(
+                clientId, now.AddMinutes(-1), now.AddDays(-1), context.RequestAborted);
+
+            // Minute window first (the tighter bound). Retry-After is an advisory hint: the minute bound clears
+            // within 60s; the day bound is a "back off substantially" signal (a precise sliding reset would need
+            // the oldest in-window timestamp).
+            var breachedWindow =
+                perMinute >= client.RateLimitPerMinute ? "60" :
+                perDay >= client.RateLimitPerDay ? "3600" : null;
+            if (breachedWindow is not null)
             {
                 context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-                context.Response.Headers.RetryAfter = "60";
+                context.Response.Headers.RetryAfter = breachedWindow;
                 await requestLog.RecordAsync(new ApiRequestLogEntry(
                     clientId, null, client.OwnerTenantId,
                     context.Request.Method, context.Request.Path, context.Connection.RemoteIpAddress?.ToString(),

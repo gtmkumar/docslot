@@ -108,7 +108,26 @@ public sealed class ApiRequestLogWriter(PlatformDbContext db) : IApiRequestLogWr
         return rows.FirstOrDefault()?.Count ?? 0;
     }
 
+    public async Task<(int Minute, int Day)> CountWindowsAsync(Guid clientId, DateTime minuteSinceUtc, DateTime daySinceUtc, CancellationToken ct)
+    {
+        // One index range-scan over the trailing DAY; the FILTER derives the trailing-MINUTE count from it.
+        var rows = await db.Database.SqlQueryRaw<WindowCountRow>(
+                """
+                SELECT COUNT(*) FILTER (WHERE occurred_at >= @p1)::int AS "Minute",
+                       COUNT(*)::int AS "Day"
+                FROM platform_api.api_requests
+                WHERE client_id = @p0 AND occurred_at >= @p2
+                """,
+                new NpgsqlParameter("@p0", clientId),
+                new NpgsqlParameter("@p1", minuteSinceUtc),
+                new NpgsqlParameter("@p2", daySinceUtc))
+            .ToListAsync(ct);
+        var r = rows.FirstOrDefault();
+        return (r?.Minute ?? 0, r?.Day ?? 0);
+    }
+
     private sealed record CountRow(int Count);
+    private sealed record WindowCountRow(int Minute, int Day);
 }
 
 /// <summary>

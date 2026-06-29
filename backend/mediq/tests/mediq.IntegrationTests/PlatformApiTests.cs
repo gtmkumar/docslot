@@ -230,6 +230,68 @@ public sealed class PlatformApiTests(PlatformApiWebAppFactory factory) : IClassF
         }
     }
 
+    // ---- F: per-client API rate limiting (api_clients.rate_limit_per_minute / _per_day → 429) ----
+
+    [Fact]
+    public async Task ApiClient_Exceeding_PerMinute_RateLimit_Gets_429_With_RetryAfter()
+    {
+        // Tighten this client's per-minute limit + start from a clean request window.
+        await ExecAsync("UPDATE platform_api.api_clients SET rate_limit_per_minute = 2 WHERE client_id = @c", ("c", factory.ClientId));
+        await ExecAsync("DELETE FROM platform_api.api_requests WHERE client_id = @c", ("c", factory.ClientId));
+        try
+        {
+            var client = factory.CreateClient();
+            var token = await GetClientTokenAsync(client, "docslot.bookings.read");
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+
+            // First 2 requests are within the limit.
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/public/bookings")).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/public/bookings")).StatusCode);
+
+            // The 3rd breaches the per-minute limit → 429 + Retry-After: 60.
+            var limited = await client.GetAsync("/api/v1/public/bookings");
+            Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode);
+            Assert.Equal(60, limited.Headers.RetryAfter?.Delta?.TotalSeconds);
+
+            // The rejected attempt was logged (status 429, error_code 'rate_limited') for abuse detection.
+            Assert.True(await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM platform_api.api_requests WHERE client_id=@c AND status_code=429 AND error_code='rate_limited'",
+                ("c", factory.ClientId)) >= 1);
+        }
+        finally
+        {
+            await ExecAsync("UPDATE platform_api.api_clients SET rate_limit_per_minute = 1000, rate_limit_per_day = 10000 WHERE client_id = @c", ("c", factory.ClientId));
+            await ExecAsync("DELETE FROM platform_api.api_requests WHERE client_id = @c", ("c", factory.ClientId));
+        }
+    }
+
+    [Fact]
+    public async Task ApiClient_Exceeding_PerDay_RateLimit_Gets_429()
+    {
+        // High minute limit (so the minute window can't trip) + a low DAY limit → exercise rate_limit_per_day.
+        await ExecAsync("UPDATE platform_api.api_clients SET rate_limit_per_minute = 1000, rate_limit_per_day = 2 WHERE client_id = @c", ("c", factory.ClientId));
+        await ExecAsync("DELETE FROM platform_api.api_requests WHERE client_id = @c", ("c", factory.ClientId));
+        try
+        {
+            var client = factory.CreateClient();
+            var token = await GetClientTokenAsync(client, "docslot.bookings.read");
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/public/bookings")).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/public/bookings")).StatusCode);
+
+            // The 3rd breaches the per-DAY limit → 429 with the day-window Retry-After hint (3600).
+            var limited = await client.GetAsync("/api/v1/public/bookings");
+            Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode);
+            Assert.Equal(3600, limited.Headers.RetryAfter?.Delta?.TotalSeconds);
+        }
+        finally
+        {
+            await ExecAsync("UPDATE platform_api.api_clients SET rate_limit_per_minute = 1000, rate_limit_per_day = 10000 WHERE client_id = @c", ("c", factory.ClientId));
+            await ExecAsync("DELETE FROM platform_api.api_requests WHERE client_id = @c", ("c", factory.ClientId));
+        }
+    }
+
     /// <summary>One drain pass: mirrors WebhookDeliveryWorker.DrainOnce against the live DB via the real drain
     /// store + signer + the fake dispatcher. A failed delivery is rescheduled in the PAST so the next pass
     /// re-claims it immediately (fast retry for the test, vs the worker's real exponential backoff).</summary>
