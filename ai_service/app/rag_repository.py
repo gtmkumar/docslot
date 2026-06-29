@@ -16,10 +16,23 @@ import logging
 import numpy as np
 
 from .db import get_connection
+from .encryption import EncryptionContext, FieldEncryptor
 
 logger = logging.getLogger("ai_service.rag_repository")
 
 MEDICAL_HISTORY_READ_PERMISSION = "docslot.medical_history.read"
+# PHI written by the RAG path carries the 'medical_history' data_class (it is
+# derived from patient_medical_history); the encryptor resolves the tenant's key.
+_RESOURCE_TYPE = "medical_history"
+
+
+def _enc_ctx(tenant_id: str, patient_id: str, user_id: str | None) -> EncryptionContext:
+    return EncryptionContext(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        resource_type=_RESOURCE_TYPE,
+        resource_id=patient_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,61 +144,108 @@ def insert_embedding(
     embedding_dimensions: int,
     vector: np.ndarray,
     metadata: dict,
+    user_id: str | None = None,
 ) -> None:
-    """Insert one ai.embeddings row. Vector stored as float32 bytes (bytea)."""
-    buf = vector.astype("<f4").tobytes()
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO ai.embeddings (
-                tenant_id, source_type, source_id, chunk_index, chunk_text,
-                chunk_text_hash, embedding_model, embedding_dimensions,
-                embedding_vector, metadata, patient_id
-            ) VALUES (
-                %(tenant_id)s, 'patient_medical_history', %(source_id)s, 0, %(chunk_text)s,
-                %(hash)s, %(model)s, %(dims)s,
-                %(vector)s, %(metadata)s, %(patient_id)s
+    """Insert one ai.embeddings row with chunk_text + vector ENCRYPTED at rest.
+
+    chunk_text and the float32 vector are PHI (medical_history data_class); both
+    are envelope-encrypted (see ai_service/app/encryption.py) and encryption_key_id
+    is set. The metadata 'title' (an encrypted-class field) is stored as an
+    encrypted 'title_enc' envelope; record_type/severity/icd10/is_critical are
+    non-encrypted scalars and stay plaintext. chunk_text_hash remains a hash of the
+    PLAINTEXT chunk for idempotent dedup. Encryption + the forensic key_usage_log
+    share this row's transaction, so a rolled-back insert also rolls back its log.
+    """
+    raw_vec = vector.astype("<f4").tobytes()
+    meta = dict(metadata)
+    title = meta.pop("title", None)
+    with get_connection() as conn:
+        enc = FieldEncryptor(conn, _enc_ctx(tenant_id, patient_id, user_id))
+        chunk_payload, key_id = enc.encrypt_text(chunk_text)
+        vec_payload, _ = enc.encrypt_blob(raw_vec)
+        if title:
+            meta["title_enc"], _ = enc.encrypt_text(title)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ai.embeddings (
+                    tenant_id, source_type, source_id, chunk_index, chunk_text,
+                    chunk_text_hash, embedding_model, embedding_dimensions,
+                    embedding_vector, metadata, patient_id, encryption_key_id
+                ) VALUES (
+                    %(tenant_id)s, 'patient_medical_history', %(source_id)s, 0, %(chunk_text)s,
+                    %(hash)s, %(model)s, %(dims)s,
+                    %(vector)s, %(metadata)s, %(patient_id)s, %(key_id)s
+                )
+                """,
+                {
+                    "tenant_id": tenant_id,
+                    "source_id": source_id,
+                    "chunk_text": chunk_payload,
+                    "hash": chunk_text_hash,
+                    "model": embedding_model,
+                    "dims": embedding_dimensions,
+                    "vector": vec_payload.encode("ascii"),
+                    "metadata": json.dumps(meta),
+                    "patient_id": patient_id,
+                    "key_id": key_id,
+                },
             )
-            """,
-            {
-                "tenant_id": tenant_id,
-                "source_id": source_id,
-                "chunk_text": chunk_text,
-                "hash": chunk_text_hash,
-                "model": embedding_model,
-                "dims": embedding_dimensions,
-                "vector": buf,
-                "metadata": json.dumps(metadata),
-                "patient_id": patient_id,
-            },
-        )
 
 
-def fetch_patient_embeddings(tenant_id: str, patient_id: str) -> list[dict]:
+def fetch_patient_embeddings(
+    tenant_id: str, patient_id: str, user_id: str | None = None
+) -> list[dict]:
     """Load this patient's stored embeddings (tenant + patient scoped).
 
-    Returns dicts with a decoded numpy vector under 'vector'.
+    The encrypted float32 vector is decrypted to a numpy array under 'vector'
+    (needed to rank). chunk_text stays as its ENCRYPTED payload under
+    'chunk_text_enc' and is decrypted LAZILY for only the top-k hits actually
+    returned (see decrypt_payloads), so PHI that is never disclosed is never
+    decrypted.
     """
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT embedding_id, source_id, chunk_text, chunk_text_hash,
-                   embedding_model, embedding_dimensions, embedding_vector, metadata
-            FROM ai.embeddings
-            WHERE tenant_id = %(tenant_id)s
-              AND patient_id = %(patient_id)s
-              AND source_type = 'patient_medical_history'
-              AND deleted_at IS NULL
-            """,
-            {"tenant_id": tenant_id, "patient_id": patient_id},
-        )
-        rows = list(cur.fetchall())
-    out: list[dict] = []
-    for r in rows:
-        raw = r["embedding_vector"]
-        r["vector"] = np.frombuffer(bytes(raw), dtype="<f4") if raw is not None else None
-        out.append(r)
+    with get_connection() as conn:
+        enc = FieldEncryptor(conn, _enc_ctx(tenant_id, patient_id, user_id))
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT embedding_id, source_id, chunk_text, chunk_text_hash,
+                       embedding_model, embedding_dimensions, embedding_vector, metadata
+                FROM ai.embeddings
+                WHERE tenant_id = %(tenant_id)s
+                  AND patient_id = %(patient_id)s
+                  AND source_type = 'patient_medical_history'
+                  AND deleted_at IS NULL
+                """,
+                {"tenant_id": tenant_id, "patient_id": patient_id},
+            )
+            rows = list(cur.fetchall())
+        out: list[dict] = []
+        for r in rows:
+            raw = r["embedding_vector"]
+            if raw is not None:
+                payload = bytes(raw).decode("ascii")
+                r["vector"] = np.frombuffer(enc.decrypt_blob(payload), dtype="<f4")
+            else:
+                r["vector"] = None
+            r["chunk_text_enc"] = r.pop("chunk_text")
+            out.append(r)
     return out
+
+
+def decrypt_payloads(
+    payloads: list[str | None], *, tenant_id: str, patient_id: str, user_id: str | None = None
+) -> list[str | None]:
+    """Decrypt a list of envelope payloads (None passes through), in one tx.
+
+    Used to decrypt the top-k chunk_text + title PHI actually surfaced to the
+    caller — each decrypt is logged to platform.key_usage_log.
+    """
+    if not payloads:
+        return []
+    with get_connection() as conn:
+        enc = FieldEncryptor(conn, _enc_ctx(tenant_id, patient_id, user_id))
+        return [enc.decrypt_text(p) if p else None for p in payloads]
 
 
 # ---------------------------------------------------------------------------
@@ -268,49 +328,12 @@ def status_for_tenant(tenant_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Compliance logging (best-effort)
+# Compliance logging
 # ---------------------------------------------------------------------------
-def log_purpose_of_use_best_effort(
-    *,
-    user_id: str,
-    tenant_id: str,
-    patient_id: str,
-    purpose: str,
-) -> None:
-    """Best-effort write to platform.purpose_of_use_log for a PHI access.
-
-    declared_purpose is CHECK-constrained; unknown purposes fall back to
-    'treatment'. Any failure is logged and swallowed (never blocks the request).
-    """
-    allowed = {
-        "treatment", "follow_up", "emergency", "consultation",
-        "research", "audit", "patient_request", "legal_obligation",
-    }
-    declared = purpose if purpose in allowed else "treatment"
-    try:
-        with get_connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO platform.purpose_of_use_log (
-                    user_id, tenant_id, accessed_resource_type,
-                    accessed_resource_id, declared_purpose, purpose_notes
-                ) VALUES (
-                    %(user_id)s, %(tenant_id)s, 'medical_history',
-                    %(patient_id)s, %(declared)s, %(notes)s
-                )
-                """,
-                {
-                    "user_id": user_id,
-                    "tenant_id": tenant_id,
-                    "patient_id": patient_id,
-                    "declared": declared,
-                    "notes": f"AI RAG access (raw purpose header: {purpose})",
-                },
-            )
-    except Exception as exc:  # noqa: BLE001 — intentional best-effort
-        logger.warning("purpose_of_use_log write failed (continuing): %s", exc)
-
-
+# NOTE: purpose-of-use logging moved to app/phi_access.record_purpose_of_use,
+# which is a FIRST-CLASS (non-swallowed) write that stamps break-glass accesses
+# for the security review queue. The hash-chained audit_log write below stays
+# best-effort (supplementary to the purpose-of-use record).
 def write_audit_best_effort(
     *,
     user_id: str,

@@ -139,6 +139,15 @@ INSERT INTO platform.encrypted_fields_registry (schema_name, table_name, column_
 ('docslot', 'prescriptions', 'chief_complaints', 'medical_history', 'medical', 'consent'),
 ('docslot', 'lab_reports', 'structured_results', 'medical_history', 'medical', 'consent'),
 ('docslot', 'abdm_health_records', 'fhir_bundle', 'medical_history', 'medical', 'consent'),
+-- AI service PHI-at-rest (slice: AI PHI-at-rest). The Python AI sibling derives PHI from medical
+-- history (RAG chunk text + its embedding vector) and lab reports (raw OCR text). These carry the same
+-- 'medical_history' data_class as their source columns, so AI-written ciphertext shares the tenant's
+-- KMS key and is rendered unrecoverable by the same DPDP cryptographic-erasure (key destruction) as the
+-- source PHI. The Python encryptor (ai_service/app/encryption.py) reads this registry to resolve the
+-- data_class, exactly like the .NET FieldEncryptionService.
+('ai', 'embeddings', 'chunk_text', 'medical_history', 'medical', 'consent'),
+('ai', 'embeddings', 'embedding_vector', 'medical_history', 'medical', 'consent'),
+('ai', 'ai_document_extractions', 'raw_ocr_text', 'medical_history', 'medical', 'consent'),
 ('docslot', 'patients', 'aadhaar_last_4', 'aadhaar_partial', 'identity', 'consent'),
 ('docslot', 'healthcare_facilities', 'whatsapp_access_token', 'whatsapp_tokens', 'contact', 'contract'),
 ('platform', 'users', 'mfa_secret', 'mfa_secrets', 'identity', 'contract'),

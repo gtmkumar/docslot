@@ -5,7 +5,7 @@ ai.ai_predictions.features_used so the score is fully traceable.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 
 # The booking channels we one-hot encode. 'unknown' catches anything else.

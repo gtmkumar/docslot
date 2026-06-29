@@ -16,3 +16,8 @@ httpx==0.28.1
 # Pillow generates the synthetic sample document and loads images for OCR.
 pytesseract==0.3.13
 pillow==12.2.0
+# PHI-at-rest field encryption (AES-256-GCM envelope, interop with the .NET
+# FieldEncryptionService). PyCA cryptography — do NOT hand-roll AES/PBKDF2.
+cryptography==45.0.7
+# Test-only (PHI-at-rest encryption round-trip + consent-gate integration suite).
+pytest==8.4.2

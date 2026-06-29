@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     jwt_audience: str = "docslot-clients"
     jwt_algorithm: str = "HS256"
 
+    # --- PHI-at-rest encryption ---
+    # Master passphrase for envelope encryption of AI-derived PHI (RAG chunk text +
+    # embedding vectors, raw OCR text). MUST equal the .NET Encryption:Passphrase so
+    # the two services share one platform.encryption_keys key per tenant and DPDP key
+    # destruction renders both services' ciphertext unrecoverable. The DB stores only
+    # a per-key salt (key_reference), never this passphrase. Override in prod from a
+    # secret manager (AI_ENCRYPTION_PASSPHRASE); the AI service NEVER provisions keys.
+    encryption_passphrase: str = "dev-only-encryption-passphrase-replace-in-production"
+
     # --- OCR (lab-report extraction) ---
     # pytesseract shells out to the tesseract binary; set the absolute path so it
     # works even when /opt/homebrew/bin is not on PATH.

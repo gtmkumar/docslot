@@ -17,7 +17,7 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from ..auth import Principal, get_principal
-from .. import rag, rag_repository as repo
+from .. import phi_access, rag, rag_repository as repo
 from ..schemas import (
     KnowledgeBaseInfo,
     RagAskRequest,
@@ -91,6 +91,24 @@ def index_patient(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Patient not found in this tenant.",
         )
+
+    # Consent-or-break-glass gate BEFORE any PHI is read/embedded (403 if denied).
+    grant = phi_access.enforce_phi_gate(
+        user_id=principal.user_id,
+        tenant_id=principal.tenant_id,
+        patient_id=patient_id,
+        resource_type=phi_access.RESOURCE_MEDICAL_HISTORY,
+    )
+    # First-class purpose-of-use record (stamps break-glass for the review queue).
+    phi_access.record_purpose_of_use(
+        user_id=principal.user_id,
+        tenant_id=principal.tenant_id,
+        patient_id=patient_id,
+        resource_type=phi_access.RESOURCE_MEDICAL_HISTORY,
+        purpose=purpose,
+        grant=grant,
+    )
+
     # No history -> 404 (nothing to index).
     if not repo.fetch_medical_history(principal.tenant_id, patient_id):
         raise HTTPException(
@@ -98,14 +116,8 @@ def index_patient(
             detail="Patient has no medical history in this tenant.",
         )
 
-    result = rag.index_patient(principal.tenant_id, patient_id)
+    result = rag.index_patient(principal.tenant_id, patient_id, user_id=principal.user_id)
 
-    repo.log_purpose_of_use_best_effort(
-        user_id=principal.user_id,
-        tenant_id=principal.tenant_id,
-        patient_id=patient_id,
-        purpose=purpose,
-    )
     repo.write_audit_best_effort(
         user_id=principal.user_id,
         tenant_id=principal.tenant_id,
@@ -138,6 +150,22 @@ def ask(
             detail="Patient not found in this tenant.",
         )
 
+    # Consent-or-break-glass gate BEFORE any PHI is read (403 if denied).
+    grant = phi_access.enforce_phi_gate(
+        user_id=principal.user_id,
+        tenant_id=principal.tenant_id,
+        patient_id=patient_id,
+        resource_type=phi_access.RESOURCE_MEDICAL_HISTORY,
+    )
+    phi_access.record_purpose_of_use(
+        user_id=principal.user_id,
+        tenant_id=principal.tenant_id,
+        patient_id=patient_id,
+        resource_type=phi_access.RESOURCE_MEDICAL_HISTORY,
+        purpose=purpose,
+        grant=grant,
+    )
+
     history = repo.fetch_medical_history(principal.tenant_id, patient_id)
     if not history:
         raise HTTPException(
@@ -145,18 +173,12 @@ def ask(
             detail="Patient has no medical history in this tenant.",
         )
 
-    # Auto-index if this patient has no embeddings yet (consistent backend).
-    if not repo.fetch_patient_embeddings(principal.tenant_id, patient_id):
-        rag.index_patient(principal.tenant_id, patient_id)
+    # /ask is strictly READ-ONLY: it never auto-indexes (a read MUST NOT persist
+    # derived PHI under a read scope — that was a consent-bypass + audit-mislabel
+    # leak). If the patient has no embeddings yet, retrieval simply returns nothing;
+    # call POST /rag/index (the write path) to build them.
+    result = rag.answer(principal.tenant_id, patient_id, body.question, user_id=principal.user_id)
 
-    result = rag.answer(principal.tenant_id, patient_id, body.question)
-
-    repo.log_purpose_of_use_best_effort(
-        user_id=principal.user_id,
-        tenant_id=principal.tenant_id,
-        patient_id=patient_id,
-        purpose=purpose,
-    )
     repo.write_audit_best_effort(
         user_id=principal.user_id,
         tenant_id=principal.tenant_id,
