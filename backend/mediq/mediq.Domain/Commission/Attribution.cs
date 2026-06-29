@@ -33,12 +33,19 @@ public sealed class Attribution
     public Guid? PayoutId { get; private set; }
     public DateTime AttributedAt { get; private set; }
     public DateTime? EarnedAt { get; private set; }
+    /// <summary>
+    /// JSON written to <c>commission.attributions.source_metadata</c>. When a campaign bonus is folded into
+    /// <see cref="CommissionAmountInr"/>, this carries the split + the <c>campaign_id</c> the DB refund trigger
+    /// keys on (<c>{base_commission_inr, campaign_id, campaign_bonus_inr}</c>). Null → the column keeps its '{}' default.
+    /// </summary>
+    public string? SourceMetadataJson { get; private set; }
 
     private Attribution() { }
 
     public static Attribution Create(
         Guid tenantId, Guid bookingId, Guid brokerId, string source, string verificationStatus,
-        Guid? ruleId, decimal? commission, decimal fraudScore, string[] fraudFlags, DateTime nowUtc)
+        Guid? ruleId, decimal? commission, decimal fraudScore, string[] fraudFlags, DateTime nowUtc,
+        string? sourceMetadataJson = null)
         => new()
         {
             AttributionId = Guid.CreateVersion7(),
@@ -46,6 +53,7 @@ public sealed class Attribution
             AttributionSource = source, VerificationStatus = verificationStatus, RuleId = ruleId,
             CommissionAmountInr = commission, CommissionStatus = "pending",
             FraudScore = fraudScore, FraudFlags = fraudFlags, AttributedAt = nowUtc,
+            SourceMetadataJson = sourceMetadataJson,
         };
 }
 

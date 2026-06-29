@@ -24,13 +24,18 @@ public sealed class AttributionRepository(PlatformDbContext db) : IAttributionRe
                 """
                 INSERT INTO commission.attributions
                     (attribution_id, tenant_id, booking_id, broker_id, attribution_source, verification_status,
-                     rule_id, commission_amount_inr, commission_status, fraud_score, fraud_flags, attributed_at, created_at, updated_at)
-                VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, 'pending', @p8, @p9, @p10, @p10, @p10)
+                     rule_id, commission_amount_inr, commission_status, fraud_score, fraud_flags, attributed_at,
+                     source_metadata, created_at, updated_at)
+                VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, 'pending', @p8, @p9, @p10,
+                        @p11::jsonb, @p10, @p10)
                 """,
+                // Default to an empty JSON object on the C# side — a literal '{}' in the SQL would be misread by
+                // EF's ExecuteSqlRaw as a {0}-style placeholder.
                 P(("@p0", a.AttributionId), ("@p1", a.TenantId), ("@p2", a.BookingId), ("@p3", a.BrokerId),
                   ("@p4", a.AttributionSource), ("@p5", a.VerificationStatus),
                   ("@p6", (object?)a.RuleId ?? DBNull.Value), ("@p7", (object?)a.CommissionAmountInr ?? DBNull.Value),
-                  ("@p8", (object?)a.FraudScore ?? DBNull.Value), ("@p9", a.FraudFlags), ("@p10", a.AttributedAt)));
+                  ("@p8", (object?)a.FraudScore ?? DBNull.Value), ("@p9", a.FraudFlags), ("@p10", a.AttributedAt),
+                  ("@p11", a.SourceMetadataJson ?? "{}")));
         }
         catch (PostgresException ex) when (ex.SqlState == "23514")
         {
@@ -38,6 +43,26 @@ public sealed class AttributionRepository(PlatformDbContext db) : IAttributionRe
             throw new AttributionOnDiscountedBookingException(a.BookingId);
         }
     }
+
+    public async Task<CampaignBonusGrant?> GrantCampaignBonusAsync(
+        Guid tenantId, Guid brokerId, string brokerTier, string brokerType, string? serviceType,
+        decimal baseCommission, DateTime nowUtc, CancellationToken ct)
+    {
+        // Runs in the caller's tenant-scoped tx → the SQL fn is RLS-scoped to this tenant and the budget reservation
+        // rolls back with the attribution insert if that later fails. Returns 0 or 1 row.
+        var rows = await db.Database.SqlQueryRaw<GrantRow>(
+                """
+                SELECT campaign_id AS "CampaignId", bonus_inr AS "BonusInr"
+                FROM commission.grant_campaign_bonus(@p0, @p1, @p2, @p3, @p4, @p5, @p6)
+                """,
+                P(("@p0", tenantId), ("@p1", brokerId), ("@p2", brokerTier), ("@p3", brokerType),
+                  ("@p4", (object?)serviceType ?? DBNull.Value), ("@p5", baseCommission), ("@p6", nowUtc)))
+            .ToListAsync(ct);
+        var r = rows.FirstOrDefault();
+        return r is null ? null : new CampaignBonusGrant(r.CampaignId, r.BonusInr);
+    }
+
+    private sealed record GrantRow(Guid CampaignId, decimal BonusInr);
 
     public Task<bool> ExistsAsync(Guid bookingId, Guid brokerId, CancellationToken ct) =>
         db.Database.SqlQueryRaw<bool>(

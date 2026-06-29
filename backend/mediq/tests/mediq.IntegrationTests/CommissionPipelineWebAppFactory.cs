@@ -112,6 +112,7 @@ public sealed class CommissionPipelineWebAppFactory : WebApplicationFactory<Prog
         await Exec(conn, "UPDATE commission.attributions SET payout_id=NULL WHERE tenant_id=@t", ("t", TenantId));
         await Exec(conn, "DELETE FROM commission.payouts WHERE tenant_id=@t", ("t", TenantId));
         await Exec(conn, "DELETE FROM commission.attributions WHERE tenant_id=@t", ("t", TenantId));
+        await Exec(conn, "DELETE FROM commission.broker_campaigns WHERE tenant_id=@t", ("t", TenantId));
         await Exec(conn, "DELETE FROM commission.commission_rules WHERE tenant_id=@t", ("t", TenantId));
         await Exec(conn, "DELETE FROM commission.referral_links WHERE broker_id=@b", ("b", BrokerId));
         await Exec(conn, "DELETE FROM commission.broker_tenant_links WHERE broker_id=@b", ("b", BrokerId));
