@@ -97,6 +97,8 @@ public sealed class SecurityWebAppFactory : WebApplicationFactory<Program>, IAsy
         await Exec(conn, "DELETE FROM platform.data_deletion_requests WHERE subject_phone = @p", ("p", PatientPhone));
         await Exec(conn, "DELETE FROM platform.data_export_requests WHERE subject_phone = @p", ("p", PatientPhone));
         await Exec(conn, "DELETE FROM platform.encryption_keys WHERE tenant_id = @t", ("t", TenantId));
+        // break_glass_grants.purpose_log_id FKs purpose_of_use_log → delete grants first.
+        await Exec(conn, "DELETE FROM platform.break_glass_grants WHERE tenant_id = @t", ("t", TenantId));
         await Exec(conn, "DELETE FROM platform.purpose_of_use_log WHERE tenant_id = @t", ("t", TenantId));
         await Exec(conn, "DELETE FROM docslot.patient_tenant_links WHERE tenant_id = @t", ("t", TenantId));
         await Exec(conn, "DELETE FROM docslot.patients WHERE patient_id = @p", ("p", PatientId));

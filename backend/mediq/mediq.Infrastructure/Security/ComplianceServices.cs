@@ -4,6 +4,7 @@ using System.Text.Json;
 using mediq.Application.Abstractions;
 using mediq.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 
 namespace mediq.Infrastructure.Security;
@@ -241,15 +242,27 @@ public sealed class AuditChainService(PlatformDbContext db) : IAuditChainService
     private sealed record HeadRow(long Seq, string Hash);
 }
 
-/// <summary>Break-glass emergency access (Layer 2) → purpose_of_use_log with is_break_glass + review_required.</summary>
+/// <summary>
+/// Break-glass emergency access (DPDP Layer 2, FR-MED-03). Grant = the break_glass_grants AUTHORIZATION the
+/// consent-gated reads consult + the purpose_of_use_log audit/review row. Runs on the request's
+/// <see cref="PlatformDbContext"/> connection inside the tenant-scoped transaction, so the new-table RLS sees
+/// app.tenant_id; the lookup also carries explicit tenant/user/patient predicates (the active guard).
+/// </summary>
 public sealed class BreakGlassService(PlatformDbContext db) : IBreakGlassService
 {
-    public async Task<Guid> GrantAsync(Guid userId, Guid tenantId, string resourceType, Guid resourceId, string justification, CancellationToken ct)
+    /// <summary>Mandatory server-side TTL for an emergency-access grant. NOT client-controllable.</summary>
+    private const int GrantTtlMinutes = 60;
+
+    public async Task<Guid> GrantAsync(Guid userId, Guid tenantId, Guid patientId, string resourceType, Guid? resourceId, string justification, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(justification))
             throw new ArgumentException("Break-glass requires a mandatory justification.", nameof(justification));
 
         var logId = Guid.CreateVersion7();
+        var grantId = Guid.CreateVersion7();
+
+        // 1) Audit + review-queue row. accessed_resource_id is NOT NULL → the specific resource when scoped,
+        //    else the patient (patient-wide grant). is_break_glass=true + review_required=true surface it.
         await db.Database.ExecuteSqlRawAsync(
             """
             INSERT INTO platform.purpose_of_use_log
@@ -261,8 +274,79 @@ public sealed class BreakGlassService(PlatformDbContext db) : IBreakGlassService
             new NpgsqlParameter("@p1", userId),
             new NpgsqlParameter("@p2", tenantId),
             new NpgsqlParameter("@p3", resourceType),
-            new NpgsqlParameter("@p4", resourceId),
+            new NpgsqlParameter("@p4", (object?)resourceId ?? patientId),
             new NpgsqlParameter("@p5", justification));
-        return logId;
+
+        // 2) The authorization the reads consult — mandatory short TTL set server-side (NOW() + interval).
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO platform.break_glass_grants
+                (grant_id, user_id, tenant_id, patient_id, resource_type, resource_id, justification,
+                 purpose_log_id, granted_at, expires_at)
+            VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, NOW(), NOW() + make_interval(mins => @p8))
+            """,
+            new NpgsqlParameter("@p0", grantId),
+            new NpgsqlParameter("@p1", userId),
+            new NpgsqlParameter("@p2", tenantId),
+            new NpgsqlParameter("@p3", patientId),
+            new NpgsqlParameter("@p4", resourceType),
+            new NpgsqlParameter("@p5", (object?)resourceId ?? DBNull.Value),
+            new NpgsqlParameter("@p6", justification),
+            new NpgsqlParameter("@p7", logId),
+            new NpgsqlParameter("@p8", GrantTtlMinutes));
+
+        return grantId;
+    }
+
+    public async Task<BreakGlassGrant?> GetActiveGrantAsync(Guid userId, Guid tenantId, Guid patientId, string resourceType, Guid? resourceId, CancellationToken ct)
+    {
+        var conn = (NpgsqlConnection)db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
+        // resource_id semantics: a NULL @resourceId (patient-wide LIST read) matches ONLY a patient-wide grant
+        // (resource_id IS NULL); a specific @resourceId (detail read) matches a patient-wide grant OR one scoped
+        // to exactly that resource. Typed Uuid params keep the NULL comparison well-typed.
+        await using var cmd = new NpgsqlCommand(
+            """
+            SELECT grant_id, patient_id, resource_type, resource_id, justification, expires_at
+            FROM platform.break_glass_grants
+            WHERE user_id = @p0 AND tenant_id = @p1 AND patient_id = @p2 AND resource_type = @p3
+              AND revoked_at IS NULL AND expires_at > NOW()
+              AND (
+                    (@p4 IS NULL AND resource_id IS NULL)
+                 OR (@p4 IS NOT NULL AND (resource_id IS NULL OR resource_id = @p4))
+              )
+            ORDER BY expires_at DESC
+            LIMIT 1
+            """, conn);
+        // Enlist the request's tenant-scoped tx so RLS (app.tenant_id) is in scope (mirrors AttributionRepository).
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
+        cmd.Parameters.AddWithValue("@p0", userId);
+        cmd.Parameters.AddWithValue("@p1", tenantId);
+        cmd.Parameters.AddWithValue("@p2", patientId);
+        cmd.Parameters.AddWithValue("@p3", resourceType);
+        cmd.Parameters.Add(new NpgsqlParameter("@p4", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)resourceId ?? DBNull.Value });
+
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        if (!await rd.ReadAsync(ct)) return null;
+        return new BreakGlassGrant(
+            rd.GetGuid(0), rd.GetGuid(1), rd.GetString(2),
+            rd.IsDBNull(3) ? null : rd.GetGuid(3), rd.GetString(4),
+            new DateTimeOffset(DateTime.SpecifyKind(rd.GetDateTime(5), DateTimeKind.Utc)));
+    }
+
+    public async Task<bool> RevokeAsync(Guid grantId, Guid tenantId, Guid revokedByUserId, CancellationToken ct)
+    {
+        // Conditional UPDATE (idempotent): only an active grant in THIS tenant is revoked. The reviewer
+        // permission (platform.anomalies.review) gates the endpoint — distinct from the grant permission (SoD).
+        var affected = await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE platform.break_glass_grants
+               SET revoked_at = NOW(), revoked_by_user_id = @p2
+             WHERE grant_id = @p0 AND tenant_id = @p1 AND revoked_at IS NULL
+            """,
+            new NpgsqlParameter("@p0", grantId),
+            new NpgsqlParameter("@p1", tenantId),
+            new NpgsqlParameter("@p2", revokedByUserId));
+        return affected == 1;
     }
 }

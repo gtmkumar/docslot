@@ -694,6 +694,55 @@ CREATE POLICY tenant_isolation_drug_alerts ON docslot.drug_alerts
 COMMENT ON POLICY tenant_isolation_medical_history ON docslot.patient_medical_history IS 'Defense-in-depth: blocks cross-tenant queries even if app code forgets WHERE tenant_id = ...';
 
 -- ----------------------------------------------------------------------------
+-- S7b. BREAK_GLASS_GRANTS (DPDP Layer-2 emergency-access AUTHORIZATION) — FR-MED-03
+-- ----------------------------------------------------------------------------
+-- platform.purpose_of_use_log (S7) records THAT a break-glass happened (the audit
+-- trail + review queue). This table is the AUTHORIZATION that produces: a deliberate,
+-- scoped, time-boxed override that lets the consent-gated clinical READ handlers
+-- proceed when a patient has no active consent. Without a matching active grant the
+-- reads still hard-refuse (403) — the grant is the ONLY path that overrides consent.
+--   * Least-privilege scope: resource_type (one record class) + optional resource_id
+--     (NULL = patient-wide for that class). A specific-resource grant does NOT unlock
+--     a patient-wide LIST (the list lookup requires resource_id IS NULL).
+--   * Mandatory short TTL (expires_at, set server-side); expired/revoked grants never unlock.
+--   * ABDM is intentionally NOT overridable: resource_type EXCLUDES abdm_record, so a
+--     grant for ABDM cannot even be created. ABDM stays gated by the separate NHA
+--     ABDM-consent regime (two-gate semantics).
+--   * tenant_id leads the active-grant index AND an RLS policy confines grants to the
+--     tenant — a grant in tenant A can never unlock a read scoped to tenant B.
+-- Placed here (not beside S7) so the tenant RLS helper fns above are already defined.
+CREATE TABLE platform.break_glass_grants (
+    grant_id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id             UUID NOT NULL REFERENCES platform.users(user_id),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id),
+    patient_id          UUID NOT NULL,                            -- cross-tenant patient identity (docslot.patients is global; bare UUID, mirroring purpose_of_use_log.accessed_resource_id)
+    resource_type       VARCHAR(50) NOT NULL CHECK (resource_type IN ('prescription', 'lab_report', 'medical_history')),
+    resource_id         UUID,                                    -- NULL = patient-wide for that resource_type
+    justification       TEXT NOT NULL,
+    purpose_log_id      UUID REFERENCES platform.purpose_of_use_log(log_id),  -- the GRANT's audit / review-queue row
+    granted_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at          TIMESTAMPTZ NOT NULL,                    -- mandatory short TTL
+    revoked_at          TIMESTAMPTZ,
+    revoked_by_user_id  UUID REFERENCES platform.users(user_id)
+);
+
+CREATE INDEX idx_break_glass_active ON platform.break_glass_grants(tenant_id, user_id, patient_id, resource_type)
+    WHERE revoked_at IS NULL;
+
+COMMENT ON TABLE platform.break_glass_grants IS 'DPDP Layer-2 emergency-access authorizations: deliberate, scoped, time-boxed overrides of the clinical consent gate (FR-MED-03). The consent-gated read handlers consult an active (non-revoked, non-expired) grant before refusing a consent-denied PHI read. ABDM excluded by CHECK (separate NHA regime).';
+
+-- RLS: confine grants to the tenant. The app role is NOBYPASSRLS and every request
+-- (command + query) runs inside a SET LOCAL app.tenant_id transaction, so a grant
+-- created in tenant A is invisible to a read scoped to tenant B — defense-in-depth
+-- behind the explicit tenant predicate the read handler also applies.
+ALTER TABLE platform.break_glass_grants ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_break_glass_grants ON platform.break_glass_grants
+    FOR ALL
+    USING (tenant_id = platform.current_tenant_id()
+           OR tenant_id = platform.current_impersonated_tenant());
+
+-- ----------------------------------------------------------------------------
 -- BOOKING DATA-PLANE RLS (Phase-0 gap fix) — tenant isolation on the operational
 -- booking tables, mirroring the PHI pattern above (active tenant OR scoped
 -- impersonation; the super_admin god-flag is intentionally NOT honored).

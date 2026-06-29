@@ -108,7 +108,11 @@ public sealed class SecurityController(
     public async Task<ActionResult<Guid>> ReportBreach([FromBody] BreachRequest body, CancellationToken ct)
         => Ok(await commands.Send(new ReportBreachCommand(body.BreachType, body.Severity, body.Description), ct));
 
-    /// <summary>Break-glass emergency access — mandatory justification, logged + flagged for review.</summary>
+    /// <summary>
+    /// Break-glass emergency access — issues a scoped, time-boxed grant over a patient's clinical records so a
+    /// consent-denied read can proceed (FR-MED-03). Mandatory justification; logged + flagged for review.
+    /// <c>ResourceId</c> null = patient-wide for the resource type. ABDM is not grantable (separate regime).
+    /// </summary>
     [HttpPost("break-glass")]
     [RequirePermission("docslot.medical_access.break_glass")]
     [ProducesResponseType<Guid>(StatusCodes.Status200OK)]
@@ -116,12 +120,23 @@ public sealed class SecurityController(
     {
         var tenantId = currentUser.TenantId
             ?? throw new mediq.Utilities.Exceptions.ForbiddenException("No active tenant for this session.");
-        return Ok(await commands.Send(new BreakGlassCommand(tenantId, body.ResourceType, body.ResourceId, body.Justification), ct));
+        return Ok(await commands.Send(new BreakGlassCommand(tenantId, body.PatientId, body.ResourceType, body.ResourceId, body.Justification), ct));
+    }
+
+    /// <summary>Revoke an active break-glass grant early (reviewer action — DISTINCT permission from granting).</summary>
+    [HttpPost("break-glass/{grantId:guid}/revoke")]
+    [RequirePermission("platform.anomalies.review")]
+    [ProducesResponseType<bool>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<bool>> RevokeBreakGlass(Guid grantId, CancellationToken ct)
+    {
+        var tenantId = currentUser.TenantId
+            ?? throw new mediq.Utilities.Exceptions.ForbiddenException("No active tenant for this session.");
+        return Ok(await commands.Send(new RevokeBreakGlassCommand(tenantId, grantId), ct));
     }
 
     public sealed record AnchorRequest(string AnchorType, string AnchorReference);
     public sealed record ExportRequest(string SubjectPhone);
     public sealed record EraseRequest(Guid DeletionRequestId, string SubjectPhone);
     public sealed record BreachRequest(string BreachType, string Severity, string Description);
-    public sealed record BreakGlassRequest(string ResourceType, Guid ResourceId, string Justification);
+    public sealed record BreakGlassRequest(Guid PatientId, string ResourceType, Guid? ResourceId, string Justification);
 }

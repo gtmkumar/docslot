@@ -66,7 +66,7 @@ public sealed record GetLabReportQuery(Guid TenantId, Guid ReportId, string Decl
 
 public sealed class GetLabReportQueryHandler(
     IClinicalRepository clinical, IFieldEncryptionService encryption, IPatientRepository patients,
-    IPurposeOfUseWriter purpose, ICurrentUserContext ctx)
+    IPurposeOfUseWriter purpose, IBreakGlassService breakGlass, ICurrentUserContext ctx)
     : IQueryHandler<GetLabReportQuery, LabReportDto>
 {
     public async Task<LabReportDto> Handle(GetLabReportQuery q, CancellationToken ct)
@@ -77,11 +77,17 @@ public sealed class GetLabReportQueryHandler(
 
         var r = await clinical.GetLabReportAsync(q.ReportId, q.TenantId, ct)
             ?? throw new KeyNotFoundException("Lab report not found.");
+        // Consent gate with break-glass override (FR-MED-03): a specific-report grant or a patient-wide grant unlocks.
         var patient = await patients.GetByIdAsync(r.PatientId, ct);
+        BreakGlassGrant? grant = null;
         if (patient is null || !patient.HasActiveConsent)
-            throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        {
+            grant = await breakGlass.GetActiveGrantAsync(userId, q.TenantId, r.PatientId, "lab_report", r.ReportId, ct);
+            if (grant is null)
+                throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        }
 
-        await purpose.RecordAsync(new PurposeOfUseEntry(userId, q.TenantId, "lab_report", r.ReportId, q.DeclaredPurpose, null, false, null), ct);
+        await purpose.RecordAsync(new PurposeOfUseEntry(userId, q.TenantId, "lab_report", r.ReportId, q.DeclaredPurpose, null, grant is not null, grant?.Justification), ct);
 
         var encCtx = new EncryptionContext(userId, q.TenantId, "lab_report", r.PatientId, ctx.IpAddress);
         var resultsJson = string.IsNullOrEmpty(r.StructuredResultsEnc)
@@ -98,7 +104,8 @@ public sealed class GetLabReportQueryHandler(
 public sealed record ListLabReportsQuery(Guid TenantId, Guid PatientId, string DeclaredPurpose) : IQuery<IReadOnlyList<LabReportListItemDto>>;
 
 public sealed class ListLabReportsQueryHandler(
-    IClinicalRepository clinical, IPatientRepository patients, IPurposeOfUseWriter purpose, ICurrentUserContext ctx)
+    IClinicalRepository clinical, IPatientRepository patients, IPurposeOfUseWriter purpose,
+    IBreakGlassService breakGlass, ICurrentUserContext ctx)
     : IQueryHandler<ListLabReportsQuery, IReadOnlyList<LabReportListItemDto>>
 {
     public async Task<IReadOnlyList<LabReportListItemDto>> Handle(ListLabReportsQuery q, CancellationToken ct)
@@ -107,12 +114,19 @@ public sealed class ListLabReportsQueryHandler(
         if (string.IsNullOrWhiteSpace(q.DeclaredPurpose))
             throw new mediq.Utilities.Exceptions.ValidationException(new Dictionary<string, string[]> { ["X-Purpose-Of-Use"] = ["A purpose-of-use is required to list lab reports (DPDP)."] });
 
+        // A LIST exposes every report's existence → it requires a PATIENT-WIDE grant (resource_id NULL);
+        // a grant scoped to a single report does NOT unlock the list.
         var patient = await patients.GetByIdAsync(q.PatientId, ct);
+        BreakGlassGrant? grant = null;
         if (patient is null || !patient.HasActiveConsent)
-            throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        {
+            grant = await breakGlass.GetActiveGrantAsync(userId, q.TenantId, q.PatientId, "lab_report", null, ct);
+            if (grant is null)
+                throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        }
 
         var rows = await clinical.ListLabReportsAsync(q.TenantId, q.PatientId, ct);
-        await purpose.RecordAsync(new PurposeOfUseEntry(userId, q.TenantId, "lab_report", q.PatientId, q.DeclaredPurpose, null, false, null), ct);
+        await purpose.RecordAsync(new PurposeOfUseEntry(userId, q.TenantId, "lab_report", q.PatientId, q.DeclaredPurpose, null, grant is not null, grant?.Justification), ct);
 
         return rows.Select(r => new LabReportListItemDto(
             r.ReportId, r.ReportNumber, r.TestName, r.Status, r.HasCriticalFindings,
@@ -207,7 +221,7 @@ public sealed record ListMedicalHistoryQuery(Guid TenantId, Guid PatientId, stri
 
 public sealed class ListMedicalHistoryQueryHandler(
     IClinicalRepository clinical, IFieldEncryptionService encryption, IPatientRepository patients,
-    IPurposeOfUseWriter purpose, ICurrentUserContext ctx)
+    IPurposeOfUseWriter purpose, IBreakGlassService breakGlass, ICurrentUserContext ctx)
     : IQueryHandler<ListMedicalHistoryQuery, IReadOnlyList<MedicalHistoryDto>>
 {
     public async Task<IReadOnlyList<MedicalHistoryDto>> Handle(ListMedicalHistoryQuery q, CancellationToken ct)
@@ -216,12 +230,18 @@ public sealed class ListMedicalHistoryQueryHandler(
         if (string.IsNullOrWhiteSpace(q.DeclaredPurpose))
             throw new mediq.Utilities.Exceptions.ValidationException(new Dictionary<string, string[]> { ["X-Purpose-Of-Use"] = ["A purpose-of-use is required to read medical history (DPDP)."] });
 
+        // Patient-wide history list → requires a patient-wide medical_history grant (resource_id NULL).
         var patient = await patients.GetByIdAsync(q.PatientId, ct);
+        BreakGlassGrant? grant = null;
         if (patient is null || !patient.HasActiveConsent)
-            throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        {
+            grant = await breakGlass.GetActiveGrantAsync(userId, q.TenantId, q.PatientId, "medical_history", null, ct);
+            if (grant is null)
+                throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        }
 
         var rows = await clinical.ListMedicalHistoryAsync(q.TenantId, q.PatientId, ct);
-        await purpose.RecordAsync(new PurposeOfUseEntry(userId, q.TenantId, "medical_history", q.PatientId, q.DeclaredPurpose, null, false, null), ct);
+        await purpose.RecordAsync(new PurposeOfUseEntry(userId, q.TenantId, "medical_history", q.PatientId, q.DeclaredPurpose, null, grant is not null, grant?.Justification), ct);
 
         var encCtx = new EncryptionContext(userId, q.TenantId, "medical_history", q.PatientId, ctx.IpAddress);
         var result = new List<MedicalHistoryDto>(rows.Count);

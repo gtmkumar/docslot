@@ -52,14 +52,37 @@ public sealed record AuditChainBreak(long Sequence, Guid AuditId, string Expecte
 public sealed record AuditAnchorResult(Guid AnchorId, long HeadSequence, string HeadHash);
 
 /// <summary>
-/// Break-glass emergency access (Layer 2): grants access AFTER a mandatory justification, logs to
-/// <c>platform.purpose_of_use_log</c> with <c>is_break_glass=true</c> + <c>review_required=true</c> (surfaces
-/// in <c>v_security_review_queue</c>), and marks the patient for notification (WhatsApp send in slice 09).
+/// Break-glass emergency access (DPDP Layer 2, FR-MED-03). <see cref="GrantAsync"/> issues a deliberate,
+/// scoped, time-boxed AUTHORIZATION (<c>platform.break_glass_grants</c>) AND writes the audit row to
+/// <c>platform.purpose_of_use_log</c> (<c>is_break_glass=true</c> + <c>review_required=true</c>, surfacing in
+/// <c>v_security_review_queue</c>). The consent-gated clinical READ handlers then call
+/// <see cref="GetActiveGrantAsync"/>: only an active (non-revoked, non-expired) matching grant lets a
+/// consent-denied read proceed — otherwise it still 403s. Grants cover the clinical record classes only
+/// (prescription / lab_report / medical_history); ABDM stays gated by its own NHA consent regime.
 /// </summary>
 public interface IBreakGlassService
 {
-    Task<Guid> GrantAsync(Guid userId, Guid tenantId, string resourceType, Guid resourceId, string justification, CancellationToken ct);
+    /// <summary>
+    /// Issues a scoped, time-boxed emergency-access grant (mandatory TTL set server-side) and writes the
+    /// break-glass audit/review row. <paramref name="resourceId"/> null = patient-wide for that
+    /// <paramref name="resourceType"/>. Returns the new grant id.
+    /// </summary>
+    Task<Guid> GrantAsync(Guid userId, Guid tenantId, Guid patientId, string resourceType, Guid? resourceId, string justification, CancellationToken ct);
+
+    /// <summary>
+    /// Returns an active grant authorizing the read, or null. For a DETAIL read pass the specific
+    /// <paramref name="resourceId"/> (matches a patient-wide grant OR one scoped to exactly that resource);
+    /// for a patient-wide LIST pass null (matches ONLY a patient-wide grant). Tenant/user/patient are the
+    /// active predicates; the table RLS policy is the cross-tenant backstop.
+    /// </summary>
+    Task<BreakGlassGrant?> GetActiveGrantAsync(Guid userId, Guid tenantId, Guid patientId, string resourceType, Guid? resourceId, CancellationToken ct);
+
+    /// <summary>Revokes an active grant early (reviewer action, distinct permission). True if a row was revoked.</summary>
+    Task<bool> RevokeAsync(Guid grantId, Guid tenantId, Guid revokedByUserId, CancellationToken ct);
 }
+
+/// <summary>An active break-glass authorization (no PHI — ids + the justification the read re-stamps for review).</summary>
+public sealed record BreakGlassGrant(Guid GrantId, Guid PatientId, string ResourceType, Guid? ResourceId, string Justification, DateTimeOffset ExpiresAt);
 
 /// <summary>
 /// Read side of the Security &amp; Compliance console (slice 05). Projects the anchor history, DPDP rights

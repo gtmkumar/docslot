@@ -85,6 +85,7 @@ public sealed class GetPrescriptionQueryHandler(
     IFieldEncryptionService encryption,
     IPatientRepository patients,
     IPurposeOfUseWriter purpose,
+    IBreakGlassService breakGlass,
     ICurrentUserContext ctx)
     : IQueryHandler<GetPrescriptionQuery, PrescriptionDto>
 {
@@ -97,13 +98,21 @@ public sealed class GetPrescriptionQueryHandler(
         var p = await clinical.GetPrescriptionAsync(q.PrescriptionId, q.TenantId, ct)
             ?? throw new KeyNotFoundException("Prescription not found.");   // RLS also blocks cross-tenant
 
-        // Consent gate: the patient must have an active consent on file.
+        // Consent gate, with break-glass override (FR-MED-03): the patient must have active consent — OR an
+        // active, scoped, non-expired break-glass grant must authorize this read; otherwise refuse (403).
         var patient = await patients.GetByIdAsync(p.PatientId, ct);
+        BreakGlassGrant? grant = null;
         if (patient is null || !patient.HasActiveConsent)
-            throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        {
+            grant = await breakGlass.GetActiveGrantAsync(userId, q.TenantId, p.PatientId, "prescription", p.PrescriptionId, ct);
+            if (grant is null)
+                throw new ForbiddenException("Patient has no active consent; clinical read refused (DPDP).");
+        }
 
+        // Purpose-of-use at READ time: under a grant, record is_break_glass=true + reason so the review queue
+        // surfaces the actual emergency read (not just the grant).
         await purpose.RecordAsync(new PurposeOfUseEntry(
-            userId, q.TenantId, "prescription", p.PrescriptionId, q.DeclaredPurpose, null, false, null), ct);
+            userId, q.TenantId, "prescription", p.PrescriptionId, q.DeclaredPurpose, null, grant is not null, grant?.Justification), ct);
 
         var encCtx = new EncryptionContext(userId, q.TenantId, "prescription", p.PatientId, ctx.IpAddress);
         return new PrescriptionDto(
