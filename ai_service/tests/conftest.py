@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg.rows import dict_row
 
+from app import model_config
 from app.config import get_settings
 from app.main import app
 
@@ -156,6 +157,8 @@ def _clean_phi_leaf_rows() -> None:
         cur.execute("DELETE FROM ai.embeddings WHERE tenant_id = %s", (TENANT_ID,))
         cur.execute("DELETE FROM ai.ai_document_extractions WHERE tenant_id = %s", (TENANT_ID,))
         cur.execute("DELETE FROM ai.ai_knowledge_bases WHERE tenant_id = %s", (TENANT_ID,))
+        # Tenant-specific model configs (the platform-wide default, tenant_id NULL, stays).
+        cur.execute("DELETE FROM ai.ai_model_configs WHERE tenant_id = %s", (TENANT_ID,))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -168,6 +171,7 @@ def _seeded() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _clean() -> Iterator[None]:
     _clean_phi_leaf_rows()
+    model_config.reset_cache()  # the model-config cache is process-global; isolate per test
     yield
 
 

@@ -96,6 +96,30 @@ CREATE INDEX idx_ai_configs_default ON ai.ai_model_configs(use_case) WHERE is_de
 CREATE TRIGGER trg_ai_configs_updated_at BEFORE UPDATE ON ai.ai_model_configs
     FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
 
+-- Platform-wide DEFAULT models for the use_cases that can egress patient PHI to an
+-- EXTERNAL model: 'rag_medical' (the medical-history answer path) and 'triage' (the
+-- chief-complaint symptom-extraction path). The AI service reads these at request
+-- time (ai_service/app/model_config.py) and will ONLY send PHI to an external model
+-- when an active config has allows_phi=true AND bao_signed=true. Seeded with
+-- allows_phi=false / bao_signed=false on purpose: PHI egress to a third-party LLM is
+-- OFF until a tenant (or platform operator) records a signed BAA and flips both
+-- flags. Until then RAG answers stay LOCAL & extractive and triage stays on the
+-- OFFLINE keyword path (no PHI leaves the boundary). updated_at is trigger-bumped so
+-- a flip takes effect without restarting the AI service (the read is TTL-cached, not
+-- process-pinned). NOT EXISTS-guarded (UNIQUE has a NULL tenant_id, so ON CONFLICT
+-- would NOT dedupe the platform-wide rows) → the seed is self-protecting on re-run.
+INSERT INTO ai.ai_model_configs
+    (tenant_id, use_case, provider, model_name, endpoint_url, allows_phi, bao_signed,
+     requires_consent, is_active, is_default_for_use_case)
+SELECT NULL, v.use_case, 'anthropic', 'claude-sonnet-4-5', 'https://api.anthropic.com',
+       false, false, true, true, true
+FROM (VALUES ('rag_medical'), ('triage')) AS v(use_case)
+WHERE NOT EXISTS (
+    SELECT 1 FROM ai.ai_model_configs c
+    WHERE c.tenant_id IS NULL AND c.use_case = v.use_case
+      AND c.provider = 'anthropic' AND c.model_name = 'claude-sonnet-4-5'
+);
+
 -- ============================================================================
 -- TABLE AI2: AI_WORKFLOWS (LangGraph workflow definitions)
 -- ============================================================================

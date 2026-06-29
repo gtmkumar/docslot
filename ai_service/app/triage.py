@@ -20,6 +20,7 @@ import time
 
 from . import triage_repository as repo
 from .config import get_settings
+from .model_config import TRIAGE_USE_CASE, get_phi_model_config
 
 logger = logging.getLogger("ai_service.triage")
 
@@ -147,14 +148,29 @@ def _extract_offline(complaint: str) -> list[str]:
     return found
 
 
-def _extract_llm(complaint: str) -> list[str] | None:
+def _extract_llm(complaint: str, tenant_id: str) -> list[str] | None:
     """OPTIONAL LLM symptom extraction. Returns None unless a key is configured
     AND the call succeeds. Output is reconciled to the curated lexicon so the
     rest of the deterministic pipeline stays well-defined.
+
+    The patient's free-text complaint is PHI, so this egresses it to an EXTERNAL
+    model ONLY when ai.ai_model_configs approves a 'triage' model for PHI
+    (allows_phi AND a signed BAA), read via the same governance gate as the RAG
+    path (bug #10). With no approved model -> None -> the OFFLINE keyword path, so
+    PHI never leaves the boundary.
     """
     settings = get_settings()
     api_key = settings.llm_api_key or settings.openai_api_key
     if not api_key:
+        return None
+
+    cfg = get_phi_model_config(TRIAGE_USE_CASE, tenant_id)
+    if cfg is None:
+        logger.info(
+            "No PHI-approved triage model for tenant %s; using offline keyword "
+            "extraction (no external egress of the complaint).",
+            tenant_id,
+        )
         return None
 
     lexicon = ", ".join(SYMPTOM_LEXICON.keys())
@@ -167,7 +183,7 @@ def _extract_llm(complaint: str) -> list[str] | None:
     try:
         import httpx
 
-        base = settings.llm_base_url.rstrip("/")
+        base = (cfg.endpoint_url or settings.llm_base_url).rstrip("/")
         resp = httpx.post(
             f"{base}/v1/messages",
             headers={
@@ -176,7 +192,7 @@ def _extract_llm(complaint: str) -> list[str] | None:
                 "content-type": "application/json",
             },
             json={
-                "model": settings.llm_model,
+                "model": cfg.model_name,
                 "max_tokens": 120,
                 "system": system,
                 "messages": [{"role": "user", "content": complaint}],
@@ -194,18 +210,19 @@ def _extract_llm(complaint: str) -> list[str] | None:
         return None
 
 
-def node_extract_symptoms(state: dict) -> dict:
+def node_extract_symptoms(state: dict, tenant_id: str) -> dict:
     """NODE 1: free-text complaint -> normalized symptom list.
 
-    Offline keyword path by default; optional LLM path only when configured.
-    Always backstops with the offline result so a symptom is never lost.
+    Offline keyword path by default; optional LLM path only when configured AND a
+    PHI-approved 'triage' model exists for the tenant. Always backstops with the
+    offline result so a symptom is never lost.
     """
     complaint = state["complaint"]
     offline = _extract_offline(complaint)
 
     path = "rule"
     symptoms = offline
-    llm = _extract_llm(complaint)
+    llm = _extract_llm(complaint, tenant_id)
     if llm is not None:
         path = "llm"
         # Union so the LLM can add nuance but never drop a clear keyword hit.
@@ -366,7 +383,7 @@ def run_triage(
 
     try:
         # --- Step 1: extract_symptoms ---
-        delta, ms = _timed(lambda: node_extract_symptoms(state))
+        delta, ms = _timed(lambda: node_extract_symptoms(state, tenant_id))
         state.update(delta)
         db_type = "llm_call" if state.get("extraction_path") == "llm" else "tool_call"
         model_used = (
