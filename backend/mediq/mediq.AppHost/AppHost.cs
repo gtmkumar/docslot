@@ -17,15 +17,25 @@ var platformDb = builder.AddConnectionString("platform-db");
 // (+ Messaging:DrainWorkerEnabled=true) to actually publish through this broker.
 var rabbit = builder.AddRabbitMQ("rabbitmq");
 
+// PRODUCTION SECRET-INJECTION SEAM (commented; DEFERRED to a real secret store). In a deployed environment,
+// supply the JWT signing key out-of-band so JwtSigningKeyGuard (the startup fail-fast guard) accepts it instead
+// of biting on the committed dev key. NOT wired as a REQUIRED parameter on purpose — a required parameter would
+// prompt/break a local `dotnet run` (Development uses the dev key + the guard only warns). Uncomment + populate
+// for prod:
+//   var jwtKey = builder.AddParameter("jwt-signing-key", secret: true);   // base64, >= 256-bit, NOT the dev key
+//   ... .WithEnvironment("Jwt__SigningKey", jwtKey)   // on BOTH mediq-api and mediq-gateway below
+
 // The transactional API (system of record). Gets the DB + broker connection strings by service-discovery name.
 var api = builder.AddProject<Projects.mediq_Api>("mediq-api")
     .WithReference(platformDb)
     .WithReference(rabbit)
+    // .WithEnvironment("Jwt__SigningKey", jwtKey)   // prod: inject the real key (see seam above)
     .WithExternalHttpEndpoints();
 
 // YARP gateway — the trust boundary (JWT + rate limiting at the edge), routes to the API.
 builder.AddProject<Projects.mediq_Gateway>("mediq-gateway")
     .WithReference(api)
+    // .WithEnvironment("Jwt__SigningKey", jwtKey)   // prod: inject the real key (see seam above)
     .WithExternalHttpEndpoints();
 
 // Placeholder for a later slice (no consumer yet — deferred):

@@ -32,7 +32,9 @@ namespace mediq.IntegrationTests;
 /// <c>Jwt:SigningKey</c>, issuer <c>docslot-platform</c>, audience <c>docslot-clients</c>) so the gateway's
 /// existing, UNCHANGED edge validation accepts the test tokens — for both the user and the client token shape.
 /// </summary>
-public sealed class GatewayWebAppFactory : WebApplicationFactory<Gateway::Program>, IAsyncLifetime
+// Not sealed: GatewayAuthEdgeTests derives a Production-pinned variant to exercise the JWT prod-guard while
+// reusing this factory's stub downstream + service-discovery shadowing.
+public class GatewayWebAppFactory : WebApplicationFactory<Gateway::Program>, IAsyncLifetime
 {
     // Must match mediq.Gateway/appsettings.json Jwt section (the edge validation config is left untouched).
     public const string Issuer = "docslot-platform";

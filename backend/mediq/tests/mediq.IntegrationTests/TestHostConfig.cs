@@ -21,6 +21,13 @@ internal static class TestHostConfig
     [ModuleInitializer]
     internal static void DisableOutboxBackgroundWorker()
     {
+        // JWT prod-guard exemption for the WHOLE suite. JwtSigningKeyGuard runs at host startup and, outside
+        // Development, throws on the committed dev signing key — but the test factories all carry that dev key
+        // and most boot in Production (default env). Setting Jwt:AllowDevSigningKey=true centrally lets every
+        // test host accept the dev key regardless of environment, so the guard cannot fail their boot. The
+        // dedicated prod-guard test (GatewayAuthEdgeTests) overrides this back to false (+ Production) per-host
+        // via AddInMemoryCollection to assert the throw. (Jwt__AllowDevSigningKey ⇒ Jwt:AllowDevSigningKey.)
+        Environment.SetEnvironmentVariable("Jwt__AllowDevSigningKey", "true");
         Environment.SetEnvironmentVariable("WhatsApp__OutboxWorkerEnabled", "false");
         // Same rationale for the booking maintenance worker: its startup slot-materialize races the
         // slot-generation tests (it would pre-create the very slots a test asserts it created) and adds

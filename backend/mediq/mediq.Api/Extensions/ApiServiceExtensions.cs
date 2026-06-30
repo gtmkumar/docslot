@@ -14,9 +14,11 @@ public static class ApiServiceExtensions
     /// JWT bearer validation with the SAME parameters the gateway uses (drift here is a security hole).
     /// Validates issuer, audience, signing key, lifetime; 30s clock skew.
     /// </summary>
-    // SECURITY TODO (pre-deploy, NOT slice 01): replace symmetric HMAC-SHA256 with RS256/JWKS so the
-    // signing key never leaves the Identity service, and source the key from env/secrets — never the
-    // committed appsettings dev key. Tracked as an audit condition.
+    // SECURITY: the committed dev signing key can no longer reach production — JwtSigningKeyGuard.Validate
+    // (called at host startup in Program.cs) now ENFORCES this, failing closed (throws) outside Development
+    // when the dev key or a sub-256-bit key is configured. Source a real key via Jwt__SigningKey.
+    // SECURITY TODO (still future, external-credential-gated): replace symmetric HMAC-SHA256 with RS256/JWKS so
+    // the signing key never leaves the Identity service, and source it from a real secret store. Audit condition.
     public static IServiceCollection AddPlatformJwtAuth(this IServiceCollection services, IConfiguration config)
     {
         var jwt = config.GetSection(JwtOptions.SectionName).Get<JwtOptions>()
