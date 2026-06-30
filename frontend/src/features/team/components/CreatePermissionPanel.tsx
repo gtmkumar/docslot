@@ -13,7 +13,7 @@
 // new permission appears as a matrix cell.
 
 import { useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { useTranslation } from 'react-i18next';
 import { Info, ShieldAlert } from 'lucide-react';
@@ -56,7 +56,7 @@ export function CreatePermissionPanel({ open, onClose }: { open: boolean; onClos
   // auto preview `<resource>.<action>`; once edited, we stop overwriting it.
   const [keyTouched, setKeyTouched] = useState(false);
 
-  const { register, handleSubmit, watch, setValue, formState } = useForm<PermForm>({
+  const { register, handleSubmit, setValue, formState, control } = useForm<PermForm>({
     defaultValues: { resource: '', action: '', permissionKey: '', scope: 'tenant', description: '', isDangerous: false },
     resolver: async (values) => {
       const parsed = schema.safeParse(values);
@@ -67,9 +67,12 @@ export function CreatePermissionPanel({ open, onClose }: { open: boolean; onClos
     },
   });
 
-  const resource = watch('resource');
-  const action = watch('action');
-  const isDangerous = watch('isDangerous');
+  // useWatch (hook), not watch() (method): keeps these reactive under React Compiler,
+  // which otherwise memoizes the watch() return so the key preview + danger banner go
+  // stale (same root cause as the triage Run button, issue #49).
+  const resource = useWatch({ control, name: 'resource' });
+  const action = useWatch({ control, name: 'action' });
+  const isDangerous = useWatch({ control, name: 'isDangerous' });
 
   // Keep the previewed key in sync with resource+action until the admin edits it.
   const syncKey = (nextResource: string, nextAction: string) => {

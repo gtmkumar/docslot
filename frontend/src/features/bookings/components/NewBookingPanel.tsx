@@ -8,7 +8,7 @@
 // (no double-booking on retry). Footer Back/Continue/Confirm reflects the step.
 
 import { useEffect, useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
@@ -176,16 +176,20 @@ function PatientStepBody({
   onPickDoctor: (doctorId: string) => void;
 }) {
   const { t } = useTranslation();
-  const { register, formState, watch, setValue } = form;
+  const { register, formState, setValue, control } = form;
   const errKey = (k: keyof PatientStep) => {
     const m = formState.errors[k]?.message;
     return m ? t(`newBooking.validation.${m}`) : undefined;
   };
-  const sex = watch('sex');
-  const lang = watch('lang');
+  // useWatch (the HOOK) — not the watch() METHOD: under React Compiler the watch()
+  // return value gets memoized and goes stale, which left the triage `complaint` prop
+  // frozen at '' so the Run-triage button never enabled (issue #49). useWatch is a
+  // proper reactive subscription the compiler handles correctly.
+  const sex = useWatch({ control, name: 'sex' });
+  const lang = useWatch({ control, name: 'lang' });
   // Live complaint (PHI) + age drive triage. Read from the form, not persisted.
-  const reason = watch('reason');
-  const ageRaw = watch('age');
+  const reason = useWatch({ control, name: 'reason' });
+  const ageRaw = useWatch({ control, name: 'age' });
   const ageNum = Number.parseInt(ageRaw, 10);
   const patientAge = Number.isFinite(ageNum) ? ageNum : undefined;
 
