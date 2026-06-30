@@ -147,17 +147,31 @@ export const createPortalBooking = USE_REAL_API ? real.createPortalBooking : moc
 // up per day×time row). Mock serves the prototype deterministic grid unchanged.
 export const getCalendarGrid = USE_REAL_API ? real.getCalendarGrid : mock.getCalendarGrid;
 
-// ── DEVELOPERS / API PLATFORM (Slice 02) — READ LISTS only ────────────────────
+// ── DEVELOPERS / API PLATFORM (Slice 02 + 12) ─────────────────────────────────
 // Live: GET /api-clients, /api-scopes, /webhooks/event-types, and /webhooks
 // (fanned out per client — no list-all endpoint). PLATFORM-ADMIN gated; a
 // tenant_owner gets 403 + no nav entry, so these are only reachable by the
 // platform-admin login in live mode. Mock side reuses the existing lib/mock fns
-// unchanged. DANGEROUS WRITES (register/rotate/createWebhook/status/scopes/
-// rate-limits) are NOT wired — they stay on mock/best-effort regardless of flag.
+// unchanged. WRITES (register/rotate/status/rate-limits/scopes + createWebhook/
+// updateWebhook/retryDelivery) carry the caller's Idempotency-Key; the plaintext
+// client secret / webhook signing secret is returned ONCE on register/rotate/
+// createWebhook and never cached. createWebhook OMITS tenantId from the body —
+// the server binds the tenant from the JWT. Forensic reads (deliveries, request
+// logs) are metadata-only (no payload/secret/PHI).
 export const listApiClients = USE_REAL_API ? real.listApiClients : mock.listApiClients;
 export const listScopes = USE_REAL_API ? real.listScopes : mock.listScopes;
 export const listEventTypes = USE_REAL_API ? real.listEventTypes : mock.listEventTypes;
 export const listWebhooks = USE_REAL_API ? real.listWebhooks : mock.listWebhooks;
+export const listWebhookDeliveries = USE_REAL_API ? real.listWebhookDeliveries : mock.listWebhookDeliveries;
+export const listApiRequestLogs = USE_REAL_API ? real.listApiRequestLogs : mock.listApiRequestLogs;
+export const registerApiClient = USE_REAL_API ? real.registerApiClient : mock.registerApiClient;
+export const rotateClientSecret = USE_REAL_API ? real.rotateClientSecret : mock.rotateClientSecret;
+export const setClientStatus = USE_REAL_API ? real.setClientStatus : mock.setClientStatus;
+export const setClientRateLimits = USE_REAL_API ? real.setClientRateLimits : mock.setClientRateLimits;
+export const setClientScopes = USE_REAL_API ? real.setClientScopes : mock.setClientScopes;
+export const createWebhook = USE_REAL_API ? real.createWebhook : mock.createWebhook;
+export const updateWebhook = USE_REAL_API ? real.updateWebhook : mock.updateWebhook;
+export const retryWebhookDelivery = USE_REAL_API ? real.retryWebhookDelivery : mock.retryWebhookDelivery;
 
 // ── SECURITY & COMPLIANCE (Slice 05) — READ LISTS only ────────────────────────
 // Live: GET /security/{audit-chain/verify, audit-chain/anchors, dpdp/requests,

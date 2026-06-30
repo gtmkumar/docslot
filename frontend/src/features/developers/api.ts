@@ -8,14 +8,20 @@
 // store these results in React Query.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-// READ LISTS that have a LIVE endpoint route through the backend seam (real in
-// live mode, mock by default). Everything else (request logs, deliveries, and all
-// mutations) has no wired live endpoint and stays on the mock seam directly.
-import { listApiClients, listEventTypes, listScopes, listWebhooks } from '@/lib/backend';
+// The developer-portal data fns route through the backend seam (real in live mode,
+// mock by default): the READ LISTS, the forensic reads (request logs, deliveries),
+// AND the WRITES (register/rotate/status/rate-limits/scopes + webhook create/update/
+// retry). Each WRITE carries the caller's Idempotency-Key; the one-time plaintext
+// secret on register/rotate/createWebhook flows straight to the reveal panel and is
+// never cached. `ApiRequestLogFilter` is a type-only import (mock-defined shape).
 import {
   createWebhook,
+  listApiClients,
   listApiRequestLogs,
+  listEventTypes,
+  listScopes,
   listWebhookDeliveries,
+  listWebhooks,
   registerApiClient,
   retryWebhookDelivery,
   rotateClientSecret,
@@ -23,8 +29,8 @@ import {
   setClientScopes,
   setClientStatus,
   updateWebhook,
-  type ApiRequestLogFilter,
-} from '@/lib/mock';
+} from '@/lib/backend';
+import type { ApiRequestLogFilter } from '@/lib/mock';
 import type {
   CreateWebhookRequest,
   RegisterApiClientRequest,

@@ -28,7 +28,9 @@ public sealed class ListScopesQueryHandler(IApiScopeRepository scopes)
 
 // ---- Register client (manual-approval: created inactive + unverified) -----------------------------
 
-public sealed record RegisterApiClientCommand(RegisterApiClientRequest Request) : ICommand<ApiClientSecretResult>;
+// IDoNotCacheResponse: the result carries the plaintext client secret (returned once). It must never be
+// persisted to the plaintext idempotency store now that the portal POSTs this live with an Idempotency-Key.
+public sealed record RegisterApiClientCommand(RegisterApiClientRequest Request) : ICommand<ApiClientSecretResult>, IDoNotCacheResponse;
 
 public sealed class RegisterApiClientValidator : AbstractValidator<RegisterApiClientCommand>
 {
@@ -68,7 +70,8 @@ public sealed class RegisterApiClientCommandHandler(
 
 // ---- Rotate secret -------------------------------------------------------------------------------
 
-public sealed record RotateClientSecretCommand(Guid ClientId) : ICommand<ApiClientSecretResult>;
+// IDoNotCacheResponse: returns the new plaintext secret once — never persist it to the idempotency store.
+public sealed record RotateClientSecretCommand(Guid ClientId) : ICommand<ApiClientSecretResult>, IDoNotCacheResponse;
 
 public sealed class RotateClientSecretCommandHandler(
     IApiClientRepository clients, IPasswordHasher hasher, IAuditTrailWriter audit, ICurrentUserContext ctx)

@@ -17,7 +17,7 @@
 import { ApiError, apiFetch } from '@/lib/api-client';
 import { getSessionSnapshot } from '@/stores/session';
 import { inr, maskPhone } from '@/lib/format';
-import { MockApiError } from '@/lib/mock';
+import { MockApiError, type ApiRequestLogFilter } from '@/lib/mock';
 import {
   AnalyticsDtoSchema,
   AnalyticsSchema,
@@ -27,6 +27,11 @@ import {
   type TriageRequestInput,
   type TriageResult,
   ApiClientSchema,
+  ApiClientMutationResultSchema,
+  ApiClientSecretResultSchema,
+  ApiRequestLogPageSchema,
+  CreateWebhookResultSchema,
+  WebhookDeliverySchema,
   AttributionSchema,
   AuditAnchorSchema,
   AuditChainVerifySchema,
@@ -110,6 +115,15 @@ import {
   type Analytics,
   type AnalyticsDto,
   type ApiClient,
+  type ApiClientMutationResult,
+  type ApiClientSecretResult,
+  type ApiRequestLogPage,
+  type CreateWebhookRequest,
+  type CreateWebhookResult,
+  type RegisterApiClientRequest,
+  type SetClientRateLimitsRequest,
+  type UpdateWebhookRequest,
+  type WebhookDelivery,
   type Attribution,
   type AuditAnchor,
   type AuditChainVerify,
@@ -1509,6 +1523,183 @@ export async function listWebhooks(): Promise<WebhookSubscription[]> {
     ),
   );
   return lists.flat();
+}
+
+// ── DEVELOPERS / API PLATFORM — WRITES + forensic reads (Slice 12) ────────────
+// PLATFORM-ADMIN surface (gated `platform.api_clients.manage`). POSTs/PUTs carry
+// the caller's stable Idempotency-Key. SECRETS (client secret / webhook signing
+// secret) are returned plaintext exactly ONCE on register/rotate/createWebhook and
+// flow straight from the mutation onSuccess into the one-time reveal panel — they
+// are NEVER cached here, written to a query, or logged. Several mutations return
+// 204 No Content; we synthesize the same ApiClientMutationResult shape the mock
+// returns so the (invalidate-only) hooks are mode-blind — that result's `status`
+// is non-load-bearing (the clients list refetch is the source of truth).
+
+/** Register a new client (manual approval → created inactive/unverified). Returns
+ *  the plaintext client secret ONCE. POST /api-clients (201). */
+export async function registerApiClient(
+  req: RegisterApiClientRequest,
+  idempotencyKey: string,
+): Promise<ApiClientSecretResult> {
+  const raw = await apiFetch<unknown>('/api-clients', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      clientCode: req.clientCode,
+      clientName: req.clientName,
+      clientType: req.clientType,
+      ownerEmail: req.ownerEmail,
+      ownerOrganization: req.ownerOrganization ?? null,
+      ownerTenantId: req.ownerTenantId ?? null,
+      purpose: req.purpose,
+    },
+  });
+  return ApiClientSecretResultSchema.parse(raw);
+}
+
+/** Rotate the client secret. Returns the new plaintext secret ONCE.
+ *  POST /api-clients/{clientId}/rotate-secret (200). */
+export async function rotateClientSecret(
+  clientId: string,
+  idempotencyKey: string,
+): Promise<ApiClientSecretResult> {
+  const raw = await apiFetch<unknown>(`/api-clients/${clientId}/rotate-secret`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+  });
+  return ApiClientSecretResultSchema.parse(raw);
+}
+
+/** Approve (verify+activate) / suspend a client. 204 → synthesize the mock's
+ *  mutation result (status computed from the requested isActive/isVerified pair). */
+export async function setClientStatus(
+  clientId: string,
+  next: { isActive: boolean; isVerified: boolean },
+  idempotencyKey: string,
+): Promise<ApiClientMutationResult> {
+  await apiFetch<void>(`/api-clients/${clientId}/status`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: { isActive: next.isActive, isVerified: next.isVerified, reason: null },
+  });
+  return ApiClientMutationResultSchema.parse({
+    clientId,
+    status: clientStatusOf(next.isActive, next.isVerified),
+  });
+}
+
+/** Set per-client rate limits. PUT /api-clients/{clientId}/rate-limits (204).
+ *  Rate limits don't change the client's status, so the synthesized result's
+ *  status is a non-consumed placeholder — the clients list refetch is authoritative. */
+export async function setClientRateLimits(
+  clientId: string,
+  limits: SetClientRateLimitsRequest,
+  idempotencyKey: string,
+): Promise<ApiClientMutationResult> {
+  await apiFetch<void>(`/api-clients/${clientId}/rate-limits`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: {
+      rateLimitPerMinute: limits.rateLimitPerMinute,
+      rateLimitPerDay: limits.rateLimitPerDay,
+      burstLimit: limits.burstLimit,
+    },
+  });
+  return ApiClientMutationResultSchema.parse({ clientId, status: 'approved' });
+}
+
+/** Grant/revoke the client's requestable scope set. PUT /api-clients/{clientId}/scopes
+ *  (204). Scopes don't change status — the synthesized status is a non-consumed
+ *  placeholder (the clients list refetch is authoritative). */
+export async function setClientScopes(
+  clientId: string,
+  scopeKeys: string[],
+  idempotencyKey: string,
+): Promise<ApiClientMutationResult> {
+  await apiFetch<void>(`/api-clients/${clientId}/scopes`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: { scopeKeys },
+  });
+  return ApiClientMutationResultSchema.parse({ clientId, status: 'approved' });
+}
+
+/** Create a webhook subscription. Returns the signing secret ONCE. POST /webhooks
+ *  (201). The server now binds the webhook's tenant from the JWT and IGNORES any
+ *  body tenant_id, so we deliberately OMIT tenantId from the request body. */
+export async function createWebhook(
+  req: CreateWebhookRequest,
+  idempotencyKey: string,
+): Promise<CreateWebhookResult> {
+  const raw = await apiFetch<unknown>('/webhooks', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      clientId: req.clientId,
+      name: req.name,
+      url: req.url,
+      eventTypes: req.eventTypes,
+      secret: req.secret ?? null,
+      maxRetries: req.maxRetries,
+      timeoutSeconds: req.timeoutSeconds,
+    },
+  });
+  return CreateWebhookResultSchema.parse(raw);
+}
+
+/** Update mutable webhook fields (name/url/events/active). PUT /webhooks/{webhookId}
+ *  (204) → return { webhookId } for mock parity (the webhooks list refetches). */
+export async function updateWebhook(
+  webhookId: string,
+  req: UpdateWebhookRequest,
+  idempotencyKey: string,
+): Promise<{ webhookId: string }> {
+  await apiFetch<void>(`/webhooks/${webhookId}`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: {
+      name: req.name ?? null,
+      url: req.url ?? null,
+      eventTypes: req.eventTypes ?? null,
+      isActive: req.isActive ?? null,
+    },
+  });
+  return { webhookId };
+}
+
+/** Delivery attempts for a webhook (newest first, metadata ONLY — no payload/
+ *  secret). GET /webhooks/{webhookId}/deliveries → WebhookDeliveryDto[]. */
+export async function listWebhookDeliveries(webhookId: string): Promise<WebhookDelivery[]> {
+  const raw = await apiFetch<unknown[]>(`/webhooks/${webhookId}/deliveries`);
+  return WebhookDeliverySchema.array().parse(raw);
+}
+
+/** Manually re-enqueue a failed/abandoned delivery. POST /webhooks/deliveries/
+ *  {deliveryId}/retry (Idempotency-Key) → the re-enqueued row (status 'pending',
+ *  attemptCount 0, nextRetryAt null). The API returns 404 (not found / other
+ *  tenant) or 409 (status not retryable / subscription disabled); apiFetch throws
+ *  an ApiError the mutation surfaces honestly (the retry action only appears on
+ *  failed/abandoned rows). */
+export async function retryWebhookDelivery(
+  deliveryId: string,
+  idempotencyKey: string,
+): Promise<WebhookDelivery> {
+  const raw = await apiFetch<unknown>(`/webhooks/deliveries/${deliveryId}/retry`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+  });
+  return WebhookDeliverySchema.parse(raw);
+}
+
+/** Paginated API request log (developers → Logs tab). Metadata ONLY — never
+ *  bodies/headers/IP/PHI. GET /api-requests?clientId=&page=&pageSize=. */
+export async function listApiRequestLogs(filter: ApiRequestLogFilter = {}): Promise<ApiRequestLogPage> {
+  const params = new URLSearchParams();
+  if (filter.clientId) params.set('clientId', filter.clientId);
+  params.set('page', String(filter.page ?? 1));
+  params.set('pageSize', String(filter.pageSize ?? 15));
+  const raw = await apiFetch<unknown>(`/api-requests?${params.toString()}`);
+  return ApiRequestLogPageSchema.parse(raw);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
