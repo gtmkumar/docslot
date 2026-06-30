@@ -5,6 +5,7 @@ using mediq.Api.Authorization;
 using mediq.Application;
 using mediq.Application.Options;
 using mediq.Infrastructure;
+using mediq.ServiceDefaults;
 using mediq.Utilities.Middlewares.ExceptionsMiddleware;
 using Microsoft.AspNetCore.RateLimiting;
 using Serilog;
@@ -90,9 +91,18 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 
+// Fail-fast: refuse to boot with the committed dev JWT key (or a sub-256-bit key) outside Development.
+// Safe-by-default — Development allows the dev key (warns); Production bites. Tests opt in via TestHostConfig.
+JwtSigningKeyGuard.Validate(app.Configuration, app.Environment, app.Logger);
+
 // --- Pipeline order matters ---
 app.UseMiddleware<ExceptionHandler>();   // reuse Utilities global exception → ApiResponse envelope (DRY)
 app.UseCorrelationId();                   // honor/generate X-Correlation-ID, push into log scope
+
+// X-Forwarded-For aware per-IP rate limiting (STRICT default-deny). MUST precede UseRateLimiter so the limiter
+// partitions on the corrected RemoteIpAddress. Empty "ForwardedHeaders" config → XFF ignored → no behavior
+// change (limiter keeps using the raw socket IP). Early in the pipeline so RemoteIpAddress is fixed before use.
+app.UseForwardedHeaders(ForwardedHeadersConfig.Build(app.Configuration, app.Logger));
 
 if (app.Environment.IsDevelopment())
 {
