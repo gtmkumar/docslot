@@ -39,6 +39,33 @@ public interface IWebhookDeliveryStore
 }
 
 /// <summary>
+/// Admin/forensics reads + manual retry over <c>platform_api.webhook_deliveries</c> for the developer portal.
+/// platform_api is NOT RLS-protected (PaaS convention), so tenant isolation is enforced by an EXPLICIT predicate
+/// joined through <c>webhook_subscriptions.tenant_id</c> (webhook_deliveries itself carries no tenant_id). A null
+/// <paramref name="tenantScope"/> = a platform actor without a tenant (super_admin) → sees/acts across tenants;
+/// any non-null scope is matched exactly. The scope is ALWAYS derived from the JWT, never a client input.
+/// </summary>
+public interface IWebhookDeliveryAdminStore
+{
+    /// <summary>Deliveries for one webhook, newest first, capped at <paramref name="take"/>; tenant-scoped via the
+    /// subscription join. Metadata only — never the payload/response body/signature.</summary>
+    Task<IReadOnlyList<WebhookDeliveryDto>> ListByWebhookAsync(Guid webhookId, string? status, int take, Guid? tenantScope, CancellationToken ct);
+
+    /// <summary>The retry pre-check: the delivery's status + its subscription's health, tenant-scoped. Null when
+    /// the delivery does not exist in the caller's tenant scope (→ 404, no existence leak).</summary>
+    Task<RetryCandidate?> GetForRetryAsync(Guid deliveryId, Guid? tenantScope, CancellationToken ct);
+
+    /// <summary>Atomically re-enqueues a dead-lettered/failed delivery: a single conditional UPDATE that flips
+    /// status→'pending' (attempt_count 0, next_retry_at NULL, error/response/signature cleared) ONLY when the row
+    /// is in ('abandoned','failed'), its subscription is active + not auto-disabled, and the tenant scope matches.
+    /// Returns the re-enqueued row, or null when 0 rows matched (raced by the drain, wrong status, or wrong tenant).</summary>
+    Task<WebhookDeliveryDto?> RetryAsync(Guid deliveryId, Guid? tenantScope, CancellationToken ct);
+}
+
+/// <summary>The retry pre-check projection (delivery status + owning subscription health + tenant).</summary>
+public sealed record RetryCandidate(string Status, Guid? TenantId, bool SubscriptionActive, bool SubscriptionAutoDisabled);
+
+/// <summary>
 /// Computes the HMAC-SHA256 signature a subscriber verifies (the canonical signing scheme), and protects
 /// the signing secret at rest.
 /// <para>

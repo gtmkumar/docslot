@@ -384,14 +384,18 @@ export function updateWebhook(
 }
 
 export function retryWebhookDelivery(deliveryId: string, idempotencyKey: string): Promise<WebhookDelivery> {
+  // Mirror the LIVE endpoint's re-enqueued row EXACTLY so flag-off and flag-on
+  // agree and zod parses identically: a manual retry resets the row to a fresh
+  // pending attempt (status 'pending', attemptCount 0, nextRetryAt null) for the
+  // drain to pick up.
   return withIdem(idempotencyKey, () =>
     WebhookDeliverySchema.parse({
       deliveryId,
       webhookId: 'wh-2',
       eventType: 'docslot.report.delivered',
       eventId: crypto.randomUUID(),
-      status: 'processing',
-      attemptCount: 4,
+      status: 'pending',
+      attemptCount: 0,
       responseStatusCode: null,
       responseTimeMs: null,
       errorMessage: null,

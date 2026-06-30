@@ -65,6 +65,23 @@ public sealed class WebhooksController(ICommandDispatcher commands, IQueryDispat
     [ProducesResponseType<IReadOnlyList<Guid>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<Guid>>> Publish([FromBody] PublishEventApiRequest request, CancellationToken ct)
         => Ok(await commands.Send(new PublishEventCommand(request.EventType, request.TenantId, request.PayloadJson), ct));
+
+    /// <summary>Delivery attempts for a webhook (newest first, metadata only) — the developer-portal forensics
+    /// view. Tenant-scoped through the subscription (platform_api is non-RLS). NEVER returns the payload/body/secret.</summary>
+    [HttpGet("{webhookId:guid}/deliveries")]
+    [RequirePermission("platform.api_clients.manage")]
+    [ProducesResponseType<IReadOnlyList<WebhookDeliveryDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<WebhookDeliveryDto>>> Deliveries(
+        Guid webhookId, [FromQuery] string? status, [FromQuery] int take, CancellationToken ct)
+        => Ok(await queries.Query(new ListWebhookDeliveriesQuery(webhookId, status, take <= 0 ? 200 : take), ct));
+
+    /// <summary>Manually re-enqueue a failed/dead-lettered delivery so the drain re-delivers it. 404 if it isn't
+    /// in the caller's tenant scope; 409 if the status isn't retryable or the subscription is inactive/auto-disabled.</summary>
+    [HttpPost("deliveries/{deliveryId:guid}/retry")]
+    [RequirePermission("platform.api_clients.manage")]
+    [ProducesResponseType<WebhookDeliveryDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<WebhookDeliveryDto>> RetryDelivery(Guid deliveryId, CancellationToken ct)
+        => Ok(await commands.Send(new RetryWebhookDeliveryCommand(deliveryId), ct));
 }
 
 /// <summary>API shape for the synthetic publish trigger.</summary>

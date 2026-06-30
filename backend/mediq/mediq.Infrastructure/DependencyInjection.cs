@@ -73,6 +73,8 @@ public static class InfrastructureRegistration
         services.Configure<mediq.Application.Options.WebhookDeliveryOptions>(
             config.GetSection(mediq.Application.Options.WebhookDeliveryOptions.SectionName));
         services.AddScoped<IWebhookDeliveryDrainStore, WebhookDeliveryDrainStore>();
+        // Developer-portal forensics: deliveries list + manual retry (tenant-scoped via the subscription join).
+        services.AddScoped<IWebhookDeliveryAdminStore, WebhookDeliveryAdminStore>();
         services.AddSingleton<IWebhookSigner, WebhookSigner>();
         services.AddHttpClient("webhooks");
         services.AddScoped<IWebhookHttpDispatcher, WebhookHttpDispatcher>();

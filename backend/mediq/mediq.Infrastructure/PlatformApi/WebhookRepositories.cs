@@ -156,3 +156,82 @@ public sealed class WebhookDeliveryStore(PlatformDbContext db) : IWebhookDeliver
     public Task<WebhookDelivery?> GetAsync(Guid deliveryId, CancellationToken ct) =>
         db.WebhookDeliveries.AsNoTracking().FirstOrDefaultAsync(d => d.DeliveryId == deliveryId, ct);
 }
+
+/// <summary>
+/// Admin/forensics reads + manual retry over <c>platform_api.webhook_deliveries</c> (developer portal). Tenant
+/// isolation is by an EXPLICIT predicate joined through <c>webhook_subscriptions.tenant_id</c> (the deliveries
+/// table has no tenant_id); platform_api is non-RLS so this is the sole isolation boundary. Plain app-role SQL
+/// (the blanket platform_api SELECT/UPDATE grant covers it) — no SECURITY DEFINER, no new grant.
+/// </summary>
+public sealed class WebhookDeliveryAdminStore(PlatformDbContext db) : IWebhookDeliveryAdminStore
+{
+    public async Task<IReadOnlyList<WebhookDeliveryDto>> ListByWebhookAsync(
+        Guid webhookId, string? status, int take, Guid? tenantScope, CancellationToken ct) =>
+        await db.Database.SqlQueryRaw<WebhookDeliveryDto>(
+                // Metadata only — payload/response_body/response_headers/signature are NEVER selected.
+                """
+                SELECT d.delivery_id AS "DeliveryId", d.webhook_id AS "WebhookId", d.event_type AS "EventType",
+                       d.event_id AS "EventId", d.status AS "Status", d.attempt_count AS "AttemptCount",
+                       d.response_status_code AS "ResponseStatusCode", d.response_time_ms AS "ResponseTimeMs",
+                       d.error_message AS "ErrorMessage", d.next_retry_at AS "NextRetryAt",
+                       d.created_at AS "CreatedAt", d.delivered_at AS "DeliveredAt"
+                FROM platform_api.webhook_deliveries d
+                JOIN platform_api.webhook_subscriptions s ON s.webhook_id = d.webhook_id
+                WHERE d.webhook_id = @p_webhook
+                  AND (@p_tenant::uuid IS NULL OR s.tenant_id = @p_tenant::uuid)
+                  AND (@p_status::text IS NULL OR d.status = @p_status::text)
+                ORDER BY d.created_at DESC
+                LIMIT @p_take
+                """,
+                new NpgsqlParameter("@p_webhook", webhookId),
+                new NpgsqlParameter("@p_tenant", (object?)tenantScope ?? DBNull.Value),
+                new NpgsqlParameter("@p_status", (object?)status ?? DBNull.Value),
+                new NpgsqlParameter("@p_take", take))
+            .ToListAsync(ct);
+
+    public async Task<RetryCandidate?> GetForRetryAsync(Guid deliveryId, Guid? tenantScope, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<RetryCandidate>(
+                """
+                SELECT d.status AS "Status", s.tenant_id AS "TenantId", s.is_active AS "SubscriptionActive",
+                       (s.auto_disabled_at IS NOT NULL) AS "SubscriptionAutoDisabled"
+                FROM platform_api.webhook_deliveries d
+                JOIN platform_api.webhook_subscriptions s ON s.webhook_id = d.webhook_id
+                WHERE d.delivery_id = @p_delivery
+                  AND (@p_tenant::uuid IS NULL OR s.tenant_id = @p_tenant::uuid)
+                """,
+                new NpgsqlParameter("@p_delivery", deliveryId),
+                new NpgsqlParameter("@p_tenant", (object?)tenantScope ?? DBNull.Value))
+            .ToListAsync(ct);
+        return rows.FirstOrDefault();
+    }
+
+    public async Task<WebhookDeliveryDto?> RetryAsync(Guid deliveryId, Guid? tenantScope, CancellationToken ct)
+    {
+        // ONE atomic conditional UPDATE: the status-IN('abandoned','failed') predicate is the dead-letter gate
+        // (no-op vs success/processing/pending), the subscription join is the tenant + health gate, and a
+        // 0-row result is the single-winner signal (raced by the drain) → the handler maps it to 409.
+        var rows = await db.Database.SqlQueryRaw<WebhookDeliveryDto>(
+                """
+                UPDATE platform_api.webhook_deliveries d
+                SET status = 'pending', attempt_count = 0, next_retry_at = NULL, error_message = NULL,
+                    response_status_code = NULL, response_time_ms = NULL, response_body = NULL,
+                    response_headers = NULL, signature = NULL
+                FROM platform_api.webhook_subscriptions s
+                WHERE d.delivery_id = @p_delivery
+                  AND s.webhook_id = d.webhook_id
+                  AND d.status IN ('abandoned', 'failed')
+                  AND s.is_active AND s.auto_disabled_at IS NULL
+                  AND (@p_tenant::uuid IS NULL OR s.tenant_id = @p_tenant::uuid)
+                RETURNING d.delivery_id AS "DeliveryId", d.webhook_id AS "WebhookId", d.event_type AS "EventType",
+                          d.event_id AS "EventId", d.status AS "Status", d.attempt_count AS "AttemptCount",
+                          d.response_status_code AS "ResponseStatusCode", d.response_time_ms AS "ResponseTimeMs",
+                          d.error_message AS "ErrorMessage", d.next_retry_at AS "NextRetryAt",
+                          d.created_at AS "CreatedAt", d.delivered_at AS "DeliveredAt"
+                """,
+                new NpgsqlParameter("@p_delivery", deliveryId),
+                new NpgsqlParameter("@p_tenant", (object?)tenantScope ?? DBNull.Value))
+            .ToListAsync(ct);
+        return rows.FirstOrDefault();
+    }
+}

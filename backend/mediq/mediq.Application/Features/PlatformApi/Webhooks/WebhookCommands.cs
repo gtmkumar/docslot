@@ -27,7 +27,10 @@ public sealed class ListEventTypesQueryHandler(IEventTypeRepository repo)
 
 // ---- Create subscription -------------------------------------------------------------------------
 
-public sealed record CreateWebhookCommand(CreateWebhookRequest Request) : ICommand<CreateWebhookResult>;
+// IDoNotCacheResponse: the result carries the plaintext signing secret (returned once). The idempotency store
+// is plaintext + not crypto-erasable, so the response must never be persisted there now that the portal POSTs
+// this live with an Idempotency-Key. Parity with the Form-16A / AI PHI commands.
+public sealed record CreateWebhookCommand(CreateWebhookRequest Request) : ICommand<CreateWebhookResult>, IDoNotCacheResponse;
 
 public sealed class CreateWebhookValidator : AbstractValidator<CreateWebhookCommand>
 {
@@ -56,7 +59,12 @@ public sealed class CreateWebhookCommandHandler(
 {
     public async Task<CreateWebhookResult> Handle(CreateWebhookCommand command, CancellationToken ct)
     {
-        var req = command.Request;
+        // Bind the subscription's tenant from the SERVER-SIGNED JWT (impersonation-aware), NEVER the body — a
+        // body-supplied tenant_id would let a tenant-scoped admin mint a webhook for another tenant, and a
+        // tenant_id=NULL "subscribe-to-all" channel could be self-registered (the auditor's standing cross-tenant
+        // egress note). A platform actor with NO tenant (super_admin, not impersonating) still legitimately gets
+        // NULL here — the deliberate platform-owned channel — but it can no longer be forged from a request body.
+        var req = command.Request with { TenantId = ctx.ImpersonatedTenantId ?? ctx.TenantId };
 
         // Every subscribed event type must exist and be active (fail-closed).
         foreach (var et in req.EventTypes)
@@ -152,6 +160,65 @@ public sealed class PublishEventCommandHandler(
             command.PayloadJson, ctx.CorrelationId, clock.UtcNow);
 
         return await publisher.PublishAsync(evt, ct);
+    }
+}
+
+// ---- Delivery forensics list + manual retry (developer portal) -----------------------------------
+
+/// <summary>Deliveries for one webhook (newest first, capped), tenant-scoped through the subscription join.</summary>
+public sealed record ListWebhookDeliveriesQuery(Guid WebhookId, string? Status, int Take)
+    : IQuery<IReadOnlyList<WebhookDeliveryDto>>;
+
+public sealed class ListWebhookDeliveriesQueryHandler(IWebhookDeliveryAdminStore store, ICurrentUserContext ctx)
+    : IQueryHandler<ListWebhookDeliveriesQuery, IReadOnlyList<WebhookDeliveryDto>>
+{
+    public Task<IReadOnlyList<WebhookDeliveryDto>> Handle(ListWebhookDeliveriesQuery q, CancellationToken ct)
+    {
+        // Tenant scope from the JWT only (impersonation-aware); null = a platform actor without a tenant → all.
+        var take = Math.Clamp(q.Take, 1, 200);
+        return store.ListByWebhookAsync(q.WebhookId, NormalizeStatus(q.Status), take, ctx.ImpersonatedTenantId ?? ctx.TenantId, ct);
+    }
+
+    private static string? NormalizeStatus(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToLowerInvariant();
+}
+
+/// <summary>
+/// Manually re-enqueue a dead-lettered ('abandoned') or 'failed' webhook delivery so the drain re-claims it.
+/// Tenant-scoped via the subscription; refuses non-retryable statuses (success/processing/pending → 409) and
+/// inactive/auto-disabled subscriptions (409 — the drain would never re-claim it). Audited (action 'retry').
+/// </summary>
+public sealed record RetryWebhookDeliveryCommand(Guid DeliveryId) : ICommand<WebhookDeliveryDto>;
+
+public sealed class RetryWebhookDeliveryCommandHandler(
+    IWebhookDeliveryAdminStore store, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<RetryWebhookDeliveryCommand, WebhookDeliveryDto>
+{
+    public async Task<WebhookDeliveryDto> Handle(RetryWebhookDeliveryCommand command, CancellationToken ct)
+    {
+        var tenantScope = ctx.ImpersonatedTenantId ?? ctx.TenantId;
+
+        // Pre-check for precise status codes: not-in-tenant → 404 (no existence leak); not-retryable → 409.
+        var candidate = await store.GetForRetryAsync(command.DeliveryId, tenantScope, ct)
+            ?? throw new KeyNotFoundException("Webhook delivery not found.");
+        // A current-state conflict (already delivered / in-flight / already queued, or a disabled subscription the
+        // drain would never re-claim) → 409, distinct from a 404 (not found) and a 422 (malformed request).
+        if (candidate.Status is not ("abandoned" or "failed"))
+            throw new ConflictException(
+                $"Only a failed or dead-lettered delivery can be retried (current status: '{candidate.Status}').");
+        if (!candidate.SubscriptionActive || candidate.SubscriptionAutoDisabled)
+            throw new ConflictException("The webhook subscription is inactive or auto-disabled; reactivate it before retrying.");
+
+        // Single-winner atomic re-enqueue; null = the drain re-claimed it between the pre-check and here → 409.
+        var reEnqueued = await store.RetryAsync(command.DeliveryId, tenantScope, ct)
+            ?? throw new ConflictException("The delivery is no longer retryable (it was re-claimed concurrently).");
+
+        await audit.RecordAsync(new AuditEntry(
+            "retry", "webhook_delivery", reEnqueued.DeliveryId, null, ctx.UserId, candidate.TenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Webhook delivery re-enqueued (was '{candidate.Status}')"), ct);
+
+        return reEnqueued;
     }
 }
 

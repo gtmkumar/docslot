@@ -230,6 +230,244 @@ public sealed class PlatformApiTests(PlatformApiWebAppFactory factory) : IClassF
         }
     }
 
+    // ---- G: webhook deliveries forensics list + manual retry (developer portal, slice 12) --------
+
+    [Fact]
+    public async Task Webhook_Deliveries_List_Returns_Metadata_For_Webhook_Newest_First()
+    {
+        var admin = factory.CreateClient();
+        var adminToken = await AdminLoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
+
+        var create = await admin.PostAsJsonAsync("/api/v1/webhooks", new CreateWebhookRequest(
+            factory.ClientId, TenantId: null, Name: "list-hook", Url: "https://example.test/hook",
+            EventTypes: new[] { "docslot.booking.created" }, Secret: "list-secret-123456", MaxRetries: 3));
+        var created = (await create.Content.ReadFromJsonAsync<CreateWebhookResult>())!;
+        try
+        {
+            await SeedDeliveryAsync(created.WebhookId, "success", attempt: 1);
+            await SeedDeliveryAsync(created.WebhookId, "abandoned", attempt: 4);
+
+            var resp = await admin.GetAsync($"/api/v1/webhooks/{created.WebhookId}/deliveries");
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var rows = (await resp.Content.ReadFromJsonAsync<List<WebhookDeliveryDto>>())!;
+            Assert.Equal(2, rows.Count);
+            Assert.All(rows, r => Assert.Equal(created.WebhookId, r.WebhookId));
+            // Newest-first ordering (the abandoned row was inserted last).
+            Assert.True(rows[0].CreatedAt >= rows[1].CreatedAt);
+            // Metadata only — the JSON envelope never carries the payload/response body/signature.
+            var raw = await resp.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("booking_id", raw);
+            Assert.DoesNotContain("signature", raw, StringComparison.OrdinalIgnoreCase);
+
+            // Status filter narrows the set.
+            var failedOnly = await admin.GetAsync($"/api/v1/webhooks/{created.WebhookId}/deliveries?status=abandoned");
+            var filtered = (await failedOnly.Content.ReadFromJsonAsync<List<WebhookDeliveryDto>>())!;
+            Assert.Single(filtered);
+            Assert.Equal("abandoned", filtered[0].Status);
+        }
+        finally { await DeleteWebhookAsync(created.WebhookId); }
+    }
+
+    [Fact]
+    public async Task Webhook_Delivery_Retry_ReEnqueues_DeadLetter_And_Guards_State()
+    {
+        var admin = factory.CreateClient();
+        var adminToken = await AdminLoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
+
+        var create = await admin.PostAsJsonAsync("/api/v1/webhooks", new CreateWebhookRequest(
+            factory.ClientId, TenantId: null, Name: "retry-hook", Url: "https://example.test/hook",
+            EventTypes: new[] { "docslot.booking.created" }, Secret: "retry-secret-123456", MaxRetries: 3));
+        var created = (await create.Content.ReadFromJsonAsync<CreateWebhookResult>())!;
+        try
+        {
+            // (a) An ABANDONED (dead-lettered) delivery re-enqueues → 200, status 'pending', attempt_count reset.
+            var abandoned = await SeedDeliveryAsync(created.WebhookId, "abandoned", attempt: 4);
+            var retry = await admin.PostAsync($"/api/v1/webhooks/deliveries/{abandoned}/retry", null);
+            Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+            var dto = (await retry.Content.ReadFromJsonAsync<WebhookDeliveryDto>())!;
+            Assert.Equal("pending", dto.Status);
+            Assert.Equal(0, dto.AttemptCount);
+            Assert.Null(dto.NextRetryAt);
+            Assert.Equal("pending", await ScalarStrAsync("SELECT status FROM platform_api.webhook_deliveries WHERE delivery_id=@d", ("d", abandoned)));
+            // The retry was audited.
+            Assert.True(await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM platform.audit_log WHERE resource_type='webhook_delivery' AND action='retry' AND resource_id=@d", ("d", abandoned)) >= 1);
+
+            // (b) A 'failed' delivery is also retryable.
+            var failed = await SeedDeliveryAsync(created.WebhookId, "failed", attempt: 1);
+            Assert.Equal(HttpStatusCode.OK, (await admin.PostAsync($"/api/v1/webhooks/deliveries/{failed}/retry", null)).StatusCode);
+
+            // (c) A 'success' delivery is NOT retryable (no double-delivery) → 409.
+            var success = await SeedDeliveryAsync(created.WebhookId, "success", attempt: 1);
+            Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync($"/api/v1/webhooks/deliveries/{success}/retry", null)).StatusCode);
+
+            // (d) An in-flight 'processing' delivery is NOT retryable (lease race) → 409.
+            var processing = await SeedDeliveryAsync(created.WebhookId, "processing", attempt: 1);
+            Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync($"/api/v1/webhooks/deliveries/{processing}/retry", null)).StatusCode);
+
+            // (e) An unknown delivery → 404.
+            Assert.Equal(HttpStatusCode.NotFound, (await admin.PostAsync($"/api/v1/webhooks/deliveries/{Guid.NewGuid()}/retry", null)).StatusCode);
+        }
+        finally { await DeleteWebhookAsync(created.WebhookId); }
+    }
+
+    [Fact]
+    public async Task Webhook_Delivery_Retry_Refused_When_Subscription_AutoDisabled()
+    {
+        var admin = factory.CreateClient();
+        var adminToken = await AdminLoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
+
+        var create = await admin.PostAsJsonAsync("/api/v1/webhooks", new CreateWebhookRequest(
+            factory.ClientId, TenantId: null, Name: "disabled-hook", Url: "https://example.test/hook",
+            EventTypes: new[] { "docslot.booking.created" }, Secret: "disabled-secret-123456", MaxRetries: 3));
+        var created = (await create.Content.ReadFromJsonAsync<CreateWebhookResult>())!;
+        try
+        {
+            var abandoned = await SeedDeliveryAsync(created.WebhookId, "abandoned", attempt: 4);
+            await ExecAsync("UPDATE platform_api.webhook_subscriptions SET auto_disabled_at = NOW() WHERE webhook_id=@w", ("w", created.WebhookId));
+
+            // The drain would never re-claim a delivery on an auto-disabled subscription → refuse the retry (409).
+            Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync($"/api/v1/webhooks/deliveries/{abandoned}/retry", null)).StatusCode);
+            Assert.Equal("abandoned", await ScalarStrAsync("SELECT status FROM platform_api.webhook_deliveries WHERE delivery_id=@d", ("d", abandoned)));
+        }
+        finally { await DeleteWebhookAsync(created.WebhookId); }
+    }
+
+    [Fact]
+    public async Task Webhook_Delivery_AdminStore_Is_Tenant_Scoped_Across_Tenants()
+    {
+        // platform.api_clients.manage is platform-level (super_admin → tenantScope null → sees all), so the
+        // tenant predicate is proven at the STORE level: a scope of tenant A must NOT see/retry tenant B's rows.
+        var tenantA = Guid.NewGuid();
+        var tenantB = Guid.NewGuid();
+        var (whA, delA) = (Guid.NewGuid(), Guid.NewGuid());
+        var (whB, delB) = (Guid.NewGuid(), Guid.NewGuid());
+        try
+        {
+            foreach (var (tid, code) in new[] { (tenantA, "a"), (tenantB, "b") })
+                await ExecAsync(
+                    """
+                    INSERT INTO platform.tenants (tenant_id, tenant_code, legal_name, display_name, tenant_type, primary_email, primary_phone, status)
+                    VALUES (@id, @code, 'Slice12', 'Slice12', 'hospital', @code||'@s12.test', '+919600000000', 'active')
+                    """, ("id", tid), ("code", $"s12-{code}-{tid.ToString()[..8]}"));
+            await SeedTenantWebhookWithDeliveryAsync(whA, factory.ClientId, tenantA, delA, "abandoned");
+            await SeedTenantWebhookWithDeliveryAsync(whB, factory.ClientId, tenantB, delB, "abandoned");
+
+            using var scope = factory.Services.CreateScope();
+            var store = scope.ServiceProvider.GetRequiredService<IWebhookDeliveryAdminStore>();
+
+            // List: scoped to A sees A's delivery, NOT B's.
+            Assert.Single(await store.ListByWebhookAsync(whA, null, 200, tenantA, default));
+            Assert.Empty(await store.ListByWebhookAsync(whB, null, 200, tenantA, default));   // cross-tenant excluded
+            // Retry/pre-check: a tenant-A scope cannot reach B's delivery (→ would be 404 / no re-enqueue).
+            Assert.Null(await store.GetForRetryAsync(delB, tenantA, default));
+            Assert.Null(await store.RetryAsync(delB, tenantA, default));
+            Assert.Equal("abandoned", await ScalarStrAsync("SELECT status FROM platform_api.webhook_deliveries WHERE delivery_id=@d", ("d", delB)));
+            // Positive control: tenant-B scope CAN re-enqueue B's own delivery.
+            Assert.NotNull(await store.RetryAsync(delB, tenantB, default));
+            Assert.Equal("pending", await ScalarStrAsync("SELECT status FROM platform_api.webhook_deliveries WHERE delivery_id=@d", ("d", delB)));
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform_api.webhook_deliveries WHERE webhook_id IN (@a,@b)", ("a", whA), ("b", whB));
+            await ExecAsync("DELETE FROM platform_api.webhook_subscriptions WHERE webhook_id IN (@a,@b)", ("a", whA), ("b", whB));
+            await ExecAsync("UPDATE platform.tenants SET deleted_at=NOW(), status='archived' WHERE tenant_id IN (@a,@b)", ("a", tenantA), ("b", tenantB));
+        }
+    }
+
+    [Fact]
+    public async Task CreateWebhook_Binds_Tenant_From_Jwt_Ignoring_Body_TenantId()
+    {
+        var admin = factory.CreateClient();   // super_admin, no tenant → JWT tenant is NULL
+        var adminToken = await AdminLoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
+
+        // The body tries to forge a tenant_id; the handler MUST ignore it and bind from the JWT (null here).
+        var forged = Guid.NewGuid();
+        var create = await admin.PostAsJsonAsync("/api/v1/webhooks", new CreateWebhookRequest(
+            factory.ClientId, TenantId: forged, Name: "bind-hook", Url: "https://example.test/hook",
+            EventTypes: new[] { "docslot.booking.created" }, Secret: "bind-secret-123456", MaxRetries: 3));
+        var created = (await create.Content.ReadFromJsonAsync<CreateWebhookResult>())!;
+        try
+        {
+            // The stored tenant_id is NULL (from the JWT), NOT the forged body value.
+            Assert.Null(await ScalarStrAsync("SELECT tenant_id::text FROM platform_api.webhook_subscriptions WHERE webhook_id=@w", ("w", created.WebhookId)));
+        }
+        finally { await DeleteWebhookAsync(created.WebhookId); }
+    }
+
+    [Fact]
+    public async Task CreateWebhook_Plaintext_Secret_Is_Not_Persisted_To_Idempotency_Store()
+    {
+        var admin = factory.CreateClient();
+        var adminToken = await AdminLoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", adminToken.AccessToken);
+
+        const string secret = "donotcache-secret-abcdef-1234567890";
+        var idemKey = $"slice12-idem-{Guid.NewGuid():N}";
+        var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/webhooks")
+        {
+            Content = JsonContent.Create(new CreateWebhookRequest(
+                factory.ClientId, TenantId: null, Name: "idem-hook", Url: "https://example.test/hook",
+                EventTypes: new[] { "docslot.booking.created" }, Secret: secret, MaxRetries: 3)),
+        };
+        req.Headers.Add("Idempotency-Key", idemKey);
+        var resp = await admin.SendAsync(req);
+        var created = (await resp.Content.ReadFromJsonAsync<CreateWebhookResult>())!;
+        try
+        {
+            Assert.Equal(secret, created.SigningSecret);   // returned plaintext once, to the caller
+            // IDoNotCacheResponse bypasses the idempotency store entirely → NO row for this key, and the
+            // plaintext secret is nowhere in the (plaintext) idempotency table.
+            Assert.Equal(0, await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM platform.idempotency_keys WHERE idempotency_key=@k", ("k", idemKey)));
+            Assert.Equal(0, await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM platform.idempotency_keys WHERE response_payload LIKE @s", ("s", $"%{secret}%")));
+        }
+        finally { await DeleteWebhookAsync(created.WebhookId); }
+    }
+
+    /// <summary>Seeds a delivery row directly in a chosen terminal/in-flight status (for the list/retry tests).</summary>
+    private static async Task<Guid> SeedDeliveryAsync(Guid webhookId, string status, short attempt)
+    {
+        var id = Guid.NewGuid();
+        await ExecAsync(
+            """
+            INSERT INTO platform_api.webhook_deliveries
+                (delivery_id, webhook_id, event_type, event_id, payload, status, attempt_count, created_at,
+                 next_retry_at, delivered_at)
+            VALUES (@id, @w, 'docslot.booking.created', @eid, '{"booking_id":"seed"}'::jsonb, @st, @att, NOW(),
+                    CASE WHEN @st='processing' THEN NOW() + INTERVAL '5 min' ELSE NULL END,
+                    CASE WHEN @st='success' THEN NOW() ELSE NULL END)
+            """,
+            ("id", id), ("w", webhookId), ("eid", Guid.NewGuid()), ("st", status), ("att", (int)attempt));
+        return id;
+    }
+
+    /// <summary>Seeds a tenant-scoped webhook subscription + one delivery (for the store-level tenant-scope test).</summary>
+    private static async Task SeedTenantWebhookWithDeliveryAsync(Guid webhookId, Guid clientId, Guid tenantId, Guid deliveryId, string status)
+    {
+        await ExecAsync(
+            """
+            INSERT INTO platform_api.webhook_subscriptions
+                (webhook_id, client_id, tenant_id, name, url, secret_hash, event_types, max_retries,
+                 timeout_seconds, is_active, created_at, updated_at)
+            VALUES (@w, @c, @t, 'tenant-hook', 'https://example.test/hook', 'enc', ARRAY['docslot.booking.created'],
+                    3, 30, true, NOW(), NOW())
+            """,
+            ("w", webhookId), ("c", clientId), ("t", tenantId));
+        await ExecAsync(
+            """
+            INSERT INTO platform_api.webhook_deliveries
+                (delivery_id, webhook_id, event_type, event_id, payload, status, attempt_count, created_at)
+            VALUES (@id, @w, 'docslot.booking.created', @eid, '{"booking_id":"seed"}'::jsonb, @st, 4, NOW())
+            """,
+            ("id", deliveryId), ("w", webhookId), ("eid", Guid.NewGuid()), ("st", status));
+    }
+
     // ---- F: per-client API rate limiting (api_clients.rate_limit_per_minute / _per_day → 429) ----
 
     [Fact]
