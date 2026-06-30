@@ -13,6 +13,7 @@ import { iconForKey } from '@/components/ui/icons';
 import { useBadges, useMenus } from '@/features/navigation/api';
 import { useLogout } from '@/features/auth/api';
 import { ORGS } from '@/lib/data';
+import { USE_REAL_API } from '@/lib/backend/flag';
 import { useSession } from '@/stores/session';
 import { useUI } from '@/stores/ui';
 import type { MenuNode } from '@/lib/mock/contracts';
@@ -27,6 +28,10 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
   const isHindi = i18n.language === 'hi';
   const navigate = useNavigate();
   const user = useSession((s) => s.user);
+  const tenantId = useSession((s) => s.tenantId);
+  // The real active tenant's display name (session source of truth). Used by the org switcher in
+  // real-API mode instead of the mock ORGS list. (#59)
+  const activeTenantName = user?.tenants.find((tn) => tn.tenantId === tenantId)?.displayName;
   const doLogout = useLogout();
 
   const onSignOut = async () => {
@@ -54,23 +59,36 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
         </div>
       </div>
 
-      {/* Org switcher */}
+      {/* Org switcher — REAL mode shows the session's active tenant (read-only): tenant-switching
+          needs a token re-mint flow that isn't wired yet AND the gateway strips X-Tenant-Id, so a
+          dropdown of fake/mock orgs disconnected from the JWT tenant would mislead. MOCK mode keeps
+          the demo org picker. (#59) */}
       <div className="px-3 pb-3">
         <label htmlFor="org-switcher" className="sr-only">
           {t('topbar.breadcrumbReception')}
         </label>
-        <select
-          id="org-switcher"
-          value={orgId}
-          onChange={(e) => setOrg(e.target.value)}
-          className="w-full rounded-[var(--radius-sm)] border border-line bg-surface-sunk px-2.5 py-2 text-[13px] font-medium text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary-soft"
-        >
-          {ORGS.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.name}
-            </option>
-          ))}
-        </select>
+        {USE_REAL_API ? (
+          <div
+            id="org-switcher"
+            className="w-full truncate rounded-[var(--radius-sm)] border border-line bg-surface-sunk px-2.5 py-2 text-[13px] font-medium text-ink"
+            title={activeTenantName ?? undefined}
+          >
+            {activeTenantName ?? '—'}
+          </div>
+        ) : (
+          <select
+            id="org-switcher"
+            value={orgId}
+            onChange={(e) => setOrg(e.target.value)}
+            className="w-full rounded-[var(--radius-sm)] border border-line bg-surface-sunk px-2.5 py-2 text-[13px] font-medium text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary-soft"
+          >
+            {ORGS.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.name}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* Workspace nav — data-driven */}
@@ -90,9 +108,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
               <NavItem
                 key={node.key}
                 node={node}
-                active={node.route === pathname}
+                pathname={pathname}
+                badges={badges}
                 isHindi={isHindi}
-                badge={node.badgeSource ? badges?.[node.badgeSource] : undefined}
                 onNavigate={onNavigate}
               />
             ))}
@@ -140,51 +158,80 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
 
 function NavItem({
   node,
-  active,
+  pathname,
+  badges,
   isHindi,
-  badge,
   onNavigate,
 }: {
   node: MenuNode;
-  active: boolean;
+  pathname: string;
+  badges: Record<string, number> | undefined;
   isHindi: boolean;
-  badge: number | undefined;
   onNavigate?: () => void;
 }) {
   // icon/labelHi are nullable on the wire; fall back to a default glyph and to
   // the English label when the Hindi string is absent.
   const Icon = iconForKey(node.icon ?? '');
   const label = (isHindi ? node.labelHi : node.label) ?? node.label;
-  // Section headers (server-decided) or routeless nodes render as group labels.
+  const active = node.route === pathname;
+  const badge = node.badgeSource ? badges?.[node.badgeSource] : undefined;
+
+  // /me/menus returns a nested parent→children tree; render children recursively under their
+  // parent (indented) so child menu nodes are not silently dropped from navigation (#59).
+  const childItems =
+    node.children && node.children.length > 0 ? (
+      <li>
+        <ul className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
+          {node.children.map((child) => (
+            <NavItem
+              key={child.key}
+              node={child}
+              pathname={pathname}
+              badges={badges}
+              isHindi={isHindi}
+              onNavigate={onNavigate}
+            />
+          ))}
+        </ul>
+      </li>
+    ) : null;
+
+  // Section headers (server-decided) or routeless nodes render as group labels (+ any children).
   if (node.isSectionHeader || !node.route) {
     return (
-      <li className="px-1 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-2">{label}</li>
+      <>
+        <li className="px-1 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-2">{label}</li>
+        {childItems}
+      </>
     );
   }
   return (
-    <li>
-      <Link
-        to={node.route}
-        onClick={onNavigate}
-        className={[
-          'flex items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-sm transition-colors',
-          active ? 'bg-primary text-bg' : 'text-ink hover:bg-surface-sunk',
-          isHindi ? 'deva' : '',
-        ].join(' ')}
-      >
-        <Icon size={17} aria-hidden="true" />
-        <span className="flex-1 truncate">{label}</span>
-        {badge ? (
-          <span
-            className={[
-              'inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold',
-              active ? 'bg-bg/20 text-bg' : 'bg-accent-soft text-accent',
-            ].join(' ')}
-          >
-            {badge}
-          </span>
-        ) : null}
-      </Link>
-    </li>
+    <>
+      <li>
+        <Link
+          to={node.route}
+          onClick={onNavigate}
+          className={[
+            'flex items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-sm transition-colors',
+            active ? 'bg-primary text-bg' : 'text-ink hover:bg-surface-sunk',
+            isHindi ? 'deva' : '',
+          ].join(' ')}
+        >
+          <Icon size={17} aria-hidden="true" />
+          <span className="flex-1 truncate">{label}</span>
+          {badge ? (
+            <span
+              className={[
+                'inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold',
+                active ? 'bg-bg/20 text-bg' : 'bg-accent-soft text-accent',
+              ].join(' ')}
+            >
+              {badge}
+            </span>
+          ) : null}
+        </Link>
+      </li>
+      {childItems}
+    </>
   );
 }
