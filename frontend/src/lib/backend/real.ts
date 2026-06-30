@@ -413,7 +413,7 @@ export async function listBookings(): Promise<BookingRow[]> {
     BookingRowSchema.parse({
       id: d.bookingId,
       token: d.tokenNumber ?? 0,
-      patient: d.patientDisplayName,
+      patient: d.patientDisplayName ?? '—',
       // Server already masks; fall back to a safe placeholder if absent.
       maskedPhone: d.maskedPhone ?? '+91 ····· ·····',
       doctorName: d.doctorName ?? '—',
@@ -460,7 +460,7 @@ export async function getBooking(bookingId: string): Promise<Booking> {
   return {
     id: d.bookingId,
     token: d.tokenNumber ?? 0,
-    patient: d.patientDisplayName,
+    patient: d.patientDisplayName ?? '—',
     // Detail endpoint is masked-phone only (DPDP) — the panel renders this as-is.
     phone: d.maskedPhone ?? '+91 ····· ·····',
     age: d.age ?? 0,
@@ -560,7 +560,7 @@ export async function listPatients(): Promise<PatientRow[]> {
   const dtos = PatientListItemDtoSchema.array().parse(raw);
   return dtos.map((d) => ({
     id: d.patientId,
-    name: d.fullName,
+    name: d.fullName ?? '—',
     // Server already masks; mask again defensively only if a raw number slipped.
     maskedPhone: d.maskedPhone ? d.maskedPhone : maskPhone('+91 00000 00000'),
     age: d.age,
@@ -2200,15 +2200,30 @@ export async function listPrescriptions(
   purpose: string | undefined,
 ): Promise<PrescriptionListItem[]> {
   const raw = await apiFetch<unknown[]>(`/patients/${patientId}/prescriptions`, { purposeOfUse: purpose });
-  return PrescriptionListItemSchema.array().parse(raw);
+  // PrescriptionListItemDto has no DoctorName until the #53 backend half lands — coalesce so the list
+  // renders (shows '—' until the join is added); the schema keeps doctorName a string.
+  const rows = (raw as Record<string, unknown>[]).map((r) => ({
+    ...r,
+    doctorName: (r.doctorName as string | null | undefined) ?? '—',
+  }));
+  return PrescriptionListItemSchema.array().parse(rows);
 }
 
 export async function getPrescription(
   prescriptionId: string,
   purpose: string | undefined,
 ): Promise<PrescriptionDetail> {
-  const raw = await apiFetch<unknown>(`/prescriptions/${prescriptionId}`, { purposeOfUse: purpose });
-  return PrescriptionDetailSchema.parse(raw);
+  const raw = (await apiFetch<unknown>(`/prescriptions/${prescriptionId}`, { purposeOfUse: purpose })) as Record<string, unknown>;
+  // PrescriptionDto sends medicationsJson (a string) and — until the #53 backend half — no doctorName.
+  // Parse the JSON into the medications array and coalesce the name so the detail renders.
+  return PrescriptionDetailSchema.parse({
+    ...raw,
+    doctorName: (raw.doctorName as string | null | undefined) ?? '—',
+    medications:
+      typeof raw.medicationsJson === 'string' && raw.medicationsJson.trim()
+        ? JSON.parse(raw.medicationsJson)
+        : (raw.medications ?? []),
+  });
 }
 
 export async function issuePrescription(
@@ -2243,8 +2258,17 @@ export async function listLabReports(
 }
 
 export async function getLabReport(reportId: string, purpose: string | undefined): Promise<LabReportDetail> {
-  const raw = await apiFetch<unknown>(`/lab-reports/${reportId}`, { purposeOfUse: purpose });
-  return LabReportDetailSchema.parse(raw);
+  const raw = (await apiFetch<unknown>(`/lab-reports/${reportId}`, { purposeOfUse: purpose })) as Record<string, unknown>;
+  // LabReportDto sends structuredResultsJson (a string) + testId (no testName until the #53 backend
+  // half). Parse the JSON into the results array and coalesce a test name so the detail renders.
+  return LabReportDetailSchema.parse({
+    ...raw,
+    testName: (raw.testName as string | null | undefined) ?? 'Lab report',
+    results:
+      typeof raw.structuredResultsJson === 'string' && raw.structuredResultsJson.trim()
+        ? JSON.parse(raw.structuredResultsJson)
+        : (raw.results ?? []),
+  });
 }
 
 export async function uploadLabReport(

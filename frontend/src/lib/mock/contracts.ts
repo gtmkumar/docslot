@@ -1034,7 +1034,7 @@ export const DpdpRequestSchema = z.object({
   requestId: z.string(),
   kind: z.enum(['export', 'erasure', 'correction']),
   subjectMaskedPhone: z.string(),
-  status: z.enum(['pending', 'processing', 'completed', 'rejected']),
+  status: z.string(), // widened: SecurityController passes the raw DB status; the CHECK allows more values (#53)
   scope: z.string(),
   reason: z.string().nullable(),
   gracePeriodEndsAt: z.string().nullable(),
@@ -1192,7 +1192,7 @@ export const LabReportListItemSchema = z.object({
   reportId: z.string(),
   reportNumber: z.string().nullable(),
   testName: z.string(),
-  status: z.enum(['pending', 'delivered']),
+  status: z.string(), // DB CHECK allows pending/processing/ready/delivered/cancelled — widened from a 2-value enum (#53)
   hasCriticalFindings: z.boolean(),
   createdAt: z.string(),
 });
@@ -1216,7 +1216,7 @@ export const LabReportDetailSchema = z.object({
   testName: z.string(),
   fileName: z.string().nullable(),
   results: z.array(LabResultRowSchema),
-  status: z.enum(['pending', 'delivered']),
+  status: z.string(), // DB CHECK allows pending/processing/ready/delivered/cancelled — widened from a 2-value enum (#53)
   hasCriticalFindings: z.boolean(),
   createdAt: z.string(),
 });
@@ -1844,7 +1844,9 @@ export const BookingListItemDtoSchema = z.object({
   bookingId: z.string(),
   bookingNumber: z.string().nullable(),
   tokenNumber: z.number().nullable(),
-  patientDisplayName: z.string(),
+  // Nullable: COALESCE(patient_name_at_booking, full_name) — both columns are nullable
+  // (WhatsApp-first phone identity), so a nameless booking sends null. Adapter coalesces. (#53)
+  patientDisplayName: z.string().nullable(),
   maskedPhone: z.string().nullable(),
   age: z.number().nullable(),
   gender: z.union([z.number(), z.string()]).nullable(),
@@ -1873,7 +1875,9 @@ export type BookingListItemDto = z.infer<typeof BookingListItemDtoSchema>;
 /** `GET /api/v1/patients` row. Mirrors PatientListItemDto. PHI: maskedPhone only. */
 export const PatientListItemDtoSchema = z.object({
   patientId: z.string(),
-  fullName: z.string(),
+  // Nullable: docslot.patients.full_name is nullable (phone is the global identity);
+  // a patient who never gave a name sends null. Adapter coalesces. (#53)
+  fullName: z.string().nullable(),
   maskedPhone: z.string().nullable(),
   age: z.number().nullable(),
   gender: z.string().nullable(),
