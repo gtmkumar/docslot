@@ -21,4 +21,12 @@ public interface IIamReadService
 
     /// <summary>The effective permission set for a user in a tenant — delegates to <c>resolve_user_permissions</c>.</summary>
     Task<EffectiveAccessDto> GetEffectiveAccessAsync(Guid userId, Guid? tenantId, CancellationToken ct);
+
+    /// <summary>A user's effective permissions WITH source attribution (role | override_grant), from
+    /// <c>platform.v_user_effective_permissions</c>. Plain request-tx read so RLS scopes the underlying tables.</summary>
+    Task<IReadOnlyList<EffectivePermissionDto>> GetEffectivePermissionsAsync(Guid userId, Guid? tenantId, CancellationToken ct);
+
+    /// <summary>A user's currently-effective per-tenant permission overrides (deny-wins, time-boxed). Plain
+    /// request-tx read so the <c>upo_read</c> RLS policy bounds it to the caller's tenant.</summary>
+    Task<IReadOnlyList<UserPermissionOverrideDto>> ListUserOverridesAsync(Guid userId, Guid? tenantId, CancellationToken ct);
 }

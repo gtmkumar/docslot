@@ -554,6 +554,12 @@ export const RoleSchema = z.object({
 });
 export type Role = z.infer<typeof RoleSchema>;
 
+/** `POST /api/v1/roles` result. Mirrors CreateRoleResult — the new role's id. The
+ *  create DTO is EMPTY-role only (no permissionKeys); initial grants are attached
+ *  afterwards via the per-grant guarded /iam/roles/{id}/permissions/{permId} endpoint. */
+export const CreateRoleResultSchema = z.object({ roleId: z.string() });
+export type CreateRoleResult = z.infer<typeof CreateRoleResultSchema>;
+
 /** A permission in the registry (for role/override pickers). Mirrors platform.permissions. */
 export const PermissionDefSchema = z.object({
   permissionKey: z.string(),

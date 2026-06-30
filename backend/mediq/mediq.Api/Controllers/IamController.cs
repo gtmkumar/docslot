@@ -129,4 +129,23 @@ public sealed class IamController(ICommandDispatcher commands, IQueryDispatcher 
     public async Task<ActionResult<EffectiveAccessDto>> GetEffectiveAccess(
         Guid userId, [FromQuery] Guid? tenantId = null, CancellationToken ct = default)
         => Ok(await queries.Query(new GetEffectiveAccessQuery(userId, tenantId), ct));
+
+    /// <summary>A user's effective permissions WITH source attribution (role | override_grant) — the
+    /// "why does this user have X?" explainer. Same read plane as effective-access (<c>tenant.users.read</c>).</summary>
+    [HttpGet("users/{userId:guid}/effective-permissions")]
+    [RequirePermission("tenant.users.read")]
+    [ProducesResponseType<IReadOnlyList<EffectivePermissionDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<EffectivePermissionDto>>> GetEffectivePermissions(
+        Guid userId, [FromQuery] Guid? tenantId = null, CancellationToken ct = default)
+        => Ok(await queries.Query(new GetEffectivePermissionsQuery(userId, tenantId), ct));
+
+    /// <summary>A user's currently-effective per-user permission overrides (deny-wins, time-boxed). Gated by the
+    /// purpose-built <c>platform.overrides.read</c> — read authority distinct from the dangerous
+    /// <c>platform.overrides.grant</c> (SoD). RLS bounds the result to the caller's tenant.</summary>
+    [HttpGet("users/{userId:guid}/overrides")]
+    [RequirePermission("platform.overrides.read")]
+    [ProducesResponseType<IReadOnlyList<UserPermissionOverrideDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<UserPermissionOverrideDto>>> ListUserOverrides(
+        Guid userId, [FromQuery] Guid? tenantId = null, CancellationToken ct = default)
+        => Ok(await queries.Query(new ListUserOverridesQuery(userId, tenantId), ct));
 }

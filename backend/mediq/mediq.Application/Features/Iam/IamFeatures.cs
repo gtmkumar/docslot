@@ -58,6 +58,26 @@ public sealed class GetEffectiveAccessQueryHandler(IIamReadService iam, ICurrent
         => iam.GetEffectiveAccessAsync(query.UserId, query.TenantId ?? ctx.TenantId, ct);
 }
 
+/// <summary>A user's effective permissions WITH source attribution (role | override_grant) for the explainer.</summary>
+public sealed record GetEffectivePermissionsQuery(Guid UserId, Guid? TenantId) : IQuery<IReadOnlyList<EffectivePermissionDto>>;
+
+public sealed class GetEffectivePermissionsQueryHandler(IIamReadService iam, ICurrentUserContext ctx)
+    : IQueryHandler<GetEffectivePermissionsQuery, IReadOnlyList<EffectivePermissionDto>>
+{
+    public Task<IReadOnlyList<EffectivePermissionDto>> Handle(GetEffectivePermissionsQuery query, CancellationToken ct)
+        => iam.GetEffectivePermissionsAsync(query.UserId, query.TenantId ?? ctx.TenantId, ct);
+}
+
+/// <summary>A user's currently-effective per-user permission overrides (deny-wins, time-boxed).</summary>
+public sealed record ListUserOverridesQuery(Guid UserId, Guid? TenantId) : IQuery<IReadOnlyList<UserPermissionOverrideDto>>;
+
+public sealed class ListUserOverridesQueryHandler(IIamReadService iam, ICurrentUserContext ctx)
+    : IQueryHandler<ListUserOverridesQuery, IReadOnlyList<UserPermissionOverrideDto>>
+{
+    public Task<IReadOnlyList<UserPermissionOverrideDto>> Handle(ListUserOverridesQuery query, CancellationToken ct)
+        => iam.ListUserOverridesAsync(query.UserId, query.TenantId ?? ctx.TenantId, ct);
+}
+
 // ---- Grant a permission to a role (matrix checkbox ON) -------------------------------------------
 
 public sealed record GrantRolePermissionCommand(Guid RoleId, Guid PermissionId, Guid? TenantId, bool Grantable)

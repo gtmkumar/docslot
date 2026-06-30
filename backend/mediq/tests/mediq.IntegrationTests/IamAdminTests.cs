@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using mediq.SharedDataModel.Docslot.Admin;
 using mediq.SharedDataModel.Docslot.Auth;
 using mediq.SharedDataModel.Docslot.Iam;
+using Npgsql;
 using Xunit;
 
 namespace mediq.IntegrationTests;
@@ -335,6 +336,143 @@ public sealed class IamAdminTests(IamAdminWebAppFactory factory) : IClassFixture
     }
 
     // ---- helpers ----------------------------------------------------------------------------------
+
+    // ---- Slice 13: effective-permissions (attributed) + user-overrides list -----------------------
+
+    [Fact]
+    public async Task GetEffectivePermissions_Attributes_Role_And_OverrideGrant_And_Honors_DenyWins()
+    {
+        var client = await AuthedClientAsync(factory.OwnerEmail);   // tenant_owner: holds tenant.users.read
+
+        // The owner's role-granted permission is attributed source='role'.
+        var ownerPerms = (await client.GetFromJsonAsync<List<EffectivePermissionDto>>(
+            $"/api/v1/iam/users/{factory.OwnerUserId}/effective-permissions"))!;
+        var booking = Assert.Single(ownerPerms, p => p.PermissionKey == TenantPermissionKey);
+        Assert.Equal("role", booking.Source);
+
+        // A GRANT override on the role-less Target user surfaces as source='override_grant'.
+        await SeedOverrideAsync(factory.TargetUserId, TenantPermissionKey, isAllowed: true, expiresInMinutes: null);
+        try
+        {
+            var targetPerms = (await client.GetFromJsonAsync<List<EffectivePermissionDto>>(
+                $"/api/v1/iam/users/{factory.TargetUserId}/effective-permissions"))!;
+            var granted = Assert.Single(targetPerms, p => p.PermissionKey == TenantPermissionKey);
+            Assert.Equal("override_grant", granted.Source);
+        }
+        finally { await ClearOverridesAsync(factory.TargetUserId); }
+
+        // DENY-WINS: an active deny override removes a role-granted permission from the effective set.
+        await SeedOverrideAsync(factory.OwnerUserId, TenantPermissionKey, isAllowed: false, expiresInMinutes: null);
+        try
+        {
+            var denied = (await client.GetFromJsonAsync<List<EffectivePermissionDto>>(
+                $"/api/v1/iam/users/{factory.OwnerUserId}/effective-permissions"))!;
+            Assert.DoesNotContain(denied, p => p.PermissionKey == TenantPermissionKey);   // deny wins over the role grant
+        }
+        finally { await ClearOverridesAsync(factory.OwnerUserId); }
+    }
+
+    [Fact]
+    public async Task GetUserOverrides_Lists_Active_And_Filters_Expired()
+    {
+        var client = await AuthedClientAsync(factory.OwnerEmail);   // tenant_owner holds platform.overrides.read
+
+        await SeedOverrideAsync(factory.TargetUserId, TenantPermissionKey, isAllowed: true, expiresInMinutes: null);
+        await SeedOverrideAsync(factory.TargetUserId, "docslot.patient.read", isAllowed: false, expiresInMinutes: -5);  // expired
+        try
+        {
+            var overrides = (await client.GetFromJsonAsync<List<UserPermissionOverrideDto>>(
+                $"/api/v1/iam/users/{factory.TargetUserId}/overrides"))!;
+
+            var active = Assert.Single(overrides, o => o.PermissionKey == TenantPermissionKey);
+            Assert.True(active.IsAllowed);
+            Assert.NotEmpty(active.Reason);
+            // The expired override is NOT returned (time-boxing honored).
+            Assert.DoesNotContain(overrides, o => o.PermissionKey == "docslot.patient.read");
+        }
+        finally { await ClearOverridesAsync(factory.TargetUserId); }
+    }
+
+    [Fact]
+    public async Task GetUserOverrides_Requires_OverridesRead_Not_Just_UsersRead()
+    {
+        // The viewer holds tenant.users.read (so it CAN read effective-permissions) but NOT
+        // platform.overrides.read (the SoD-distinct read authority) → the overrides list is 403.
+        var viewer = await AuthedClientAsync(factory.ViewerEmail);
+
+        Assert.Equal(HttpStatusCode.OK,
+            (await viewer.GetAsync($"/api/v1/iam/users/{factory.OwnerUserId}/effective-permissions")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await viewer.GetAsync($"/api/v1/iam/users/{factory.OwnerUserId}/overrides")).StatusCode);
+    }
+
+    [Fact]
+    public async Task EffectivePermissions_And_Access_Do_Not_Leak_Across_Tenants_Via_TenantId_Param()
+    {
+        // The auditor VETO regression guard (Findings 1+2): a tenant-A caller must NOT read a user's tenant-B
+        // effective permissions/access by passing ?tenantId=B. The view bypasses RLS, so the server-trusted
+        // rls_can_see_tenant guard (NOT the client param) is the boundary. A super_admin still sees B by design.
+        var tenantB = Guid.NewGuid();
+        const string bPerm = "docslot.booking.read";
+        try
+        {
+            await ExecAsync(
+                """
+                INSERT INTO platform.tenants (tenant_id, tenant_code, legal_name, display_name, tenant_type, primary_email, primary_phone, status)
+                VALUES (@id, @code, 'Slice13 Tenant B', 'Slice13 B', 'hospital', @code||'@s13b.test', '+919600000099', 'active')
+                """,
+                ("id", tenantB), ("code", $"s13b-{tenantB.ToString()[..8]}"));
+            // A tenant-B-specific GRANT override for the target user (recognizable, scoped to B).
+            await SeedOverrideAsync(factory.TargetUserId, bPerm, isAllowed: true, expiresInMinutes: null, tenantId: tenantB);
+
+            // Tenant-A owner (NOT super) passing ?tenantId=B → the tenant-B grant must NOT leak.
+            var owner = await AuthedClientAsync(factory.OwnerEmail);
+            var leakedPerms = (await owner.GetFromJsonAsync<List<EffectivePermissionDto>>(
+                $"/api/v1/iam/users/{factory.TargetUserId}/effective-permissions?tenantId={tenantB}"))!;
+            Assert.DoesNotContain(leakedPerms, p => p.PermissionKey == bPerm);
+            var leakedAccess = (await owner.GetFromJsonAsync<EffectiveAccessDto>(
+                $"/api/v1/iam/users/{factory.TargetUserId}/effective-access?tenantId={tenantB}"))!;
+            Assert.DoesNotContain(bPerm, leakedAccess.PermissionKeys);
+
+            // super_admin CAN see tenant B (positive control — the guard NARROWS, it isn't a blanket deny).
+            var super = await AuthedClientAsync(factory.SuperAdminEmail);
+            var superPerms = (await super.GetFromJsonAsync<List<EffectivePermissionDto>>(
+                $"/api/v1/iam/users/{factory.TargetUserId}/effective-permissions?tenantId={tenantB}"))!;
+            Assert.Contains(superPerms, p => p.PermissionKey == bPerm);
+        }
+        finally
+        {
+            await ClearOverridesAsync(factory.TargetUserId);
+            await ExecAsync("DELETE FROM platform.user_permission_overrides WHERE tenant_id = @t", ("t", tenantB));
+            await ExecAsync("UPDATE platform.tenants SET deleted_at = NOW(), status = 'archived' WHERE tenant_id = @t", ("t", tenantB));
+        }
+    }
+
+    // ---- helpers ----------------------------------------------------------------------------------
+
+    private Task SeedOverrideAsync(Guid userId, string permissionKey, bool isAllowed, int? expiresInMinutes, Guid? tenantId = null) =>
+        ExecAsync(
+            """
+            INSERT INTO platform.user_permission_overrides
+                (override_id, user_id, permission_id, tenant_id, is_allowed, reason, granted_by_user_id, effective_from, expires_at, is_active)
+            SELECT gen_random_uuid(), @u, p.permission_id, @t, @allowed, 'slice13 test override', @by, NOW(),
+                   CASE WHEN @mins::int IS NULL THEN NULL ELSE NOW() + make_interval(mins => @mins::int) END, true
+            FROM platform.permissions p WHERE p.permission_key = @key
+            """,
+            ("u", userId), ("t", tenantId ?? factory.TenantId), ("allowed", isAllowed), ("by", factory.SuperAdminUserId),
+            ("key", permissionKey), ("mins", (object?)expiresInMinutes ?? DBNull.Value));
+
+    private Task ClearOverridesAsync(Guid userId) =>
+        ExecAsync("DELETE FROM platform.user_permission_overrides WHERE user_id = @u", ("u", userId));
+
+    private static async Task ExecAsync(string sql, params (string Name, object Value)[] ps)
+    {
+        await using var conn = new NpgsqlConnection(IamAdminWebAppFactory.OwnerConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        foreach (var (n, v) in ps) cmd.Parameters.AddWithValue(n, v);
+        await cmd.ExecuteNonQueryAsync();
+    }
 
     private async Task<HttpClient> AuthedClientAsync(string email)
     {

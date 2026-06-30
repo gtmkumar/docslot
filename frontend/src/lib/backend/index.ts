@@ -227,6 +227,20 @@ export const revokeRolePermission = USE_REAL_API ? real.revokeRolePermission : m
 export const duplicateRole = USE_REAL_API ? real.duplicateRole : mock.duplicateRole;
 export const getEffectiveAccess = USE_REAL_API ? real.getEffectiveAccess : mock.getEffectiveAccess;
 
+// Team & Roles seam (the last mock-only IAM fns, now live). createRole creates an
+// EMPTY role (the create DTO has no permissionKeys) then attaches the picked
+// permissions via the per-grant GUARDED grant endpoint — never a bulk grant.
+// getPermissionRegistry/getRolePermissions are DERIVED from the wired permission
+// catalog / role matrix (no new endpoint). listUserOverrides + getEffectivePermissions
+// hit the new GET /iam/users/{id}/{overrides,effective-permissions} endpoints
+// (overrides gated on platform.overrides.read, SoD-distinct from .grant). Mock side
+// keeps the existing RBAC seed so flag-off renders byte-for-byte the same.
+export const createRole = USE_REAL_API ? real.createRole : mock.createRole;
+export const getPermissionRegistry = USE_REAL_API ? real.getPermissionRegistry : mock.getPermissionRegistry;
+export const getRolePermissions = USE_REAL_API ? real.getRolePermissions : mock.getRolePermissions;
+export const listUserOverrides = USE_REAL_API ? real.listUserOverrides : mock.listUserOverrides;
+export const getEffectivePermissions = USE_REAL_API ? real.getEffectivePermissions : mock.getEffectivePermissions;
+
 // ── CLINICAL PHI + ABDM + CONSENT (Phase-3 slice 4) ───────────────────────────
 // The most PHI-sensitive surface, now on the live seam. Clinical READS send the
 // declared X-Purpose-Of-Use header (the feature query stays DISABLED until the
