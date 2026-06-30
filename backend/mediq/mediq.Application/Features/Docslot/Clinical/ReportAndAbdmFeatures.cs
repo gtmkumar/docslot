@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using FluentValidation;
 using mediq.Application.Abstractions;
 using mediq.Application.Cqrs;
@@ -76,8 +77,9 @@ public sealed class GetLabReportQueryHandler(
         if (string.IsNullOrWhiteSpace(q.DeclaredPurpose))
             throw new mediq.Utilities.Exceptions.ValidationException(new Dictionary<string, string[]> { ["X-Purpose-Of-Use"] = ["A purpose-of-use is required to read a lab report (DPDP)."] });
 
-        var r = await clinical.GetLabReportAsync(q.ReportId, q.TenantId, ct)
+        var detail = await clinical.GetLabReportAsync(q.ReportId, q.TenantId, ct)
             ?? throw new KeyNotFoundException("Lab report not found.");
+        var r = detail.Report;
         // Consent gate with break-glass override (FR-MED-03): a specific-report grant or a patient-wide grant unlocks.
         var patient = await patients.GetByIdAsync(r.PatientId, ct);
         BreakGlassGrant? grant = null;
@@ -95,7 +97,7 @@ public sealed class GetLabReportQueryHandler(
             ? null
             : await encryption.DecryptAsync(ClinicalFields.ReportResults, r.StructuredResultsEnc, encCtx, ct);
 
-        return new LabReportDto(r.ReportId, r.ReportNumber, r.PatientId, r.TestId, r.FileName,
+        return new LabReportDto(r.ReportId, r.ReportNumber, r.PatientId, r.TestId, detail.TestName, r.FileName,
             resultsJson, r.Status, r.HasCriticalFindings, new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)));
     }
 }
@@ -130,7 +132,7 @@ public sealed class SetLabReportFileCommandHandler(
     public async Task<SetLabReportFileResult> Handle(SetLabReportFileCommand command, CancellationToken ct)
     {
         var req = command.Request;
-        var report = await clinical.GetLabReportAsync(command.ReportId, command.TenantId, ct)
+        var report = (await clinical.GetLabReportAsync(command.ReportId, command.TenantId, ct))?.Report
             ?? throw new KeyNotFoundException("Lab report not found.");   // RLS/tenant filter blocks cross-tenant
 
         byte[] content;
@@ -174,7 +176,7 @@ public sealed class GetLabReportFileQueryHandler(
         if (string.IsNullOrWhiteSpace(q.DeclaredPurpose))
             throw new mediq.Utilities.Exceptions.ValidationException(new Dictionary<string, string[]> { ["X-Purpose-Of-Use"] = ["A purpose-of-use is required to download a lab report (DPDP)."] });
 
-        var r = await clinical.GetLabReportAsync(q.ReportId, q.TenantId, ct)
+        var r = (await clinical.GetLabReportAsync(q.ReportId, q.TenantId, ct))?.Report
             ?? throw new KeyNotFoundException("Lab report not found.");
 
         // Same consent gate (+ break-glass) as reading the structured results: the file IS PHI.
@@ -427,9 +429,36 @@ public sealed class GetAbdmRecordQueryHandler(
         await purpose.RecordAsync(new PurposeOfUseEntry(userId, q.TenantId, "abdm_record", r.RecordId, q.DeclaredPurpose, null, false, null), ct);
 
         var encCtx = new EncryptionContext(userId, q.TenantId, "abdm_record", r.PatientId, ctx.IpAddress);
-        var fhir = await encryption.DecryptAsync(ClinicalFields.FhirBundle, r.FhirBundleEnc, encCtx, ct);
-        return new AbdmRecordDto(r.RecordId, r.PatientId, r.AbhaNumber, r.RecordType, fhir, r.IsLinkedToPhr,
+        // Decrypt the FHIR bundle TRANSIENTLY (server-side only) to derive a resource count. The plaintext bundle
+        // is PHI and is NEVER serialized to the client (issue #54) — only the integer count leaves this method.
+        var fhirBundleJson = await encryption.DecryptAsync(ClinicalFields.FhirBundle, r.FhirBundleEnc, encCtx, ct);
+        return new AbdmRecordDto(r.RecordId, r.PatientId, r.AbhaNumber, r.RecordType,
+            CountFhirResources(fhirBundleJson), r.IsLinkedToPhr,
             r.CareContextId, new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)));
+    }
+
+    /// <summary>
+    /// Counts the FHIR resources in a decrypted bundle WITHOUT exposing any of its content. A FHIR Bundle carries
+    /// an <c>entry</c> array (one element per resource) → count = its length; a single bare resource (an object
+    /// with a <c>resourceType</c> but no entry array) counts as 1; anything else / malformed JSON → 0. Parsed
+    /// defensively so a bad payload can never leak the bundle or throw.
+    /// </summary>
+    private static int CountFhirResources(string? bundleJson)
+    {
+        if (string.IsNullOrWhiteSpace(bundleJson)) return 0;
+        try
+        {
+            using var doc = JsonDocument.Parse(bundleJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return 0;
+            if (root.TryGetProperty("entry", out var entry) && entry.ValueKind == JsonValueKind.Array)
+                return entry.GetArrayLength();
+            return root.TryGetProperty("resourceType", out _) ? 1 : 0;
+        }
+        catch (JsonException)
+        {
+            return 0;   // malformed → 0 (never leak or throw)
+        }
     }
 }
 

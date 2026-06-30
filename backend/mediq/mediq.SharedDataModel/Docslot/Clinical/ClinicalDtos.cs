@@ -39,6 +39,7 @@ public sealed record PrescriptionDto(
     string? PrescriptionNumber,
     Guid PatientId,
     Guid DoctorId,
+    string? DoctorName,             // read-only presentation; joined from docslot.doctors (plaintext directory data, NOT PHI)
     string? ChiefComplaints,        // decrypted
     string? Examination,            // decrypted
     string? Diagnosis,              // decrypted
@@ -50,7 +51,7 @@ public sealed record PrescriptionDto(
     DateTimeOffset CreatedAt);
 
 public sealed record PrescriptionListItemDto(
-    Guid PrescriptionId, string? PrescriptionNumber, Guid DoctorId, string Status, DateTimeOffset CreatedAt);
+    Guid PrescriptionId, string? PrescriptionNumber, Guid DoctorId, string? DoctorName, string Status, DateTimeOffset CreatedAt);
 
 /// <summary>A drug-safety alert generated for a prescription (allergy / interaction / duplicate / ...).
 /// medication_name is the just-prescribed drug; the conflicting allergen/current-med detail stays behind
@@ -81,7 +82,9 @@ public sealed record SetLabReportFileResult(Guid ReportId, long SizeBytes);
 public sealed record LabReportFileDto(Guid ReportId, string FileName, string ContentType, byte[] Content);
 
 public sealed record LabReportDto(
-    Guid ReportId, string? ReportNumber, Guid PatientId, Guid? TestId, string? FileName,
+    Guid ReportId, string? ReportNumber, Guid PatientId, Guid? TestId,
+    string? TestName,                // read-only presentation; joined from docslot.test_catalog (plaintext catalog data, NOT PHI)
+    string? FileName,
     string? StructuredResultsJson,   // decrypted
     string Status, bool HasCriticalFindings, DateTimeOffset CreatedAt);
 
@@ -133,7 +136,7 @@ public sealed record PushAbdmRecordResult(Guid RecordId);
 
 public sealed record AbdmRecordDto(
     Guid RecordId, Guid PatientId, string AbhaNumber, string RecordType,
-    string FhirBundleJson,           // decrypted
+    int FhirResourceCount,           // count of FHIR resources only — the decrypted bundle is NEVER sent to the client (issue #54)
     bool IsLinkedToPhr,
     string? CareContextId,           // ABDM network linkage reference (set once published to the national network)
     DateTimeOffset CreatedAt);

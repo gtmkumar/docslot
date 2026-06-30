@@ -115,7 +115,7 @@ public sealed class AmendPrescriptionCommandHandler(
 
         // Load the original (RLS + tenant filter also block cross-tenant → 404). We never decrypt or return
         // its PHI here — only its lineage (booking/patient/doctor/status) — so this is not a PHI disclosure.
-        var original = await clinical.GetPrescriptionAsync(command.PrescriptionId, command.TenantId, ct)
+        var original = (await clinical.GetPrescriptionAsync(command.PrescriptionId, command.TenantId, ct))?.Prescription
             ?? throw new KeyNotFoundException("Prescription not found.");
 
         if (!Amendable.Contains(original.Status))
@@ -186,8 +186,9 @@ public sealed class GetPrescriptionQueryHandler(
         if (string.IsNullOrWhiteSpace(q.DeclaredPurpose))
             throw new mediq.Utilities.Exceptions.ValidationException(new Dictionary<string, string[]> { ["X-Purpose-Of-Use"] = ["A purpose-of-use is required to read a prescription (DPDP)."] });
 
-        var p = await clinical.GetPrescriptionAsync(q.PrescriptionId, q.TenantId, ct)
+        var detail = await clinical.GetPrescriptionAsync(q.PrescriptionId, q.TenantId, ct)
             ?? throw new KeyNotFoundException("Prescription not found.");   // RLS also blocks cross-tenant
+        var p = detail.Prescription;
 
         // Consent gate, with break-glass override (FR-MED-03): the patient must have active consent — OR an
         // active, scoped, non-expired break-glass grant must authorize this read; otherwise refuse (403).
@@ -207,7 +208,7 @@ public sealed class GetPrescriptionQueryHandler(
 
         var encCtx = new EncryptionContext(userId, q.TenantId, "prescription", p.PatientId, ctx.IpAddress);
         return new PrescriptionDto(
-            p.PrescriptionId, p.PrescriptionNumber, p.PatientId, p.DoctorId,
+            p.PrescriptionId, p.PrescriptionNumber, p.PatientId, p.DoctorId, detail.DoctorName,
             await DecOrNull(p.ChiefComplaintsEnc, PrescriptionFields.ChiefComplaints, encCtx, ct),
             await DecOrNull(p.ExaminationEnc, PrescriptionFields.Examination, encCtx, ct),
             await DecOrNull(p.DiagnosisEnc, PrescriptionFields.Diagnosis, encCtx, ct),
@@ -231,7 +232,7 @@ public sealed class ListPrescriptionsQueryHandler(IClinicalRepository clinical)
     {
         var rows = await clinical.ListPrescriptionsAsync(q.TenantId, q.PatientId, ct);
         return rows.Select(r => new PrescriptionListItemDto(
-            r.PrescriptionId, r.PrescriptionNumber, r.DoctorId, r.Status,
+            r.PrescriptionId, r.PrescriptionNumber, r.DoctorId, r.DoctorName, r.Status,
             new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)))).ToList();
     }
 }
@@ -255,7 +256,7 @@ public sealed class GetPrescriptionDrugAlertsQueryHandler(
         if (string.IsNullOrWhiteSpace(q.DeclaredPurpose))
             throw new mediq.Utilities.Exceptions.ValidationException(new Dictionary<string, string[]> { ["X-Purpose-Of-Use"] = ["A purpose-of-use is required to read drug alerts (DPDP)."] });
 
-        var p = await clinical.GetPrescriptionAsync(q.PrescriptionId, q.TenantId, ct)
+        var p = (await clinical.GetPrescriptionAsync(q.PrescriptionId, q.TenantId, ct))?.Prescription
             ?? throw new KeyNotFoundException("Prescription not found.");   // RLS also blocks cross-tenant
 
         // Alerts encode allergy↔prescription PHI → same consent gate as reading the prescription (break-glass aware).
