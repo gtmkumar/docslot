@@ -15,7 +15,7 @@ namespace mediq.Infrastructure.Ai;
 public sealed class HttpAiNoShowClient(
     HttpClient http, IHttpContextAccessor context, ILogger<HttpAiNoShowClient> logger) : IAiNoShowClient
 {
-    public async Task<NoShowRisk?> PredictAsync(Guid bookingId, NoShowFeatures features, CancellationToken ct)
+    public async Task<NoShowRisk?> PredictAsync(Guid bookingId, NoShowFeatures features, string? serviceBearer, CancellationToken ct)
     {
         try
         {
@@ -25,7 +25,11 @@ public sealed class HttpAiNoShowClient(
             {
                 Content = JsonContent.Create(new { bookingId = bookingId.ToString() }),
             };
-            var auth = context.HttpContext?.Request.Headers.Authorization.ToString();
+            // A worker passes a short-lived SERVICE token (no HttpContext); the on-demand path forwards the
+            // caller's JWT from the request. Prefer the explicit service bearer when provided.
+            var auth = !string.IsNullOrWhiteSpace(serviceBearer)
+                ? $"Bearer {serviceBearer}"
+                : context.HttpContext?.Request.Headers.Authorization.ToString();
             if (!string.IsNullOrWhiteSpace(auth))
                 req.Headers.TryAddWithoutValidation("Authorization", auth);
 
@@ -59,8 +63,9 @@ public sealed class HttpAiNoShowClient(
 /// </summary>
 public sealed class StubAiNoShowClient : IAiNoShowClient
 {
-    public Task<NoShowRisk?> PredictAsync(Guid bookingId, NoShowFeatures f, CancellationToken ct)
+    public Task<NoShowRisk?> PredictAsync(Guid bookingId, NoShowFeatures f, string? serviceBearer, CancellationToken ct)
     {
+        // serviceBearer is irrelevant to the in-memory stub (no HTTP); the worker still passes one in http mode.
         // Conservative, monotone heuristic: longer lead time, off-hours slots, and on-behalf bookings raise risk.
         var p = 0.10
             + (f.LeadTimeDays > 14 ? 0.18 : f.LeadTimeDays > 7 ? 0.10 : f.LeadTimeDays >= 3 ? 0.04 : 0.0)

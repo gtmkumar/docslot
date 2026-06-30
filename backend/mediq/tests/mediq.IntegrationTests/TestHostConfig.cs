@@ -45,5 +45,11 @@ internal static class TestHostConfig
         // drive IRetentionPruneStore directly. A live sweep deleting AGED success rows off the SHARED hot outbox/
         // webhook tables under the parallel hosts would be both pool churn AND non-deterministic — never run it.
         Environment.SetEnvironmentVariable("Retention__PrunerEnabled", "false");
+        // No-show prediction backfill worker is force-OFF suite-wide (already DEFAULT-OFF, made explicit): the
+        // backfill test resolves INoShowBackfillRunner and drives RunOnceAsync directly. The due-list scan is
+        // CROSS-TENANT, so an autonomous poller across the ~8 parallel hosts would race the backfill test (and any
+        // booking test) for shared bookings AND add pool churn. The test owns the timing. (Belt-and-suspenders —
+        // NoShowBackfill__Enabled ⇒ NoShowBackfill:Enabled; the default is already false.)
+        Environment.SetEnvironmentVariable("NoShowBackfill__Enabled", "false");
     }
 }

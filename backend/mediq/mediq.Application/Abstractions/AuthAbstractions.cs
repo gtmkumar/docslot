@@ -48,6 +48,17 @@ public interface ITokenService
     /// </summary>
     AccessToken CreateClientAccessToken(Guid clientId, Guid? tenantId, IReadOnlyCollection<string> grantedScopes);
 
+    /// <summary>
+    /// A SHORT-LIVED, NON-HUMAN SERVICE access token for trusted in-process service-to-service calls (e.g. the
+    /// no-show backfill worker calling the AI sibling without a live caller). Carries a fixed non-human
+    /// <paramref name="subject"/> (NEVER a real user id), <c>token_use=service</c>, the target
+    /// <paramref name="tenantId"/>, and a deliberately short <paramref name="ttlMinutes"/>. It is minted with the
+    /// same signing key/issuer/audience the AI service already validates — so it needs NO external credential. The
+    /// <c>token_use=service</c> claim lets the AI REFUSE it on every PHI path (it is accepted only on the non-PHI
+    /// operational paths); it carries NO scopes/roles, so it confers no permissions beyond that.
+    /// </summary>
+    AccessToken CreateServiceToken(Guid tenantId, string subject, int ttlMinutes);
+
     /// <summary>Opaque random refresh token. Returns raw (to client) + SHA-256 hash (to store).</summary>
     (string Raw, string Hash) CreateRefreshToken();
 

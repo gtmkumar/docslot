@@ -71,6 +71,7 @@ def extract_lab_report(
         tenant_id=principal.tenant_id,
         patient_id=patient_id,
         resource_type=phi_access.RESOURCE_LAB_REPORT,
+        token_use=principal.token_use,
     )
     phi_access.record_purpose_of_use(
         user_id=principal.user_id,

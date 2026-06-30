@@ -66,6 +66,13 @@ if (builder.Configuration.GetValue("Messaging:DrainWorkerEnabled", false))
 if (builder.Configuration.GetValue("Retention:PrunerEnabled", false))
     builder.Services.AddHostedService<mediq.Api.Workers.RetentionPruneWorker>();
 
+// --- No-show prediction backfill worker: scans upcoming, not-yet-scored bookings and asks the AI sibling to
+// score each (marking it so it is never re-predicted). DEFAULT-OFF (NoShowBackfill:Enabled=false) — proactive
+// scoring is opt-in; the scan reaches RLS-protected bookings via SECURITY DEFINER fns (NON-PHI features only)
+// and scores under a short-TTL per-tenant service token. The integration suite also force-OFFs it. ---
+if (builder.Configuration.GetValue("NoShowBackfill:Enabled", false))
+    builder.Services.AddHostedService<mediq.Api.Workers.NoShowPredictionWorker>();
+
 // --- Cross-cutting / web ---
 builder.Services.AddRequestContext();
 builder.Services.AddPlatformJwtAuth(builder.Configuration);

@@ -108,6 +108,9 @@ def active_break_glass_grant(
     )
 
 
+_SERVICE_DENIED_DETAIL = "A service identity may not access patient data."
+
+
 def enforce_phi_gate(
     *,
     user_id: str,
@@ -115,12 +118,19 @@ def enforce_phi_gate(
     patient_id: str,
     resource_type: str,
     resource_id: str | None = None,
+    token_use: str = "user",
 ) -> BreakGlassGrant | None:
     """Consent-or-break-glass gate. Returns the grant used (None = consented).
 
     Raises 403 (fail-closed) if the patient has no active consent AND no active
     break-glass grant. Call BEFORE any embed/retrieve/persist of PHI.
+
+    A 'service' token (a non-human .NET-minted service identity) is REFUSED outright (403):
+    a service identity is never a clinical actor, holds no consent/break-glass context, and must
+    never reach PHI — it is restricted to the non-PHI operational paths (no-show scoring).
     """
+    if token_use == "service":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_SERVICE_DENIED_DETAIL)
     if has_active_consent(patient_id):
         return None
     grant = active_break_glass_grant(

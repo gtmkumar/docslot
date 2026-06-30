@@ -13,8 +13,11 @@ public interface IAiNoShowClient
     /// <summary>Scores a booking's no-show risk. Returns null when the risk is UNAVAILABLE (the AI service is
     /// unreachable / errored) — the caller surfaces "unavailable" rather than fabricating a score. The stub
     /// always returns a score; <paramref name="features"/> feed the stub heuristic (the HTTP adapter delegates
-    /// feature-building to the AI service and passes only the booking id).</summary>
-    Task<NoShowRisk?> PredictAsync(Guid bookingId, NoShowFeatures features, CancellationToken ct);
+    /// feature-building to the AI service and passes only the booking id).
+    /// <para><paramref name="serviceBearer"/>: when set (a background worker with NO live caller), the HTTP
+    /// adapter sends THIS bearer (a short-lived service token) instead of the request's forwarded JWT. Null on
+    /// the on-demand request path (the adapter forwards the caller's JWT via IHttpContextAccessor).</para></summary>
+    Task<NoShowRisk?> PredictAsync(Guid bookingId, NoShowFeatures features, string? serviceBearer, CancellationToken ct);
 }
 
 /// <summary>A minimal, non-PHI feature snapshot the .NET side can derive from a booking for the stub heuristic.</summary>

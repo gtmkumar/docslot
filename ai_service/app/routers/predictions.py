@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from ..auth import Principal, get_principal
+from ..auth import Principal, get_principal, get_principal_allow_service
 from ..config import get_settings
 from ..features import BookingFeatureInput, build_features
 from ..model import risk_band, score
@@ -69,7 +69,11 @@ def _predict_and_persist(
 @router.post("/no-show", response_model=NoShowPrediction)
 def predict_no_show(
     body: NoShowRequest,
-    principal: Principal = Depends(get_principal),
+    # The ONLY non-PHI endpoint a service token may reach (the backfill worker scores one booking
+    # here without a human caller); the on-demand path forwards a user token. GET /no-show/today
+    # stays on the default-deny get_principal — a service identity cannot enumerate the tenant's
+    # patient-derived features for the whole day.
+    principal: Principal = Depends(get_principal_allow_service),
 ) -> NoShowPrediction:
     try:
         uuid.UUID(body.bookingId)

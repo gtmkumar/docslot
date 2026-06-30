@@ -74,8 +74,9 @@ public sealed class GetBookingNoShowRiskQueryHandler(IBookingReadService reads, 
             throw new KeyNotFoundException("Booking not found.");
 
         // Phase 2 — call the AI service OUTSIDE any DB transaction. A null result means the AI service is
-        // unavailable — surface that (Available=false), don't fabricate a score.
-        var risk = await ai.PredictAsync(q.BookingId, features, ct);
+        // unavailable — surface that (Available=false), don't fabricate a score. serviceBearer is null on the
+        // on-demand request path — the adapter forwards the caller's JWT (a worker would pass a service token).
+        var risk = await ai.PredictAsync(q.BookingId, features, serviceBearer: null, ct);
         return risk is null
             ? new NoShowRiskDto(q.BookingId, Available: false, null, null, null, null)
             : new NoShowRiskDto(q.BookingId, Available: true, risk.Probability, risk.Band, risk.ModelName, risk.Source);

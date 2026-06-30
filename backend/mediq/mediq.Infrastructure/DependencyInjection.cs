@@ -215,6 +215,16 @@ public static class InfrastructureRegistration
             http.Timeout = TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds));
         }
 
+        // Proactive no-show prediction backfill (slice 16): a config-gated worker (NoShowPredictionWorker,
+        // registered in Program behind NoShowBackfill:Enabled) scans upcoming, not-yet-scored bookings via two
+        // SECURITY DEFINER functions (rls-cross-tenant-worker pattern; NON-PHI features only), mints a short-TTL
+        // per-tenant SERVICE token, and asks the AI sibling to score each — marking it so it is never re-predicted.
+        // DEFAULT-OFF. The store + runner are scoped so they are resolvable even when the worker isn't registered.
+        services.Configure<mediq.Application.Options.NoShowBackfillOptions>(
+            config.GetSection(mediq.Application.Options.NoShowBackfillOptions.SectionName));
+        services.AddScoped<INoShowBackfillStore, Docslot.NoShowBackfillStore>();
+        services.AddScoped<INoShowBackfillRunner, Application.Features.Docslot.NoShow.NoShowBackfillRunner>();
+
         // Lab-report blob storage (PHI artifacts). Bytes are envelope-ENCRYPTED by the app BEFORE storage, so
         // the adapter only ever holds ciphertext. Dev = local filesystem (default) or in-memory (tests); prod
         // swaps in an object store (S3/GCS/Azure + provider SSE/KMS) by config (same pattern as the payout
