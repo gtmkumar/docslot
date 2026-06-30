@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
+using mediq.SharedDataModel.Docslot.Ai;
 using mediq.SharedDataModel.Docslot.Auth;
 using mediq.SharedDataModel.Docslot.Clinical;
 using Npgsql;
@@ -675,6 +676,145 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
                 await ExecAsync("DELETE FROM docslot.prescriptions WHERE prescription_id=@id", ("id", pid));
             }
             await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE history_id=@id", ("id", allergy.HistoryId));
+        }
+    }
+
+    [Fact]
+    public async Task Ai_LabReport_Extraction_Is_Consent_Purpose_And_Tenant_Gated()
+    {
+        // Slice 11: the OCR proxy surfaces lab PHI from the AI sibling. The test host uses the deterministic STUB
+        // provider, so it works WITHOUT the Python AI service — but the .NET-side consent/purpose/tenant gate runs
+        // BEFORE the AI is ever consulted, so a denial is a real 403/422/404, never a fabricated/"unavailable" score.
+        var client = await AuthedClientAsync();   // tenant A; tenant_owner+super_admin → docslot.report.read
+
+        // (a) No X-Purpose-Of-Use header → 422 (the DPDP gate), and the AI is never consulted.
+        var noPurpose = await client.PostAsJsonAsync("/api/v1/lab-reports/extract",
+            new ExtractLabReportRequest(factory.PatientId));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, noPurpose.StatusCode);
+
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+        // (b) Consent + purpose present → 200 from the labelled stub. NO raw OCR text is ever surfaced.
+        var ok = await client.PostAsJsonAsync("/api/v1/lab-reports/extract", new ExtractLabReportRequest(factory.PatientId));
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        var rawJson = await ok.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("rawText", rawJson, StringComparison.OrdinalIgnoreCase);   // PHI-minimized at the proxy
+        var dto = (await ok.Content.ReadFromJsonAsync<OcrExtractionDto>())!;
+        Assert.True(dto.Available);
+        Assert.Equal("stub-dev", dto.Source);                 // honest stub, never a fabricated real engine
+        Assert.Contains(dto.Analytes, a => a.Test == "STUB-PANEL");
+
+        // (c) An unknown / cross-tenant patient (not linked to tenant A) → 404, AI never consulted.
+        var unknown = await client.PostAsJsonAsync("/api/v1/lab-reports/extract", new ExtractLabReportRequest(Guid.NewGuid()));
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+
+        // (d) Consent revoked + NO break-glass grant → 403 (not a masked "unavailable"). Restore after.
+        await ExecAsync("UPDATE docslot.patients SET consent_given_at=NULL WHERE patient_id=@p", ("p", factory.PatientId));
+        try
+        {
+            var denied = await client.PostAsJsonAsync("/api/v1/lab-reports/extract", new ExtractLabReportRequest(factory.PatientId));
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+
+            // (e) A patient-wide lab_report break-glass grant unlocks the consent-denied extraction → 200.
+            await SeedGrantAsync(factory.AdminUserId, factory.TenantA, factory.PatientId, "lab_report", null, expiresInMinutes: 60);
+            try
+            {
+                var unlocked = await client.PostAsJsonAsync("/api/v1/lab-reports/extract", new ExtractLabReportRequest(factory.PatientId));
+                Assert.Equal(HttpStatusCode.OK, unlocked.StatusCode);
+            }
+            finally
+            {
+                await ExecAsync("DELETE FROM platform.break_glass_grants WHERE patient_id=@p AND tenant_id=@t", ("p", factory.PatientId), ("t", factory.TenantA));
+            }
+        }
+        finally
+        {
+            await ExecAsync("UPDATE docslot.patients SET consent_given_at=NOW() WHERE patient_id=@p", ("p", factory.PatientId));
+        }
+    }
+
+    [Fact]
+    public async Task Ai_LabReport_Extraction_Requires_Report_Read_Permission()
+    {
+        // A tenant_admin does NOT hold docslot.report.read (is_dangerous=true → excluded from the auto-grant), so
+        // it cannot trigger an OCR extraction of lab PHI → 403 at the permission gate, before the handler runs.
+        var tadminEmail = $"slice11.tadmin+{Guid.NewGuid():N}@docslot.test";
+        var tadminId = Guid.NewGuid();
+        try
+        {
+            await ExecAsync(
+                """
+                INSERT INTO platform.users (user_id, email, password_hash, full_name, is_active, is_platform_user, created_at, updated_at)
+                VALUES (@id, @email, crypt(@pwd, gen_salt('bf', 10)), 'Slice11 TenantAdmin', true, true, NOW(), NOW())
+                """, ("id", tadminId), ("email", tadminEmail), ("pwd", ClinicalWebAppFactory.AdminPassword));
+            await ExecAsync(
+                """
+                INSERT INTO platform.user_tenant_roles (user_tenant_role_id, user_id, tenant_id, role_id, is_primary, granted_at)
+                SELECT gen_random_uuid(), @uid, @tid, r.role_id, true, NOW()
+                FROM platform.roles r WHERE r.role_key='tenant_admin' AND r.is_system ON CONFLICT DO NOTHING
+                """, ("uid", tadminId), ("tid", factory.TenantA));
+
+            var client = factory.CreateClient();
+            var login = await client.PostAsJsonAsync("/api/v1/auth/login",
+                new LoginRequest(tadminEmail, ClinicalWebAppFactory.AdminPassword, factory.TenantA));
+            login.EnsureSuccessStatusCode();
+            var token = (await login.Content.ReadFromJsonAsync<TokenResponse>())!;
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+            client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+            var resp = await client.PostAsJsonAsync("/api/v1/lab-reports/extract", new ExtractLabReportRequest(factory.PatientId));
+            Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform.user_tenant_roles WHERE user_id=@u", ("u", tadminId));
+            await ExecAsync("DELETE FROM platform.user_sessions WHERE user_id=@u", ("u", tadminId));
+            await ExecAsync("DELETE FROM platform.login_attempts WHERE email=@e", ("e", tadminEmail));
+            await ExecAsync("UPDATE platform.users SET deleted_at=NOW(), is_active=false, email=@a WHERE user_id=@u",
+                ("a", $"del+{tadminId}@s11.test"), ("u", tadminId));
+        }
+    }
+
+    [Fact]
+    public async Task Ai_Rag_Ask_Is_Consent_Purpose_Gated_And_Read_Only()
+    {
+        // Slice 11: the RAG proxy answers over a patient's indexed history. STUB provider in tests; read-only by
+        // construction (the .NET client has no index method). The question (PHI) is a body value, never echoed back.
+        var client = await AuthedClientAsync();   // tenant A; holds docslot.medical_history.read
+
+        // (a) No X-Purpose-Of-Use → 422.
+        var noPurpose = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/rag/ask",
+            new RagAskRequest("What allergies does this patient have?"));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, noPurpose.StatusCode);
+
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+        // (b) Consent + purpose → 200 from the labelled extractive stub. The question is NOT echoed in the response.
+        const string question = "What allergies does this patient have?";
+        var ok = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/rag/ask", new RagAskRequest(question));
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        var rawJson = await ok.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(question, rawJson);             // the PHI question is never reflected back
+        var dto = (await ok.Content.ReadFromJsonAsync<RagAnswerDto>())!;
+        Assert.True(dto.Available);
+        Assert.Equal("extractive", dto.Mode);                 // no external-LLM egress in the stub
+        Assert.Equal("stub-dev", dto.Source);
+        Assert.Equal(factory.PatientId, dto.PatientId);
+
+        // (c) An unknown / cross-tenant patient → 404, AI never consulted.
+        var unknown = await client.PostAsJsonAsync($"/api/v1/patients/{Guid.NewGuid()}/rag/ask", new RagAskRequest(question));
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+
+        // (d) Consent revoked → 403 (not a masked "unavailable"). Restore after.
+        await ExecAsync("UPDATE docslot.patients SET consent_given_at=NULL WHERE patient_id=@p", ("p", factory.PatientId));
+        try
+        {
+            var denied = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/rag/ask", new RagAskRequest(question));
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        }
+        finally
+        {
+            await ExecAsync("UPDATE docslot.patients SET consent_given_at=NOW() WHERE patient_id=@p", ("p", factory.PatientId));
         }
     }
 

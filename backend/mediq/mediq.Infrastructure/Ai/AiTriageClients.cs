@@ -18,7 +18,9 @@ public sealed class HttpAiTriageClient(
     {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, "/triage")
+            // Full path incl. the AI service's api_prefix (/ai/v1); BaseUrl is the host root. (A bare
+            // "/triage" would 404 against the prefix-mounted FastAPI routers.)
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/ai/v1/triage")
             {
                 Content = JsonContent.Create(new
                 {
