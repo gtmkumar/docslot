@@ -127,7 +127,7 @@ public sealed class SetOverrideValidator : AbstractValidator<SetOverrideCommand>
 }
 
 public sealed class SetOverrideCommandHandler(
-    IRoleAssignmentRepository roles, IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    IRoleAssignmentRepository roles, IAuditTrailWriter audit, ICurrentUserContext ctx)
     : ICommandHandler<SetOverrideCommand, SetOverrideResult>
 {
     public async Task<SetOverrideResult> Handle(SetOverrideCommand command, CancellationToken ct)

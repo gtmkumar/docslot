@@ -27,7 +27,7 @@ public sealed class CreateRoleValidator : AbstractValidator<CreateRoleCommand>
 }
 
 public sealed class CreateRoleCommandHandler(
-    IRoleAssignmentRepository roles, IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    IRoleAssignmentRepository roles, IAuditTrailWriter audit, ICurrentUserContext ctx)
     : ICommandHandler<CreateRoleCommand, CreateRoleResult>
 {
     public async Task<CreateRoleResult> Handle(CreateRoleCommand command, CancellationToken ct)
@@ -68,7 +68,7 @@ public sealed class RevokeRoleValidator : AbstractValidator<RevokeRoleCommand>
 }
 
 public sealed class RevokeRoleCommandHandler(
-    IRoleAssignmentRepository roles, IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    IRoleAssignmentRepository roles, IAuditTrailWriter audit, ICurrentUserContext ctx)
     : ICommandHandler<RevokeRoleCommand, RevokeRoleResult>
 {
     public async Task<RevokeRoleResult> Handle(RevokeRoleCommand command, CancellationToken ct)

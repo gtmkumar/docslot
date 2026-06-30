@@ -17,7 +17,7 @@ namespace mediq.Infrastructure.Security;
 /// row 'destroyed' AND drop its wrapping salt so wrapped data keys can no longer be unwrapped.
 /// </summary>
 public sealed class LocalEnvelopeKeyManagementService(
-    PlatformDbContext db, IOptions<EncryptionOptions> encryption, IClock clock) : IKeyManagementService
+    PlatformDbContext db, IOptions<EncryptionOptions> encryption) : IKeyManagementService
 {
     private readonly string _masterPassphrase = encryption.Value.Passphrase;
 
