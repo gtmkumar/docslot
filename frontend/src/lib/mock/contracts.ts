@@ -327,6 +327,137 @@ export interface TriageRequestInput {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AI DOCUMENT SURFACES (Slice 11 + 14) — OCR lab-report extraction + RAG ask over
+// a patient's indexed medical history, plus the non-PHI operational reads.
+// Mirrors mediq.SharedDataModel/Docslot/Ai/AiDocumentDtos.cs (camelCase wire).
+//
+// PHI POSTURE:
+//  - The OCR analyte VALUES and the RAG ANSWER are PHI → returned by a MUTATION,
+//    never cached in a query key (the feature hooks use useMutation).
+//  - The RAG QUESTION is PHI → a mutation VARIABLE only (request body); never a
+//    query key, never logged, never echoed (the result never carries it back).
+//  - Both PHI POSTs are patient-bound → the caller forwards X-Purpose-Of-Use.
+//  - The two OPERATIONAL reads (extractions list + RAG status) are non-PHI
+//    summaries → cacheable as ordinary queries.
+//  - `available:false` is a valid success (AI sibling unreachable) → the UI renders
+//    a fail-safe "unavailable" state and NEVER fabricates a result.
+// Optional fields are `.nullish()` (the .NET serializer omits null on the wire) and
+// arrays `.default([])` so an absent collection still parses.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A single extracted lab analyte (OCR). The `value` IS PHI. Mirrors AnalyteDto. */
+export const OcrAnalyteSchema = z.object({
+  test: z.string(),
+  value: z.number(),
+  unit: z.string().nullish(),
+  refLow: z.number(),
+  refHigh: z.number(),
+  flag: z.string(),
+});
+export type OcrAnalyte = z.infer<typeof OcrAnalyteSchema>;
+
+/** `POST /api/v1/lab-reports/extract` → OcrExtractionDto. analytes (PHI) default to
+ *  [] so an absent array still parses; available=false → "extraction unavailable"
+ *  (never a fabricated result). Mirrors OcrExtractionDto (rawTextPreview omitted). */
+export const OcrExtractionSchema = z.object({
+  available: z.boolean(),
+  extractionId: z.string().nullish(),
+  ocrEngine: z.string().nullish(),
+  overallConfidence: z.number().nullish(),
+  requiresHumanReview: z.boolean().nullish(),
+  abnormalCount: z.number().nullish(),
+  analytes: z.array(OcrAnalyteSchema).default([]),
+  source: z.string().nullish(),
+});
+export type OcrExtraction = z.infer<typeof OcrExtractionSchema>;
+
+/** `POST /api/v1/lab-reports/extract` body + the patient-bound purpose-of-use. NO
+ *  client source path is accepted — the server resolves the report blob. */
+export interface ExtractLabReportInput {
+  relatedPatientId: string;
+  relatedBookingId?: string;
+  /** Forwarded to X-Purpose-Of-Use (REQUIRED — the extraction is patient-bound). */
+  purposeOfUse: string;
+}
+
+/** A citation backing a RAG answer (points at a medical-history record). Mirrors
+ *  RagCitationDto. */
+export const RagCitationSchema = z.object({
+  historyId: z.string(),
+  recordType: z.string().nullish(),
+  title: z.string().nullish(),
+  severity: z.string().nullish(),
+  score: z.number(),
+});
+export type RagCitation = z.infer<typeof RagCitationSchema>;
+
+/** `POST /api/v1/patients/{patientId}/rag/ask` → RagAnswerDto. The `answer` is PHI;
+ *  the question is NEVER echoed back. available=false → "answer unavailable".
+ *  `mode` is 'extractive' | 'llm'. citations default to []. Mirrors RagAnswerDto. */
+export const RagAnswerSchema = z.object({
+  available: z.boolean(),
+  patientId: z.string(),
+  answer: z.string().nullish(),
+  mode: z.string().nullish(),
+  citations: z.array(RagCitationSchema).default([]),
+  retrieved: z.number().nullish(),
+  source: z.string().nullish(),
+});
+export type RagAnswer = z.infer<typeof RagAnswerSchema>;
+
+/** `POST /api/v1/patients/{patientId}/rag/ask` body + purpose. The `question` is
+ *  PHI — a mutation variable only (never a query key, never logged/echoed). */
+export interface RagAskInput {
+  patientId: string;
+  question: string;
+  /** Forwarded to X-Purpose-Of-Use (REQUIRED — the ask is patient-bound). */
+  purposeOfUse: string;
+}
+
+// ── AI operational reads (non-PHI summaries) ──────────────────────────────────
+
+/** One extraction SUMMARY (header only — never the analyte values). Mirrors
+ *  OcrExtractionSummaryDto. */
+export const OcrExtractionSummarySchema = z.object({
+  extractionId: z.string(),
+  sourceType: z.string(),
+  status: z.string(),
+  overallConfidence: z.number().nullish(),
+  requiresHumanReview: z.boolean(),
+  abnormalCount: z.number(),
+  createdAt: z.string(),
+});
+export type OcrExtractionSummary = z.infer<typeof OcrExtractionSummarySchema>;
+
+/** `GET /api/v1/ai/extractions?limit=` → OcrExtractionListDto (summaries only, no
+ *  PHI analyte values). Mirrors OcrExtractionListDto. */
+export const OcrExtractionListSchema = z.object({
+  available: z.boolean(),
+  extractions: z.array(OcrExtractionSummarySchema).default([]),
+  source: z.string().nullish(),
+});
+export type OcrExtractionList = z.infer<typeof OcrExtractionListSchema>;
+
+/** A RAG knowledge base's summary counts. Mirrors RagKnowledgeBaseDto. */
+export const RagKnowledgeBaseSchema = z.object({
+  kbKey: z.string(),
+  name: z.string(),
+  documentCount: z.number(),
+});
+export type RagKnowledgeBase = z.infer<typeof RagKnowledgeBaseSchema>;
+
+/** `GET /api/v1/ai/rag/status` → RagStatusDto (operational counts; NO PHI). Mirrors
+ *  RagStatusDto. */
+export const RagStatusSchema = z.object({
+  available: z.boolean(),
+  embeddings: z.number().nullish(),
+  patientsIndexed: z.number().nullish(),
+  knowledgeBases: z.array(RagKnowledgeBaseSchema).default([]),
+  source: z.string().nullish(),
+});
+export type RagStatus = z.infer<typeof RagStatusSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AUTH — mirrors mediq.SharedDataModel/Docslot/Auth/AuthDtos.cs (camelCase wire)
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -14,6 +14,7 @@ import {
   Settings as SettingsGear,
   Shield,
   ShieldCheck,
+  Sparkles,
   Stethoscope,
   Users,
   Wallet,
@@ -33,6 +34,7 @@ const ICONS: Record<string, LucideIcon> = {
   handshake: Handshake,
   wallet: Wallet,
   flask: FlaskConical,
+  sparkles: Sparkles,
   gear: SettingsGear,
 };
 

@@ -1,0 +1,27 @@
+---
+name: frontend-phase4-ai-ocr-rag-surfacing
+description: Phase-4 slice-15 — surfaces slice-11/14 AI OCR/RAG in the React SPA + adds the ai_ops nav row. Clean PASS no conditions; PHI-on-client discipline + OR-semantics menu gate verified.
+metadata:
+  type: project
+---
+
+Branch `feat/phase4-ai-ocr-rag-frontend`, 24 files ~1212 ins (mostly frontend + 1 DB nav row + 1 test). VERDICT: **PASS, no conditions** (only INFO). Consumes already-audited slices 11 ([[backend-phase4-ai-ocr-rag-seam]]) + 14 ([[backend-phase4-ai-extractions-ragstatus-seam]]). No new endpoint, no new permission, no new table. Mirrors PR#36 no-show/triage PHI discipline + the phase-3 clinical-wiring controls ([[frontend-phase3-clinical-wiring]]).
+
+**3 surfaces behind VITE_USE_REAL_API:** (1) RagAskPanel (transient slide-over) POST `/patients/{id}/rag/ask`, gated `docslot.medical_history.read`; (2) OcrExtractPanel (transient) POST `/lab-reports/extract`, gated `docslot.report.read`; (3) AiOpsScreen `/ai-ops` with ExtractionsSection (GET `/ai/extractions`) + RagStatusSection (GET `/ai/rag/status`), each section self-gates via `usePermissions().can()`.
+
+**PHI-on-client discipline VERIFIED (the crux):**
+- PHI (RAG question, RAG answer, OCR analyte values) flows ONLY through `useMutation` — NEVER a TanStack query key. Hooks: `features/patients/ai.ts` (usePatientRag / useExtractLabReport = mutations). The two ops reads (`features/ai/api.ts`) are `useQuery` with NON-PHI keys `['ai','extractions',limit]` / `['ai','rag-status']` — correct (summaries/counts only, AI side has no record_purpose_of_use per slice-14).
+- X-Purpose-Of-Use is an HTTP HEADER (`api-client.ts:135`), forwarded on BOTH PHI POSTs (always; server 422s without it), NOT on ops GETs. RAG question goes in the POST BODY only; never logged/echoed (result never carries it back). apiFetch does ZERO console logging; ApiError message = `Request failed: {status} {path}` — path for ask is `/patients/{uuid}/rag/ask` (no PHI). grep: zero `console.*` in seam/hooks/panels.
+- Both PHI panels (`ocrExtract`,`ragAsk`) added to `SlideOverHost.TRANSIENT_SET` → `isUrlPanel`=false → `panelToSearch` returns `{}` (clears param), NOT in PAYLOADLESS, no `searchToPanel` restore case → PHI + purpose NEVER URL-encoded or reconstructed on refresh (re-entry must re-declare purpose). Question held in local `useState` only, never lifted to Zustand.
+- `available:false` rendered as honest "unavailable" (never fabricated). Consent 403 → ConsentBlocked w/ break-glass gated on `can('docslot.medical_access.break_glass')` (not role); `isConsentDenied` handles ApiError(403). resourceType enum lab_report/medical_history (ABDM excluded). No role-in-JSX anywhere (grep clean).
+
+**Idempotency split CORRECT:** extractLabReport (PERSISTED artifact) carries `Idempotency-Key` (header, `api-client.ts:136`); fresh key per `.mutate()` run, stable across apiFetch's internal 401-retry → correct granularity (re-run = new extraction). askPatientRag (advisory, like triage) carries NONE. slice-11 commands are IDoNotCacheResponse server-side so decrypted PHI never hits the plaintext idempotency store.
+
+**ai_ops nav row (DB) — OR-semantics verified:** `08_rbac_navigation.sql` + `docslot_complete.sql` got IDENTICAL inserts (confirmed): navigation_menus row `ai_ops` (display_order 115, applies_to_tenant_types NULL = all types, tenant_id NULL = global) + TWO menu_permissions rows (report.read, medical_history.read) with `ON CONFLICT DO NOTHING`. `get_user_menus` (08:298-346) permission filter is `EXISTS(... permission_key IN user_perms)` = pure OR (holder of EITHER perm sees the menu). NOTE: `get_user_menus` IGNORES the `menu_permissions.require_all` column entirely — it's always OR via EXISTS regardless. Not introduced here; the slice relies on OR which is guaranteed. No over-exposure: seeing the menu requires a real is_dangerous clinical read, and data endpoints enforce RBAC+tenant+consent server-side.
+- Live idempotent migration (adds the row out-of-band) is NOT in the diff. Its stated reasoning verified SOUND: `navigation_menus UNIQUE(menu_key, tenant_id)` does NOT dedupe a NULL tenant_id (Postgres NULL-distinct), so an explicit existence-guard is the correct idempotency mechanism — `ON CONFLICT` would NOT protect a global NULL-tenant menu. Recommend committing the migration text to the repo (INFO, non-blocking).
+
+**slice-11 sourceUrl MEDIUM is CLOSED at the .NET edge (positive):** `ExtractLabReportRequest` = `(Guid RelatedPatientId, Guid? RelatedBookingId)` — NO sourceUrl field; `AiOcrClients.cs:26` never forwards a client source path. Frontend seam honors it (body = relatedPatientId/relatedBookingId only). No re-exposure of the local-file-read primitive.
+
+**INFO (non-blocking):** (1) stale comment in `lib/mock/index.ts` m-ai-ops node says "08...has no nav row for it yet — mocked here ... backend needs a navigation_menus row + map" — this slice ADDS exactly that, comment now false; update it. (2) require_all unused by get_user_menus (pre-existing). (3) commit the live migration text.
+
+Gates: tenant/RLS ✅ (no new table; nav = read-only global menu projection; data RLS server-side); permission ✅ (no new perm, 2 existing is_dangerous, OR-gate, deny-wins untouched); PHI-purpose ✅ (header always on PHI POSTs, server-enforced, break-glass can()-gated); payout ✅ N/A; audit ✅ N/A; encryption/secrets ✅ (no PHI in keys/cache/log/URL/store; sourceUrl not exercised); regulatory ✅ (DPDP purpose honored client-side); webhook ✅ N/A.

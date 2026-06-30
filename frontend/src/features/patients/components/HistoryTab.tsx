@@ -9,7 +9,7 @@
 // is never URL-encoded).
 
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Pencil, Plus } from 'lucide-react';
+import { AlertTriangle, Pencil, Plus, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -31,16 +31,27 @@ export function HistoryTab({ patientId, purpose }: { patientId: string; purpose:
 
   return (
     <div className="flex flex-col gap-4">
-      {can('docslot.medical_history.create') ? (
-        <div className="flex justify-end">
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => openPanel({ type: 'createHistory', patientId, purpose })}
-          >
-            <Plus size={14} aria-hidden="true" />
-            {t('clinical.history.add')}
-          </Button>
+      {can('docslot.medical_history.read') || can('docslot.medical_history.create') ? (
+        <div className="flex flex-wrap justify-end gap-2">
+          {/* AI RAG ask (Slice 11): patient-bound PHI action → opens a transient
+              slide-over (the question is a mutation variable; declared purpose
+              forwarded as X-Purpose-Of-Use). */}
+          {can('docslot.medical_history.read') ? (
+            <Button variant="subtle" size="sm" onClick={() => openPanel({ type: 'ragAsk', patientId, purpose })}>
+              <Sparkles size={14} aria-hidden="true" />
+              {t('rag.action')}
+            </Button>
+          ) : null}
+          {can('docslot.medical_history.create') ? (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => openPanel({ type: 'createHistory', patientId, purpose })}
+            >
+              <Plus size={14} aria-hidden="true" />
+              {t('clinical.history.add')}
+            </Button>
+          ) : null}
         </div>
       ) : null}
 

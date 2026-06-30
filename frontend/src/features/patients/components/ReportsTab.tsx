@@ -3,7 +3,7 @@
 // on docslot.report.upload; "Deliver" on docslot.report.deliver.
 
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Upload } from 'lucide-react';
+import { ChevronRight, ScanText, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -24,12 +24,22 @@ export function ReportsTab({ patientId, purpose }: { patientId: string; purpose:
 
   return (
     <div className="flex flex-col gap-4">
-      {can('docslot.report.upload') ? (
-        <div className="flex justify-end">
-          <Button variant="primary" size="sm" onClick={() => openPanel({ type: 'uploadReport', patientId })}>
-            <Upload size={14} aria-hidden="true" />
-            {t('clinical.reports.upload')}
-          </Button>
+      {can('docslot.report.read') || can('docslot.report.upload') ? (
+        <div className="flex flex-wrap justify-end gap-2">
+          {/* AI OCR extract (Slice 11): patient-bound PHI action → opens a transient
+              slide-over (declared purpose forwarded as X-Purpose-Of-Use). */}
+          {can('docslot.report.read') ? (
+            <Button variant="subtle" size="sm" onClick={() => openPanel({ type: 'ocrExtract', patientId, purpose })}>
+              <ScanText size={14} aria-hidden="true" />
+              {t('ocr.action')}
+            </Button>
+          ) : null}
+          {can('docslot.report.upload') ? (
+            <Button variant="primary" size="sm" onClick={() => openPanel({ type: 'uploadReport', patientId })}>
+              <Upload size={14} aria-hidden="true" />
+              {t('clinical.reports.upload')}
+            </Button>
+          ) : null}
         </div>
       ) : null}
 

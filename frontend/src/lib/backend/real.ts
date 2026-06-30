@@ -22,7 +22,17 @@ import {
   AnalyticsDtoSchema,
   AnalyticsSchema,
   NoShowRiskSchema,
+  OcrExtractionListSchema,
+  OcrExtractionSchema,
+  RagAnswerSchema,
+  RagStatusSchema,
   TriageResultSchema,
+  type ExtractLabReportInput,
+  type OcrExtraction,
+  type OcrExtractionList,
+  type RagAnswer,
+  type RagAskInput,
+  type RagStatus,
   type NoShowRisk,
   type TriageRequestInput,
   type TriageResult,
@@ -2432,4 +2442,62 @@ export async function submitTriage(input: TriageRequestInput): Promise<TriageRes
     },
   });
   return TriageResultSchema.parse(raw);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AI DOCUMENT SURFACES (Slice 11 + 14) — OCR lab-report extraction + RAG ask
+// (PHI-bearing POSTs) + the non-PHI operational reads (extractions list, RAG
+// status). PHI posture mirrors the C# DTOs: the analyte VALUES and the RAG ANSWER
+// are PHI (returned by a mutation, never cached in a query key); the RAG QUESTION
+// is PHI (request body only — never logged/echoed). Both PHI POSTs forward
+// X-Purpose-Of-Use (patient-bound; the server 422s without it). `available:false`
+// is preserved verbatim so the UI renders an "unavailable" state, never a
+// fabricated result.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** POST /api/v1/lab-reports/extract → OcrExtractionDto. Patient-bound PHI →
+ *  X-Purpose-Of-Use is REQUIRED. The extraction is PERSISTED server-side, so the
+ *  POST carries a stable Idempotency-Key (a double-submit maps to one extraction).
+ *  NO client source path is sent — the server resolves the report blob. */
+export async function extractLabReport(
+  input: ExtractLabReportInput,
+  idempotencyKey: string,
+): Promise<OcrExtraction> {
+  const raw = await apiFetch<unknown>('/lab-reports/extract', {
+    method: 'POST',
+    purposeOfUse: input.purposeOfUse,
+    idempotency: idempotencyKey,
+    body: {
+      relatedPatientId: input.relatedPatientId,
+      relatedBookingId: input.relatedBookingId ?? null,
+    },
+  });
+  return OcrExtractionSchema.parse(raw);
+}
+
+/** POST /api/v1/patients/{patientId}/rag/ask → RagAnswerDto. Patient-bound PHI →
+ *  X-Purpose-Of-Use is REQUIRED. Advisory Q&A (no persisted artifact, like triage)
+ *  → NO Idempotency-Key. The `question` is PHI: it flows through the body ONLY —
+ *  never logged here, never a query key, never echoed in the result. */
+export async function askPatientRag(input: RagAskInput): Promise<RagAnswer> {
+  const raw = await apiFetch<unknown>(`/patients/${input.patientId}/rag/ask`, {
+    method: 'POST',
+    purposeOfUse: input.purposeOfUse,
+    body: { question: input.question },
+  });
+  return RagAnswerSchema.parse(raw);
+}
+
+/** GET /api/v1/ai/extractions?limit= → OcrExtractionListDto. Operational summaries
+ *  (NO PHI analyte values) — gated docslot.report.read. Cacheable as a query. */
+export async function listAiExtractions(limit = 20): Promise<OcrExtractionList> {
+  const raw = await apiFetch<unknown>(`/ai/extractions?limit=${limit}`);
+  return OcrExtractionListSchema.parse(raw);
+}
+
+/** GET /api/v1/ai/rag/status → RagStatusDto. Operational counts (NO PHI) — gated
+ *  docslot.medical_history.read. Cacheable as a query. */
+export async function getRagStatus(): Promise<RagStatus> {
+  const raw = await apiFetch<unknown>('/ai/rag/status');
+  return RagStatusSchema.parse(raw);
 }

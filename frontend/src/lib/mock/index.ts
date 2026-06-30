@@ -109,6 +109,10 @@ const HOSPITAL_MENUS: MenusResponse = [
   // Care Partners screen above (tenant-wide commission.broker.read). Mirrored here
   // for mock parity so real-mode and mock-mode render the same node.
   { id: 'm-portal', key: 'partner_portal', label: 'My Portal', labelHi: 'मेरा पोर्टल', icon: 'wallet', route: '/portal', badgeSource: null, ...NAV_NODE_DEFAULTS, sortOrder: 11 },
+  // AI Operations (Slice 15). The backend nav row + menu→permission map now EXIST in
+  // 08_rbac_navigation.sql (menu_key 'ai_ops' → docslot.report.read OR docslot.medical_history.read,
+  // matching the screen's two section gates); this mock node keeps flag-off parity. NON-PHI ops summaries only.
+  { id: 'm-ai-ops', key: 'ai_ops', label: 'AI Operations', labelHi: 'एआई संचालन', icon: 'sparkles', route: '/ai-ops', badgeSource: null, ...NAV_NODE_DEFAULTS, sortOrder: 12 },
 ];
 
 export function getMenus(): Promise<MenusResponse> {

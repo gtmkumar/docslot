@@ -97,6 +97,12 @@ export type Panel =
       resourceId: string | null;
       reopen?: Panel;
     }
+  // AI document assist (Slice 11). Patient-bound PHI POSTs (OCR extract / RAG ask).
+  // TRANSIENT like the other clinical panels: they carry the declared purpose-of-use
+  // and surface PHI (analyte values / the RAG answer + question), so neither is
+  // URL-encoded or restored on a refresh (re-entry must re-declare purpose).
+  | { type: 'ocrExtract'; patientId: string; purpose: PurposeOfUse; bookingId?: string }
+  | { type: 'ragAsk'; patientId: string; purpose: PurposeOfUse }
   // Commission / Care Partners (Slice 07). URL-addressable (no PHI/secret payload).
   | { type: 'registerBroker' }
   | { type: 'manageBroker'; brokerId: string }
