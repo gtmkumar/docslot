@@ -16,30 +16,33 @@ public sealed class AnalyticsReadService(PlatformDbContext db) : IAnalyticsReadS
 {
     public async Task<AnalyticsDto> GetAnalyticsAsync(Guid tenantId, AnalyticsPeriod period, CancellationToken ct)
     {
-        // Period start in IST (inclusive); end is "now". 'month' = first of this month, etc.
-        var periodSql = period switch
+        // Period truncation UNIT (IST). 'month' = first of this month, 'quarter'/'year' likewise. Passed as a
+        // BOUND PARAMETER to date_trunc(@p1, ...) in each query — never string-interpolated into SQL. The value
+        // is one of three enum-chosen constants (never user input), and parameterizing it keeps the queries
+        // injection-proof by construction (so no EF1002 raw-interpolation advisory).
+        var periodUnit = period switch
         {
-            AnalyticsPeriod.Year => "date_trunc('year', (NOW() AT TIME ZONE 'Asia/Kolkata'))::date",
-            AnalyticsPeriod.Quarter => "date_trunc('quarter', (NOW() AT TIME ZONE 'Asia/Kolkata'))::date",
-            _ => "date_trunc('month', (NOW() AT TIME ZONE 'Asia/Kolkata'))::date",
+            AnalyticsPeriod.Year => "year",
+            AnalyticsPeriod.Quarter => "quarter",
+            _ => "month",
         };
 
-        var kpis = await GetKpisAsync(tenantId, periodSql, ct);
+        var kpis = await GetKpisAsync(tenantId, periodUnit, ct);
         var weekly = await GetWeeklyVolumeAsync(tenantId, ct);
-        var departments = await GetTopDepartmentsAsync(tenantId, periodSql, ct);
-        var funnel = await GetFunnelAsync(tenantId, periodSql, ct);
+        var departments = await GetTopDepartmentsAsync(tenantId, periodUnit, ct);
+        var funnel = await GetFunnelAsync(tenantId, periodUnit, ct);
 
         return new AnalyticsDto(kpis, weekly, departments, funnel);
     }
 
     // ---- KPIs ----------------------------------------------------------------------------------------
 
-    private async Task<AnalyticsKpisDto> GetKpisAsync(Guid tenantId, string periodSql, CancellationToken ct)
+    private async Task<AnalyticsKpisDto> GetKpisAsync(Guid tenantId, string periodUnit, CancellationToken ct)
     {
         // Period filter on booked_at (IST date) >= period start. revenue = SUM(consultation_fee) for
         // confirmed+completed; whatsappShare = whatsapp/total; noShowRate = no_show/total. All over the period.
         var rows = await db.Database.SqlQueryRaw<KpiRow>(
-                $"""
+                """
                 SELECT
                     COUNT(*)::int AS "Total",
                     COUNT(*) FILTER (WHERE b.booked_via = 'whatsapp')::int AS "Whatsapp",
@@ -48,9 +51,10 @@ public sealed class AnalyticsReadService(PlatformDbContext db) : IAnalyticsReadS
                 FROM docslot.bookings b
                 LEFT JOIN docslot.doctors d ON d.doctor_id = b.doctor_id
                 WHERE b.tenant_id = @p0
-                  AND (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date >= {periodSql}
+                  AND (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date >= date_trunc(@p1, (NOW() AT TIME ZONE 'Asia/Kolkata'))::date
                 """,
-                new NpgsqlParameter("@p0", tenantId))
+                new NpgsqlParameter("@p0", tenantId),
+                new NpgsqlParameter("@p1", periodUnit))
             .ToListAsync(ct);
 
         var r = rows.FirstOrDefault() ?? new KpiRow(0, 0, 0, 0m);
@@ -98,21 +102,22 @@ public sealed class AnalyticsReadService(PlatformDbContext db) : IAnalyticsReadS
 
     // ---- Top departments -----------------------------------------------------------------------------
 
-    private async Task<IReadOnlyList<TopDepartmentDto>> GetTopDepartmentsAsync(Guid tenantId, string periodSql, CancellationToken ct)
+    private async Task<IReadOnlyList<TopDepartmentDto>> GetTopDepartmentsAsync(Guid tenantId, string periodUnit, CancellationToken ct)
     {
         var rows = await db.Database.SqlQueryRaw<DeptRow>(
-                $"""
+                """
                 SELECT dep.name AS "Name", COUNT(*)::int AS "Bookings"
                 FROM docslot.bookings b
                 JOIN docslot.departments dep ON dep.department_id = b.department_id
                 WHERE b.tenant_id = @p0
                   AND b.department_id IS NOT NULL
-                  AND (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date >= {periodSql}
+                  AND (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date >= date_trunc(@p1, (NOW() AT TIME ZONE 'Asia/Kolkata'))::date
                 GROUP BY dep.name
                 ORDER BY COUNT(*) DESC, dep.name ASC
                 LIMIT 6
                 """,
-                new NpgsqlParameter("@p0", tenantId))
+                new NpgsqlParameter("@p0", tenantId),
+                new NpgsqlParameter("@p1", periodUnit))
             .ToListAsync(ct);
 
         return rows.Select(r => new TopDepartmentDto(r.Name, r.Bookings)).ToList();
@@ -120,7 +125,7 @@ public sealed class AnalyticsReadService(PlatformDbContext db) : IAnalyticsReadS
 
     // ---- WhatsApp conversational funnel --------------------------------------------------------------
 
-    private async Task<IReadOnlyList<FunnelStageDto>> GetFunnelAsync(Guid tenantId, string periodSql, CancellationToken ct)
+    private async Task<IReadOnlyList<FunnelStageDto>> GetFunnelAsync(Guid tenantId, string periodUnit, CancellationToken ct)
     {
         // Booking-derived funnel over WhatsApp bookings in the period. Stages are monotonic non-increasing:
         //   Started chat = distinct patients with a whatsapp booking
@@ -130,7 +135,7 @@ public sealed class AnalyticsReadService(PlatformDbContext db) : IAnalyticsReadS
         //   Confirmed         = status in (confirmed, completed)
         // Counts use distinct patients at each stage (a sensible funnel population).
         var rows = await db.Database.SqlQueryRaw<FunnelRow>(
-                $"""
+                """
                 SELECT
                     COUNT(DISTINCT b.patient_id)::int AS "Started",
                     COUNT(DISTINCT b.patient_id) FILTER (WHERE b.department_id IS NOT NULL)::int AS "Department",
@@ -140,9 +145,10 @@ public sealed class AnalyticsReadService(PlatformDbContext db) : IAnalyticsReadS
                 FROM docslot.bookings b
                 WHERE b.tenant_id = @p0
                   AND b.booked_via = 'whatsapp'
-                  AND (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date >= {periodSql}
+                  AND (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date >= date_trunc(@p1, (NOW() AT TIME ZONE 'Asia/Kolkata'))::date
                 """,
-                new NpgsqlParameter("@p0", tenantId))
+                new NpgsqlParameter("@p0", tenantId),
+                new NpgsqlParameter("@p1", periodUnit))
             .ToListAsync(ct);
 
         var r = rows.FirstOrDefault() ?? new FunnelRow(0, 0, 0, 0, 0);

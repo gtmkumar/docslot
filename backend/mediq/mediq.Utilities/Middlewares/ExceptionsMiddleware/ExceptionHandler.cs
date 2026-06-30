@@ -132,12 +132,15 @@ public class ExceptionHandler
                     ErrorMessageEnum.UnAuthorized, HttpStatusCode.Unauthorized,
                     "Unauthorized.", SingleError(ex, "Unauthorized."));
 
-            case not null when string.Equals(ex.Message, UnauthorizedMarker, StringComparison.Ordinal):
-                return new MappedError(
-                    ErrorMessageEnum.UnAuthorized, HttpStatusCode.Unauthorized,
-                    "Unauthorized.", SingleError(ex, "Unauthorized."));
-
             default:
+                // A sentinel-marked exception (thrown with UnauthorizedMarker as its Message) maps to 401;
+                // anything else is a generic 500. Kept as an `if` inside default — NOT a `case not null when`
+                // guard — so the switch does not widen ex's null-state and trip CS8604 (ex is non-null by
+                // contract: both Classify's parameter and the catch in HandleAsync are non-nullable Exception).
+                if (string.Equals(ex.Message, UnauthorizedMarker, StringComparison.Ordinal))
+                    return new MappedError(
+                        ErrorMessageEnum.UnAuthorized, HttpStatusCode.Unauthorized,
+                        "Unauthorized.", SingleError(ex, "Unauthorized."));
                 return new MappedError(
                     ErrorMessageEnum.Error, HttpStatusCode.InternalServerError,
                     "An unexpected error occurred.",
