@@ -19,7 +19,9 @@ public sealed class HttpAiNoShowClient(
     {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, "/predictions/no-show")
+            // Full path incl. the AI service's api_prefix (/ai/v1); BaseUrl is the host root. (A bare
+            // "/predictions/no-show" would 404 against the prefix-mounted FastAPI routers.)
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/ai/v1/predictions/no-show")
             {
                 Content = JsonContent.Create(new { bookingId = bookingId.ToString() }),
             };

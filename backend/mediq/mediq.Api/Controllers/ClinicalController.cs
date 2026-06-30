@@ -1,7 +1,9 @@
 using mediq.Api.Authorization;
 using mediq.Application.Abstractions;
 using mediq.Application.Cqrs;
+using mediq.Application.Features.Docslot.Ai;
 using mediq.Application.Features.Docslot.Clinical;
+using mediq.SharedDataModel.Docslot.Ai;
 using mediq.SharedDataModel.Docslot.Clinical;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -182,10 +184,35 @@ public sealed class ClinicalController(
     public async Task<ActionResult<IReadOnlyList<AbdmRecordListItemDto>>> ListAbdm(Guid patientId, CancellationToken ct)
         => Ok(await queries.Query(new ListAbdmRecordsQuery(RequireTenant(), patientId, Purpose()), ct));
 
+    // ---- AI document surfaces (proxied to the Python AI sibling; slice 11) -----------------------
+
+    /// <summary>Extract structured analytes from a lab-report image via the AI sibling service. The result is
+    /// lab PHI → gated by <c>docslot.report.read</c> + consent (break-glass aware) + X-Purpose-Of-Use (forwarded
+    /// to the AI service, which persists the extraction + writes the purpose log). Never cached. <c>available=false</c>
+    /// only when the AI service is unreachable; an authorization/validation denial surfaces as 403/422.</summary>
+    [HttpPost("lab-reports/extract")]
+    [RequirePermission("docslot.report.read")]
+    [ProducesResponseType<OcrExtractionDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<OcrExtractionDto>> ExtractLabReport([FromBody] ExtractLabReportRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new ExtractLabReportCommand(RequireTenant(), request, RawPurpose()), ct));
+
+    /// <summary>Ask a natural-language question over a patient's indexed medical history (RAG, read-only — never
+    /// indexes). The answer is PHI → gated by <c>docslot.medical_history.read</c> + consent (break-glass aware) +
+    /// X-Purpose-Of-Use (forwarded). Never cached. The question is a request-body value, never logged/cached.</summary>
+    [HttpPost("patients/{patientId:guid}/rag/ask")]
+    [RequirePermission("docslot.medical_history.read")]
+    [ProducesResponseType<RagAnswerDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<RagAnswerDto>> AskRag(Guid patientId, [FromBody] RagAskRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new AskRagCommand(RequireTenant(), patientId, request, RawPurpose()), ct));
+
     // ---- helpers ---------------------------------------------------------------------------------
 
     private Guid RequireTenant() =>
         currentUser.TenantId ?? throw new mediq.Utilities.Exceptions.ForbiddenException("No active tenant for this session.");
+
+    /// <summary>The raw X-Purpose-Of-Use header (may be empty). The AI-proxy command VALIDATORS require it (422
+    /// if missing) so the .NET gate mirrors the AI-side purpose-of-use gate; it is then forwarded to the AI service.</summary>
+    private string RawPurpose() => Request.Headers["X-Purpose-Of-Use"].ToString();
 
     private string Purpose()
     {

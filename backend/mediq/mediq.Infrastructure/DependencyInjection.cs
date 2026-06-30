@@ -193,11 +193,17 @@ public static class InfrastructureRegistration
             services.AddHttpContextAccessor();   // the HTTP adapters forward the caller's bearer JWT to the AI service
             services.AddHttpClient<IAiNoShowClient, Ai.HttpAiNoShowClient>(ConfigureAiHttp);
             services.AddHttpClient<IAiTriageClient, Ai.HttpAiTriageClient>(ConfigureAiHttp);
+            // Slice-11 PHI proxies (OCR lab-report extraction + RAG ask). Same seam; the adapters forward the
+            // caller JWT + X-Purpose-Of-Use and propagate the AI's 4xx so a gate decision is never masked.
+            services.AddHttpClient<IAiOcrClient, Ai.HttpAiOcrClient>(ConfigureAiHttp);
+            services.AddHttpClient<IAiRagClient, Ai.HttpAiRagClient>(ConfigureAiHttp);
         }
         else
         {
             services.AddScoped<IAiNoShowClient, Ai.StubAiNoShowClient>();
             services.AddScoped<IAiTriageClient, Ai.StubAiTriageClient>();
+            services.AddScoped<IAiOcrClient, Ai.StubAiOcrClient>();
+            services.AddScoped<IAiRagClient, Ai.StubAiRagClient>();
         }
 
         static void ConfigureAiHttp(IServiceProvider sp, HttpClient http)
