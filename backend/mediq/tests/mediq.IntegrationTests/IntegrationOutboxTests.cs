@@ -14,8 +14,8 @@ namespace mediq.IntegrationTests;
 /// webhook subscriptions), the drain store's claim/mark/lease/backoff semantics, and that the NullBus is a
 /// clean no-op. The drain worker is disabled suite-wide, so every test drives the stores explicitly.
 /// </summary>
+[Collection("IntegrationOutbox")]
 public sealed class IntegrationOutboxTests(IntegrationOutboxWebAppFactory factory)
-    : IClassFixture<IntegrationOutboxWebAppFactory>
 {
     // A synthetic event type that no real webhook subscription is registered for, so the fan-out is
     // guaranteed empty and the test isolates the outbox-capture behavior (the closed lost-event gap).

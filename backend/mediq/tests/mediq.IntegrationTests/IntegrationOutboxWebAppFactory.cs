@@ -49,6 +49,15 @@ public sealed class IntegrationOutboxWebAppFactory : WebApplicationFactory<Progr
         await using var conn = new NpgsqlConnection(ConnectionString);
         await conn.OpenAsync();
         await Exec(conn, "DELETE FROM platform_api.integration_event_outbox WHERE tenant_id = @t", ("t", TenantId));
+        // Webhook FK chain (deliveries → subscriptions → clients) seeded by the retention prune tests, by tenant.
+        await Exec(conn,
+            """
+            DELETE FROM platform_api.webhook_deliveries d
+            USING platform_api.webhook_subscriptions s
+            WHERE d.webhook_id = s.webhook_id AND s.tenant_id = @t
+            """, ("t", TenantId));
+        await Exec(conn, "DELETE FROM platform_api.webhook_subscriptions WHERE tenant_id = @t", ("t", TenantId));
+        await Exec(conn, "DELETE FROM platform_api.api_clients WHERE owner_tenant_id = @t", ("t", TenantId));
         await Exec(conn, "UPDATE platform.tenants SET deleted_at = NOW(), status = 'archived' WHERE tenant_id = @t", ("t", TenantId));
         await base.DisposeAsync();
     }
@@ -57,10 +66,12 @@ public sealed class IntegrationOutboxWebAppFactory : WebApplicationFactory<Progr
 
     /// <summary>Inserts a 'pending' outbox row directly (bypassing the tap) so the drain-store tests have a row
     /// to claim. Optional <paramref name="status"/> / <paramref name="nextRetryAt"/> let a test seed a row that
-    /// is already 'processing' (lease recovery) or 'failed' (re-claim after backoff).</summary>
+    /// is already 'processing' (lease recovery) or 'failed' (re-claim after backoff). <paramref name="publishedAt"/>
+    /// lets a test seed a terminal <c>status='success'</c> row with a PAST completion stamp (so the retention
+    /// pruner can age it out) — success rows always carry published_at in production.</summary>
     public async Task<Guid> InsertRowAsync(
         Guid? eventId = null, string eventType = "docslot.booking.created",
-        string status = "pending", DateTime? nextRetryAt = null, int attemptCount = 0)
+        string status = "pending", DateTime? nextRetryAt = null, int attemptCount = 0, DateTime? publishedAt = null)
     {
         var outboxId = Guid.NewGuid();
         await using var conn = new NpgsqlConnection(ConnectionString);
@@ -68,8 +79,8 @@ public sealed class IntegrationOutboxWebAppFactory : WebApplicationFactory<Progr
         await using var cmd = new NpgsqlCommand(
             """
             INSERT INTO platform_api.integration_event_outbox
-                (outbox_id, event_id, event_type, tenant_id, payload, correlation_id, occurred_at, status, attempt_count, next_retry_at, created_at)
-            VALUES (@id, @eid, @etype, @tid, '{"data":{}}'::jsonb, @corr, NOW(), @status, @attempt, @next, NOW())
+                (outbox_id, event_id, event_type, tenant_id, payload, correlation_id, occurred_at, status, attempt_count, next_retry_at, published_at, created_at)
+            VALUES (@id, @eid, @etype, @tid, '{"data":{}}'::jsonb, @corr, NOW(), @status, @attempt, @next, @published, NOW())
             """, conn);
         cmd.Parameters.AddWithValue("id", outboxId);
         cmd.Parameters.AddWithValue("eid", eventId ?? Guid.NewGuid());
@@ -79,8 +90,88 @@ public sealed class IntegrationOutboxWebAppFactory : WebApplicationFactory<Progr
         cmd.Parameters.AddWithValue("status", status);
         cmd.Parameters.AddWithValue("attempt", attemptCount);
         cmd.Parameters.AddWithValue("next", (object?)nextRetryAt ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("published", (object?)publishedAt ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
         return outboxId;
+    }
+
+    // ---- webhook-delivery helpers (retention prune tests) --------------------------------------------------
+
+    private Guid? _webhookId;
+
+    /// <summary>Ensures one <c>api_clients</c> + <c>webhook_subscriptions</c> row exists for this fixture's
+    /// tenant (the delivery FK target), creating them lazily on first use. Both are tagged with this tenant so
+    /// DisposeAsync can clean them by tenant_id.</summary>
+    private async Task<Guid> EnsureWebhookSubscriptionAsync(NpgsqlConnection conn)
+    {
+        if (_webhookId is { } existing) return existing;
+
+        var clientId = Guid.NewGuid();
+        var webhookId = Guid.NewGuid();
+        await using (var clientCmd = new NpgsqlCommand(
+            """
+            INSERT INTO platform_api.api_clients
+                (client_id, client_code, client_name, client_secret_hash, client_type, owner_tenant_id, owner_email, purpose)
+            VALUES (@cid, @code, 'Retention Test Client', 'x', 'first_party', @tid, @email, 'retention prune test')
+            """, conn))
+        {
+            clientCmd.Parameters.AddWithValue("cid", clientId);
+            clientCmd.Parameters.AddWithValue("code", $"ret-{clientId.ToString()[..8]}");
+            clientCmd.Parameters.AddWithValue("tid", TenantId);
+            clientCmd.Parameters.AddWithValue("email", $"ret-{clientId.ToString()[..8]}@docslot.test");
+            await clientCmd.ExecuteNonQueryAsync();
+        }
+
+        await using (var subCmd = new NpgsqlCommand(
+            """
+            INSERT INTO platform_api.webhook_subscriptions
+                (webhook_id, client_id, tenant_id, name, url, secret_hash, event_types)
+            VALUES (@wid, @cid, @tid, 'retention-test', 'https://example.test/hook', 'x', ARRAY['docslot.booking.created'])
+            """, conn))
+        {
+            subCmd.Parameters.AddWithValue("wid", webhookId);
+            subCmd.Parameters.AddWithValue("cid", clientId);
+            subCmd.Parameters.AddWithValue("tid", TenantId);
+            await subCmd.ExecuteNonQueryAsync();
+        }
+
+        _webhookId = webhookId;
+        return webhookId;
+    }
+
+    /// <summary>Inserts a webhook delivery row with the chosen <paramref name="status"/> and (optional)
+    /// <paramref name="deliveredAt"/> completion stamp, seeding the api_client/subscription FK chain on first
+    /// use. A <c>status='success'</c> row with a PAST delivered_at is what the retention pruner ages out.</summary>
+    public async Task<Guid> InsertWebhookDeliveryAsync(string status, DateTime? deliveredAt, Guid? eventId)
+    {
+        await using var conn = new NpgsqlConnection(ConnectionString);
+        await conn.OpenAsync();
+        var webhookId = await EnsureWebhookSubscriptionAsync(conn);
+
+        var deliveryId = Guid.NewGuid();
+        await using var cmd = new NpgsqlCommand(
+            """
+            INSERT INTO platform_api.webhook_deliveries
+                (delivery_id, webhook_id, event_type, event_id, payload, status, attempt_count, created_at, delivered_at)
+            VALUES (@id, @wid, 'docslot.booking.created', @eid, '{"data":{}}'::jsonb, @status, 0, NOW(), @delivered)
+            """, conn);
+        cmd.Parameters.AddWithValue("id", deliveryId);
+        cmd.Parameters.AddWithValue("wid", webhookId);
+        cmd.Parameters.AddWithValue("eid", eventId ?? Guid.NewGuid());
+        cmd.Parameters.AddWithValue("status", status);
+        cmd.Parameters.AddWithValue("delivered", (object?)deliveredAt ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync();
+        return deliveryId;
+    }
+
+    public async Task<int> CountWebhookDeliveryByEventIdAsync(Guid eventId)
+    {
+        await using var conn = new NpgsqlConnection(ConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            "SELECT COUNT(*) FROM platform_api.webhook_deliveries WHERE event_id = @e", conn);
+        cmd.Parameters.AddWithValue("e", eventId);
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync());
     }
 
     public async Task<(string Status, int AttemptCount, DateTime? NextRetryAt, DateTime? PublishedAt, string? LastError)> ReadAsync(Guid outboxId)

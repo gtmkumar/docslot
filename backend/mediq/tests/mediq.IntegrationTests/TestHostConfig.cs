@@ -34,5 +34,9 @@ internal static class TestHostConfig
         // no factory's config layering flips it on): the outbox tests drive IIntegrationEventOutboxDrainStore /
         // IIntegrationOutboxStore directly, so no autonomous poller adds pool churn across the ~8 parallel hosts.
         Environment.SetEnvironmentVariable("Messaging__DrainWorkerEnabled", "false");
+        // Retention pruner worker is force-OFF suite-wide (already DEFAULT-OFF, made explicit): the prune tests
+        // drive IRetentionPruneStore directly. A live sweep deleting AGED success rows off the SHARED hot outbox/
+        // webhook tables under the parallel hosts would be both pool churn AND non-deterministic — never run it.
+        Environment.SetEnvironmentVariable("Retention__PrunerEnabled", "false");
     }
 }

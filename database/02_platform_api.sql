@@ -262,6 +262,9 @@ CREATE INDEX idx_webhook_deliveries_pending ON platform_api.webhook_deliveries(n
     WHERE status IN ('pending', 'failed', 'processing');
 CREATE INDEX idx_webhook_deliveries_webhook ON platform_api.webhook_deliveries(webhook_id, created_at DESC);
 CREATE INDEX idx_webhook_deliveries_event_dedup ON platform_api.webhook_deliveries(event_id);
+-- Retention pruner scan: terminal success deliveries safe to age out.
+CREATE INDEX idx_webhook_deliveries_retention ON platform_api.webhook_deliveries(delivered_at)
+    WHERE status = 'success';
 
 -- ============================================================================
 -- TABLE 26: API_EVENT_TYPES (registry of all events that can be subscribed to)
@@ -323,8 +326,14 @@ INSERT INTO platform_api.api_event_types (event_type, resource, action, descript
 --     business row), so the write itself is already tenant-authorized at the application boundary.
 --   * tenant_id is recorded for locality/forensics (and broker routing) but is NOT a security boundary here.
 --   * payload is IDs/tokens ONLY — NEVER PHI/PII — so a non-RLS, broker-replayable row leaks no patient data.
---   * append + state-transition ONLY: the app role holds SELECT/INSERT/UPDATE (no DELETE grant; no pruner
---     this slice), so rows are never physically removed.
+--   * RETENTION PRUNER (phase-4): a periodic, config-gated SWEEP worker (RetentionPruneWorker) physically
+--     deletes ONLY terminal status='success' rows older than the retention window (default 30 days), keyed on
+--     published_at. 'failed'/'pending'/'processing' are NEVER deleted — 'failed' is RETRYABLE (the drain
+--     re-claims it on its next_retry_at backoff) and pending/processing are in-flight; deleting any of them
+--     would be data loss. 'abandoned' (dead-lettered after max retries) is KEPT as forensic evidence. The app
+--     role now holds a narrow DELETE grant on this table (10_roles_grants.sql) for exactly this prune. Since the
+--     payload is IDs-only (no PHI) and this is not the hash-chained audit_log, physical aging-out here is
+--     consistent with the platform convention (transient operational tables get DELETE; audit_log never does).
 -- ----------------------------------------------------------------------------
 CREATE TABLE platform_api.integration_event_outbox (
     outbox_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -355,6 +364,9 @@ CREATE INDEX idx_integration_outbox_due ON platform_api.integration_event_outbox
     WHERE status IN ('pending', 'failed', 'processing');
 -- Tenant locality / forensics.
 CREATE INDEX idx_integration_outbox_tenant ON platform_api.integration_event_outbox(tenant_id, created_at DESC);
+-- Retention pruner scan: terminal success rows safe to age out (NOT failed/abandoned — see grants).
+CREATE INDEX idx_integration_outbox_retention ON platform_api.integration_event_outbox(published_at)
+    WHERE status = 'success';
 
 -- ============================================================================
 -- VIEWS
