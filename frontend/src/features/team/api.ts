@@ -2,27 +2,34 @@
 // overrides, and the effective-access viewer. Co-located per feature-folder rule.
 // Mutations take a stable Idempotency-Key generated once per action by the caller.
 //
-// Data fns that have a LIVE .NET implementation are imported from '@/lib/backend'
-// (they switch live/mock by VITE_USE_REAL_API): listRoles, listTenantUsers,
-// setOverride, and the whole IAM matrix surface (getRoleMatrix, listModules,
+// Every data fn now has a LIVE .NET implementation and is imported from
+// '@/lib/backend' (each switches live/mock by VITE_USE_REAL_API): the whole IAM
+// surface (listRoles, listTenantUsers, getRoleMatrix, listModules,
 // listIamPermissions, grant/revokeRolePermission, duplicateRole,
-// getEffectiveAccess). Fns not yet wired live (createUser/assignRole/createRole,
-// the registry + role-grants explainer reads) keep importing '@/lib/mock'.
+// getEffectiveAccess, createUser/assignRole/createRole, setOverride) plus the
+// registry + role-grants explainer reads (getPermissionRegistry, getRolePermissions,
+// listUserOverrides, getEffectivePermissions). Only the CreateRoleRequest TYPE is
+// imported from '@/lib/mock' (the shared contract shape, no runtime).
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   assignRole,
   createModule,
   createPermission,
+  createRole,
   createUser,
   duplicateRole,
   getEffectiveAccess,
+  getEffectivePermissions,
+  getPermissionRegistry,
   getRoleMatrix,
+  getRolePermissions,
   grantRolePermission,
   listIamPermissions,
   listModules,
   listRoles,
   listTenantUsers,
+  listUserOverrides,
   resetUserAccess,
   revokeRoleAssignment,
   revokeRolePermission,
@@ -30,14 +37,7 @@ import {
   setUserActive,
   updateUser,
 } from '@/lib/backend';
-import {
-  createRole,
-  getEffectivePermissions,
-  getPermissionRegistry,
-  getRolePermissions,
-  listUserOverrides,
-  type CreateRoleRequest,
-} from '@/lib/mock';
+import { type CreateRoleRequest } from '@/lib/mock';
 import type {
   AssignRoleRequest,
   CreateModuleRequest,

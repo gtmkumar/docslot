@@ -17,7 +17,7 @@
 import { ApiError, apiFetch } from '@/lib/api-client';
 import { getSessionSnapshot } from '@/stores/session';
 import { inr, maskPhone } from '@/lib/format';
-import { MockApiError, type ApiRequestLogFilter } from '@/lib/mock';
+import { MockApiError, type ApiRequestLogFilter, type CreateRoleRequest } from '@/lib/mock';
 import {
   AnalyticsDtoSchema,
   AnalyticsSchema,
@@ -70,6 +70,10 @@ import {
   CreateBookingResultDtoSchema,
   CreateModuleResultSchema,
   CreatePermissionResultSchema,
+  CreateRoleResultSchema,
+  PermissionDefSchema,
+  UserOverrideSchema,
+  EffectivePermissionSchema,
   CreateDoctorResultDtoSchema,
   DashboardSummaryDtoSchema,
   DisputeSchema,
@@ -178,7 +182,10 @@ import {
   type IamPermissionDto,
   type KeyStatus,
   type ModuleDto,
+  type PermissionDef,
   type Role,
+  type UserOverride,
+  type EffectivePermission,
   type RoleMatrix,
   type RolePermissionToggleResult,
   type SetOverrideRequest,
@@ -1877,6 +1884,109 @@ export async function getEffectiveAccess(
   const qs = tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : '';
   const raw = await apiFetch<unknown>(`/iam/users/${userId}/effective-access${qs}`);
   return EffectiveAccessSchema.parse(raw);
+}
+
+// ── TEAM & ROLES seam: registry + role grants + per-user overrides + effective ──
+// The five fns the Team feature still consumed from the mock, now live. THREE are
+// DERIVED from the already-wired IAM reads (no new endpoint): getPermissionRegistry
+// maps the permission catalog → the PermissionDef the pickers expect;
+// getRolePermissions flattens a role's matrix to its granted permission keys.
+// createRole creates an EMPTY role (the create DTO carries no permissionKeys) then
+// attaches the picked permissions via the per-grant GUARDED endpoint — NEVER a bulk
+// grant that bypasses the DB no-escalation guard. listUserOverrides /
+// getEffectivePermissions hit the new GET /iam/users/{id}/{overrides,
+// effective-permissions} endpoints.
+
+/** Create a custom (tenant-scoped) role, then attach the picked permissions.
+ *  POST /roles is EMPTY-role only (the DTO has no permissionKeys); tenantId is
+ *  resolved server-side from the JWT — we send null and never trust a client tenant.
+ *  Each initial permission is attached via grantRolePermission, which runs the DB
+ *  no-escalation guard PER GRANT (so a permission the actor can't grant is rejected
+ *  individually). The role + grant endpoints speak permissionId (Guid); the picker
+ *  collects permissionKeys, so we resolve them through the (already-wired) catalog. A
+ *  derived per-permission Idempotency-Key keeps a retry of the whole action idempotent
+ *  without the store collapsing the grants into one another. */
+export async function createRole(req: CreateRoleRequest, idempotencyKey: string): Promise<Role> {
+  const raw = await apiFetch<unknown>('/roles', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      roleKey: req.roleKey,
+      name: req.name,
+      description: null,
+      tenantId: null,
+      scope: 'tenant',
+    },
+  });
+  const created = CreateRoleResultSchema.parse(raw);
+
+  if (req.permissionKeys.length) {
+    const catalog = await listIamPermissions();
+    const idByKey = new Map(catalog.map((p) => [p.permissionKey, p.permissionId]));
+    for (const key of req.permissionKeys) {
+      const permissionId = idByKey.get(key);
+      if (!permissionId) continue; // unknown key (catalog drift) → skip rather than guess
+      await grantRolePermission(created.roleId, permissionId, `${idempotencyKey}:grant:${permissionId}`);
+    }
+  }
+
+  // Build the app-facing Role from the request + the new id (the roles list refetches
+  // on success). The role is tenant-scoped + custom; tenantId is the caller's tenant.
+  return RoleSchema.parse({
+    roleId: created.roleId,
+    roleKey: req.roleKey,
+    name: req.name,
+    scope: 'tenant',
+    isSystem: false,
+    tenantId: getSessionSnapshot().tenantId ?? null,
+  });
+}
+
+/** The permission registry for the role/override pickers. DERIVED from the wired
+ *  GET /iam/permissions (no separate endpoint): map each PermissionDto → PermissionDef
+ *  (drop permissionId; a null description → '' since PermissionDef.description is a
+ *  required string). PermissionDefSchema is the authoritative gate on scope. */
+export async function getPermissionRegistry(): Promise<PermissionDef[]> {
+  const perms = await listIamPermissions();
+  return PermissionDefSchema.array().parse(
+    perms.map((p) => ({
+      permissionKey: p.permissionKey,
+      resource: p.resource,
+      action: p.action,
+      scope: p.scope,
+      description: p.description ?? '',
+      isDangerous: p.isDangerous,
+    })),
+  );
+}
+
+/** A role's granted permission KEYS. DERIVED from the wired role matrix (no separate
+ *  endpoint): flatten every module's cells and keep the granted ones' keys. */
+export async function getRolePermissions(roleId: string): Promise<string[]> {
+  const matrix = await getRoleMatrix(roleId);
+  return matrix.modules
+    .flatMap((m) => m.cells)
+    .filter((c) => c.granted)
+    .map((c) => c.permissionKey);
+}
+
+/** A user's currently-effective per-user overrides (deny-wins, time-boxed). The new
+ *  GET /iam/users/{userId}/overrides is gated server-side on platform.overrides.read
+ *  (read authority distinct from the dangerous platform.overrides.grant, SoD). The DTO
+ *  matches UserOverride 1:1 → pure pass-through. A 403 (caller lacks the read perm)
+ *  surfaces through TanStack Query's error state. */
+export async function listUserOverrides(userId: string): Promise<UserOverride[]> {
+  const raw = await apiFetch<unknown[]>(`/iam/users/${userId}/overrides`);
+  return UserOverrideSchema.array().parse(raw);
+}
+
+/** The "why does this user have X?" explainer — the resolved set WITH source
+ *  attribution (role | override_grant). GET /iam/users/{userId}/effective-permissions
+ *  (read plane: tenant.users.read). `via` is null (the view carries no role
+ *  attribution); EffectivePermissionSchema already allows it. */
+export async function getEffectivePermissions(userId: string): Promise<EffectivePermission[]> {
+  const raw = await apiFetch<unknown[]>(`/iam/users/${userId}/effective-permissions`);
+  return EffectivePermissionSchema.array().parse(raw);
 }
 
 // ── ROLES + USERS + OVERRIDES (existing live endpoints used by Team & Roles) ──

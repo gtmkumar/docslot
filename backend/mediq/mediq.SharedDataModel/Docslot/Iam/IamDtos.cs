@@ -53,6 +53,18 @@ public sealed record SetRolePermissionResult(Guid RoleId, Guid PermissionId, boo
 public sealed record EffectiveAccessDto(
     Guid UserId, Guid? TenantId, IReadOnlyList<string> PermissionKeys);
 
+/// <summary>One ATTRIBUTED effective permission for the "why does this user have X?" explainer — the same
+/// resolved set as <see cref="EffectiveAccessDto"/> but with each key tagged by its <c>Source</c>
+/// ('role' = via a role grant | 'override_grant' = via a per-user grant-override). <c>Via</c> (the granting
+/// role name) is null: <c>platform.v_user_effective_permissions</c> does not carry role attribution.</summary>
+public sealed record EffectivePermissionDto(string PermissionKey, string Source, string? Via);
+
+/// <summary>A per-user permission OVERRIDE (deny-wins, time-boxable) shown in the user-management panel.
+/// <c>IsAllowed</c> false = DENY (wins over a role grant), true = GRANT. Only currently-effective rows
+/// (active, started, not expired) are returned; the granting reason + optional expiry are surfaced.</summary>
+public sealed record UserPermissionOverrideDto(
+    Guid OverrideId, string PermissionKey, bool IsAllowed, string Reason, DateTime? ExpiresAt);
+
 // ---- Catalog plane (platform-governed): create modules + permissions ----------------------------
 // The "vocabulary" of authority. Creating these is a platform-admin act gated on
 // platform.permissions.manage. A permission is inert until application code checks it.
