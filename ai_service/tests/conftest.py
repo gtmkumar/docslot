@@ -208,6 +208,27 @@ def make_token(user_id: str = USER_ID, tenant_id: str = TENANT_ID) -> str:
     )
 
 
+def make_service_token(tenant_id: str = TENANT_ID, subject: str = "svc:no-show-predictor") -> str:
+    """A .NET-style SERVICE token (token_use='service', non-human subject, short TTL) — the kind the
+    no-show backfill worker mints. Must be ACCEPTED on no-show and REFUSED on every PHI path."""
+    s = get_settings()
+    key = base64.b64decode(s.jwt_signing_key_b64)
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "sub": subject,
+            "tenant_id": tenant_id,
+            "token_use": "service",
+            "iss": s.jwt_issuer,
+            "aud": s.jwt_audience,
+            "iat": now,
+            "exp": now + 300,
+        },
+        key,
+        algorithm=s.jwt_algorithm,
+    )
+
+
 @pytest.fixture
 def auth() -> dict[str, str]:
     return {

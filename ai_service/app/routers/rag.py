@@ -98,6 +98,7 @@ def index_patient(
         tenant_id=principal.tenant_id,
         patient_id=patient_id,
         resource_type=phi_access.RESOURCE_MEDICAL_HISTORY,
+        token_use=principal.token_use,
     )
     # First-class purpose-of-use record (stamps break-glass for the review queue).
     phi_access.record_purpose_of_use(
@@ -156,6 +157,7 @@ def ask(
         tenant_id=principal.tenant_id,
         patient_id=patient_id,
         resource_type=phi_access.RESOURCE_MEDICAL_HISTORY,
+        token_use=principal.token_use,
     )
     phi_access.record_purpose_of_use(
         user_id=principal.user_id,

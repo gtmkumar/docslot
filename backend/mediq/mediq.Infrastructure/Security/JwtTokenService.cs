@@ -87,6 +87,34 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options) : ITokenServic
         return new AccessToken(value, expires, _o.AccessTokenMinutes * 60);
     }
 
+    public const string TokenUseService = "service";
+
+    public AccessToken CreateServiceToken(Guid tenantId, string subject, int ttlMinutes)
+    {
+        var key = new SymmetricSecurityKey(Convert.FromBase64String(_o.SigningKey));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        // Deliberately short — a service token lives only long enough for one out-of-band call.
+        var ttl = Math.Clamp(ttlMinutes, 1, 15);
+        var expires = DateTime.UtcNow.AddMinutes(ttl);
+        var claims = new List<Claim>
+        {
+            new(JwtRegisteredClaimNames.Sub, subject),          // a fixed NON-HUMAN service subject, never a user id
+            new(TokenUseClaim, TokenUseService),                // lets the AI refuse this token on every PHI path
+            new(TenantClaim, tenantId.ToString()),              // the single tenant this token may act for
+            new(JwtRegisteredClaimNames.Jti, Guid.CreateVersion7().ToString()),
+        };
+        // NOTE: no scope/role/email claims — a service token confers no permissions beyond reaching the
+        // non-PHI operational endpoints the AI allows for token_use=service.
+
+        var token = new JwtSecurityToken(
+            issuer: _o.Issuer, audience: _o.Audience, claims: claims,
+            notBefore: DateTime.UtcNow, expires: expires, signingCredentials: creds);
+
+        var value = new JwtSecurityTokenHandler().WriteToken(token);
+        return new AccessToken(value, expires, ttl * 60);
+    }
+
     public (string Raw, string Hash) CreateRefreshToken()
     {
         var raw = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));

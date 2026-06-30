@@ -1707,6 +1707,8 @@ CREATE TABLE docslot.bookings (
     cancelled_at        TIMESTAMPTZ,
     completed_at        TIMESTAMPTZ,
     no_show_at          TIMESTAMPTZ,
+    no_show_predicted_at TIMESTAMPTZ,                            -- proactive no-show backfill (slice 16): set once the AI has
+                                                                -- scored this booking, so the worker never re-predicts it (idempotency marker)
     rescheduled_at      TIMESTAMPTZ,                             -- when this booking was superseded by a reschedule
 
     -- Reschedule lineage: a reschedule TERMINATES this row (status 'rescheduled') and mints a NEW booking
@@ -1729,6 +1731,37 @@ CREATE INDEX idx_bookings_number ON docslot.bookings(booking_number);
 
 CREATE TRIGGER trg_bookings_updated_at BEFORE UPDATE ON docslot.bookings
     FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+-- Proactive no-show backfill scan (slice 16): upcoming, not-yet-predicted bookings.
+CREATE INDEX idx_bookings_noshow_due ON docslot.bookings(status)
+    WHERE no_show_predicted_at IS NULL AND status IN ('pending', 'confirmed');
+
+-- Proactive no-show prediction backfill (slice 16) — RLS-less worker access via SECURITY DEFINER.
+-- Exposes ONLY non-PHI booking metadata (ids + lead-time/slot-hour/on-behalf features, identical to
+-- BookingReadService.GetNoShowFeaturesAsync); NEVER patient identity/PHI. The worker mints a short-TTL
+-- per-tenant SERVICE token + calls the AI no-show endpoint, then marks the booking (idempotency). Pinned search_path.
+CREATE OR REPLACE FUNCTION docslot.list_due_noshow_bookings(p_window_hours INT, p_limit INT)
+RETURNS TABLE(booking_id UUID, tenant_id UUID, lead_time_days INT, slot_hour INT, is_behalf BOOLEAN)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, docslot, platform AS $$
+    SELECT b.booking_id, b.tenant_id,
+           GREATEST(0, (s.slot_date - (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date))::int AS lead_time_days,
+           EXTRACT(hour FROM s.start_time)::int AS slot_hour,
+           (b.patient_consent_status <> 'not_required') AS is_behalf
+    FROM docslot.bookings b
+    JOIN docslot.time_slots s ON s.slot_id = b.slot_id
+    WHERE b.status IN ('pending', 'confirmed')
+      AND b.no_show_predicted_at IS NULL
+      AND ((s.slot_date + s.start_time) AT TIME ZONE 'Asia/Kolkata')
+            BETWEEN NOW() AND NOW() + make_interval(hours => GREATEST(1, p_window_hours))
+    ORDER BY s.slot_date, s.start_time
+    LIMIT GREATEST(1, p_limit);
+$$;
+
+CREATE OR REPLACE FUNCTION docslot.mark_noshow_predicted(p_booking_id UUID)
+RETURNS VOID
+LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, docslot AS $$
+    UPDATE docslot.bookings SET no_show_predicted_at = NOW() WHERE booking_id = p_booking_id;
+$$;
 
 -- ============================================================================
 -- TABLE D11: BOOKING_STATUS_HISTORY (state transition audit)
