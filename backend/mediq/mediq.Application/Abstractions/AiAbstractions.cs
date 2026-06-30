@@ -71,7 +71,19 @@ public interface IAiOcrClient
     /// <summary>Extracts a lab report. Returns null only when the AI service is UNAVAILABLE (5xx/network);
     /// AI 4xx surfaces as ForbiddenException/ValidationException/KeyNotFoundException, not a null.</summary>
     Task<OcrExtractionResult?> ExtractLabReportAsync(OcrExtractInput input, CancellationToken ct);
+
+    /// <summary>Lists the tenant's recent extraction SUMMARIES (no analyte values) for the ops/forensics view.
+    /// The AI service scopes by the JWT tenant. Returns null when the AI service is UNAVAILABLE (5xx/network);
+    /// AI 4xx surfaces as a typed exception.</summary>
+    Task<IReadOnlyList<OcrExtractionSummaryResult>?> ListExtractionsAsync(int limit, CancellationToken ct);
 }
+
+/// <summary>An extraction SUMMARY (header only — never the analyte values). Operational metadata for the ops list;
+/// <paramref name="AbnormalCount"/> is an aggregate count, not an individual result. <paramref name="Source"/>
+/// records provenance ('ai-service-http' | 'stub-dev').</summary>
+public sealed record OcrExtractionSummaryResult(
+    string ExtractionId, string SourceType, string Status, double? OverallConfidence,
+    bool RequiresHumanReview, int AbnormalCount, string CreatedAt, string Source);
 
 /// <summary>An OCR extraction request. No client-supplied source path is carried — the AI service treats a
 /// source path as a local filesystem path, so .NET never forwards a client-controlled one (it would be an
@@ -100,7 +112,18 @@ public interface IAiRagClient
     /// <summary>Asks a question over a patient's history. Returns null only when the AI service is UNAVAILABLE
     /// (5xx/network); AI 4xx surfaces as a typed exception. The question (PHI) is NEVER logged by the adapter.</summary>
     Task<RagAnswerResult?> AskAsync(RagAskInput input, CancellationToken ct);
+
+    /// <summary>The tenant's RAG knowledge-base STATUS (operational counts — embeddings/patients-indexed/KBs, no
+    /// PHI). The AI service scopes by the JWT tenant. Null when UNAVAILABLE (5xx/network); AI 4xx → typed exception.</summary>
+    Task<RagStatusResult?> GetStatusAsync(CancellationToken ct);
 }
+
+/// <summary>A RAG knowledge base's summary counts.</summary>
+public sealed record RagKnowledgeBaseResult(string KbKey, string Name, int DocumentCount);
+
+/// <summary>The RAG status (operational, non-PHI). <paramref name="Source"/> records provenance.</summary>
+public sealed record RagStatusResult(
+    int Embeddings, int PatientsIndexed, IReadOnlyList<RagKnowledgeBaseResult> KnowledgeBases, string Source);
 
 /// <summary>A RAG ask request. <paramref name="Question"/> is free-text PHI; <paramref name="DeclaredPurpose"/> is the
 /// X-Purpose-Of-Use (DPDP) — REQUIRED (a RAG ask is always patient-bound) and forwarded to the AI service.</summary>

@@ -147,3 +147,40 @@ public sealed class AskRagCommandHandler(
             result.Retrieved, result.Source);
     }
 }
+
+// ---- Operational AI reads (non-PHI summaries): extraction list + RAG status -----------------------
+// ISelfManagedTransaction: pure HTTP proxies with NO .NET DB work — the marker tells TenantScopeQueryBehavior
+// NOT to open a tenant-scoped tx, so no pooled DB connection is held across the AI hop. The AI service scopes
+// these by the JWT tenant (forwarded by the adapter); the responses carry NO individual PHI.
+
+public sealed record ListAiExtractionsQuery(int Limit) : IQuery<OcrExtractionListDto>, ISelfManagedTransaction;
+
+public sealed class ListAiExtractionsQueryHandler(IAiOcrClient ocr) : IQueryHandler<ListAiExtractionsQuery, OcrExtractionListDto>
+{
+    public async Task<OcrExtractionListDto> Handle(ListAiExtractionsQuery query, CancellationToken ct)
+    {
+        var limit = Math.Clamp(query.Limit, 1, 200);
+        var rows = await ocr.ListExtractionsAsync(limit, ct);
+        if (rows is null) return new OcrExtractionListDto(Available: false, []);
+        return new OcrExtractionListDto(
+            Available: true,
+            rows.Select(r => new OcrExtractionSummaryDto(
+                r.ExtractionId, r.SourceType, r.Status, r.OverallConfidence, r.RequiresHumanReview, r.AbnormalCount, r.CreatedAt)).ToList(),
+            rows.Count > 0 ? rows[0].Source : "ai-service-http");
+    }
+}
+
+public sealed record GetRagStatusQuery : IQuery<RagStatusDto>, ISelfManagedTransaction;
+
+public sealed class GetRagStatusQueryHandler(IAiRagClient rag) : IQueryHandler<GetRagStatusQuery, RagStatusDto>
+{
+    public async Task<RagStatusDto> Handle(GetRagStatusQuery query, CancellationToken ct)
+    {
+        var s = await rag.GetStatusAsync(ct);
+        if (s is null) return new RagStatusDto(Available: false, null, null, []);
+        return new RagStatusDto(
+            Available: true, s.Embeddings, s.PatientsIndexed,
+            s.KnowledgeBases.Select(k => new RagKnowledgeBaseDto(k.KbKey, k.Name, k.DocumentCount)).ToList(),
+            s.Source);
+    }
+}

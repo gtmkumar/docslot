@@ -818,6 +818,73 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
         }
     }
 
+    [Fact]
+    public async Task Ai_Extractions_List_And_Rag_Status_Return_Operational_Summaries_NoPhi()
+    {
+        // Slice 14: operational AI reads (no consent/purpose gate — tenant-scoped summaries, no analyte PHI).
+        var client = await AuthedClientAsync();   // tenant_owner+super_admin → docslot.report.read + medical_history.read
+
+        // Extraction list (summaries only — never analyte values).
+        var listResp = await client.GetAsync("/api/v1/ai/extractions?limit=10");
+        Assert.Equal(HttpStatusCode.OK, listResp.StatusCode);
+        var listRaw = await listResp.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("analyte", listRaw, StringComparison.OrdinalIgnoreCase);   // no per-result PHI surfaced
+        var list = (await listResp.Content.ReadFromJsonAsync<OcrExtractionListDto>())!;
+        Assert.True(list.Available);
+        Assert.Equal("stub-dev", list.Source);
+        Assert.All(list.Extractions, e => Assert.False(string.IsNullOrWhiteSpace(e.Status)));
+
+        // RAG status (operational counts).
+        var statusResp = await client.GetAsync("/api/v1/ai/rag/status");
+        Assert.Equal(HttpStatusCode.OK, statusResp.StatusCode);
+        var status = (await statusResp.Content.ReadFromJsonAsync<RagStatusDto>())!;
+        Assert.True(status.Available);
+        Assert.Equal("stub-dev", status.Source);
+        Assert.NotNull(status.Embeddings);
+        Assert.NotNull(status.PatientsIndexed);
+    }
+
+    [Fact]
+    public async Task Ai_Extractions_List_Requires_Report_Read_Permission()
+    {
+        // A tenant_admin lacks docslot.report.read (is_dangerous → excluded from the auto-grant) → 403.
+        var tadminEmail = $"slice14.tadmin+{Guid.NewGuid():N}@docslot.test";
+        var tadminId = Guid.NewGuid();
+        try
+        {
+            await ExecAsync(
+                """
+                INSERT INTO platform.users (user_id, email, password_hash, full_name, is_active, is_platform_user, created_at, updated_at)
+                VALUES (@id, @email, crypt(@pwd, gen_salt('bf', 10)), 'Slice14 TenantAdmin', true, true, NOW(), NOW())
+                """, ("id", tadminId), ("email", tadminEmail), ("pwd", ClinicalWebAppFactory.AdminPassword));
+            await ExecAsync(
+                """
+                INSERT INTO platform.user_tenant_roles (user_tenant_role_id, user_id, tenant_id, role_id, is_primary, granted_at)
+                SELECT gen_random_uuid(), @uid, @tid, r.role_id, true, NOW()
+                FROM platform.roles r WHERE r.role_key='tenant_admin' AND r.is_system ON CONFLICT DO NOTHING
+                """, ("uid", tadminId), ("tid", factory.TenantA));
+
+            var client = factory.CreateClient();
+            var login = await client.PostAsJsonAsync("/api/v1/auth/login",
+                new LoginRequest(tadminEmail, ClinicalWebAppFactory.AdminPassword, factory.TenantA));
+            login.EnsureSuccessStatusCode();
+            var token = (await login.Content.ReadFromJsonAsync<TokenResponse>())!;
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/ai/extractions")).StatusCode);
+            // rag/status is gated on docslot.medical_history.read (also is_dangerous → tenant_admin lacks it) → 403.
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/ai/rag/status")).StatusCode);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform.user_tenant_roles WHERE user_id=@u", ("u", tadminId));
+            await ExecAsync("DELETE FROM platform.user_sessions WHERE user_id=@u", ("u", tadminId));
+            await ExecAsync("DELETE FROM platform.login_attempts WHERE email=@e", ("e", tadminEmail));
+            await ExecAsync("UPDATE platform.users SET deleted_at=NOW(), is_active=false, email=@a WHERE user_id=@u",
+                ("a", $"del+{tadminId}@s14.test"), ("u", tadminId));
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     /// <summary>Seeds a break-glass grant directly (privileged role) for the negative/positive scope tests.</summary>

@@ -205,6 +205,23 @@ public sealed class ClinicalController(
     public async Task<ActionResult<RagAnswerDto>> AskRag(Guid patientId, [FromBody] RagAskRequest request, CancellationToken ct)
         => Ok(await commands.Send(new AskRagCommand(RequireTenant(), patientId, request, RawPurpose()), ct));
 
+    /// <summary>List the tenant's recent OCR extraction SUMMARIES (ops/forensics — no analyte PHI). Tenant-scoped
+    /// by the AI service via the forwarded JWT; gated by <c>docslot.report.read</c>. available=false when the AI
+    /// service is unreachable.</summary>
+    [HttpGet("ai/extractions")]
+    [RequirePermission("docslot.report.read")]
+    [ProducesResponseType<OcrExtractionListDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<OcrExtractionListDto>> ListExtractions([FromQuery] int limit, CancellationToken ct)
+        => Ok(await queries.Query(new ListAiExtractionsQuery(limit <= 0 ? 20 : limit), ct));
+
+    /// <summary>The tenant's RAG knowledge-base STATUS (operational counts — embeddings/patients-indexed/KBs; no
+    /// PHI). Tenant-scoped by the AI service via the forwarded JWT; gated by <c>docslot.medical_history.read</c>.</summary>
+    [HttpGet("ai/rag/status")]
+    [RequirePermission("docslot.medical_history.read")]
+    [ProducesResponseType<RagStatusDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<RagStatusDto>> RagStatus(CancellationToken ct)
+        => Ok(await queries.Query(new GetRagStatusQuery(), ct));
+
     // ---- helpers ---------------------------------------------------------------------------------
 
     private Guid RequireTenant() =>
