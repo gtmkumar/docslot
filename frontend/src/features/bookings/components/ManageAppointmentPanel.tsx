@@ -18,6 +18,7 @@ import { useState } from 'react';
 import { ArrowLeftRight, CalendarClock, Check, ShieldCheck, ShieldAlert, UserCheck, Users, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { toUserError } from '@/lib/backend';
 import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
 import { TextArea } from '@/components/ui/Field';
@@ -58,24 +59,38 @@ export function ManageAppointmentPanel({
   // 'self' booking is always 'not_required' → never blocked.
   const consentBlocksApprove = CONSENT_BLOCKS_APPROVE.has(booking.patientConsentStatus);
 
-  const onApprove = () => {
+  // Await the server before toasting success + closing — a rejected action (422 consent / lifecycle
+  // conflict / 5xx) must surface an error, not be shown as success while the queue silently reverts (#55).
+  const onApprove = async () => {
     if (consentBlocksApprove) return;
-    approve.mutate({ bookingId: booking.id, idempotencyKey: idempotencyKey() });
-    toast.success(`${booking.patient} · ${t('status.confirmed')}`);
-    onClose();
+    try {
+      await approve.mutateAsync({ bookingId: booking.id, idempotencyKey: idempotencyKey() });
+      toast.success(`${booking.patient} · ${t('status.confirmed')}`);
+      onClose();
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
   };
 
-  const onCheckIn = () => {
-    checkIn.mutate({ bookingId: booking.id, idempotencyKey: idempotencyKey() });
-    toast.success(`${booking.patient} · ${t('status.checked_in')}`);
-    onClose();
+  const onCheckIn = async () => {
+    try {
+      await checkIn.mutateAsync({ bookingId: booking.id, idempotencyKey: idempotencyKey() });
+      toast.success(`${booking.patient} · ${t('status.checked_in')}`);
+      onClose();
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
   };
 
-  const onCancel = () => {
+  const onCancel = async () => {
     if (!reason.trim()) return;
-    cancel.mutate({ bookingId: booking.id, reason: reason.trim(), idempotencyKey: idempotencyKey() });
-    toast(`${booking.patient} · ${t('status.cancelled')}`);
-    onClose();
+    try {
+      await cancel.mutateAsync({ bookingId: booking.id, reason: reason.trim(), idempotencyKey: idempotencyKey() });
+      toast(`${booking.patient} · ${t('status.cancelled')}`);
+      onClose();
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
   };
 
   const onReschedule = () => {

@@ -11,6 +11,7 @@ import { SlideOver } from '@/components/ui/SlideOver';
 import { FieldShell, Select, TextInput, labelClass } from '@/components/ui/Field';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { idempotencyKey } from '@/lib/api-client';
+import { toUserError } from '@/lib/backend';
 import { useUI } from '@/stores/ui';
 import { useApiClients, useCreateWebhook, useEventTypes, useUpdateWebhook, useWebhooks } from '../api';
 
@@ -61,28 +62,34 @@ export function WebhookFormPanel({
     setTouched(true);
     if (nameInvalid || urlInvalid || eventsInvalid || clientInvalid) return;
 
-    if (editing && webhookId) {
-      await update.mutateAsync({
-        webhookId,
-        req: { name, url, eventTypes: [...selectedEvents], isActive: active },
-        idempotencyKey: idempotencyKey(),
-      });
-      toast.success(t('developers.webhookForm.saved'));
-      onClose();
-    } else {
-      const result = await create.mutateAsync({
-        clientId,
-        tenantId: null,
-        name,
-        url,
-        eventTypes: [...selectedEvents],
-        secret: secret || null,
-        maxRetries: 5,
-        timeoutSeconds: 30,
-        idempotencyKey: idempotencyKey(),
-      });
-      // One-time signing-secret reveal.
-      openPanel({ type: 'clientSecret', result, kind: 'webhook' });
+    // try/catch so a failed create/update surfaces an error toast instead of an unhandled
+    // rejection with zero feedback (#55).
+    try {
+      if (editing && webhookId) {
+        await update.mutateAsync({
+          webhookId,
+          req: { name, url, eventTypes: [...selectedEvents], isActive: active },
+          idempotencyKey: idempotencyKey(),
+        });
+        toast.success(t('developers.webhookForm.saved'));
+        onClose();
+      } else {
+        const result = await create.mutateAsync({
+          clientId,
+          tenantId: null,
+          name,
+          url,
+          eventTypes: [...selectedEvents],
+          secret: secret || null,
+          maxRetries: 5,
+          timeoutSeconds: 30,
+          idempotencyKey: idempotencyKey(),
+        });
+        // One-time signing-secret reveal.
+        openPanel({ type: 'clientSecret', result, kind: 'webhook' });
+      }
+    } catch (e) {
+      toast.error(toUserError(e));
     }
   };
 

@@ -15,6 +15,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { StatusPill } from '@/components/ui/StatusPill';
 import { istSlot } from '@/lib/format';
 import { idempotencyKey } from '@/lib/api-client';
+import { toUserError } from '@/lib/backend';
 import type { Booking } from '@/lib/types';
 import { useConversation } from '../../conversations/api';
 import { useApproveBooking, useCancelBooking } from '../api';
@@ -35,15 +36,24 @@ export function ConversationPanel({
   const approve = useApproveBooking();
   const cancel = useCancelBooking();
 
-  const onApprove = () => {
-    approve.mutate({ bookingId: booking.id, idempotencyKey: idempotencyKey() });
-    toast.success(`${booking.patient} · ${t('status.confirmed')}`);
-    onClose();
+  // Await the server before success + close so a rejection surfaces, not a false success (#55).
+  const onApprove = async () => {
+    try {
+      await approve.mutateAsync({ bookingId: booking.id, idempotencyKey: idempotencyKey() });
+      toast.success(`${booking.patient} · ${t('status.confirmed')}`);
+      onClose();
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
   };
-  const onReject = () => {
-    cancel.mutate({ bookingId: booking.id, reason: 'rejected_from_conversation', idempotencyKey: idempotencyKey() });
-    toast(`${booking.patient} · ${t('status.cancelled')}`);
-    onClose();
+  const onReject = async () => {
+    try {
+      await cancel.mutateAsync({ bookingId: booking.id, reason: 'rejected_from_conversation', idempotencyKey: idempotencyKey() });
+      toast(`${booking.patient} · ${t('status.cancelled')}`);
+      onClose();
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
   };
 
   return (
