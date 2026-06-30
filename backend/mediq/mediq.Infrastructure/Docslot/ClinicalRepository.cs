@@ -41,17 +41,21 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         return rows.FirstOrDefault()?.Number;
     }
 
-    public async Task<Prescription?> GetPrescriptionAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct)
+    public async Task<PrescriptionDetail?> GetPrescriptionAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct)
     {
         // Read via a direct reader (unambiguous for jsonb #>> text columns; avoids EF record-mapping pitfalls).
+        // LEFT JOIN docslot.doctors for the (plaintext, non-PHI) doctor name; docslot.doctors is not RLS-enabled.
         var conn = (NpgsqlConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
             """
-            SELECT prescription_id, prescription_number, booking_id, patient_id, doctor_id, tenant_id,
-                   chief_complaints, examination, diagnosis, medications #>> '{}', advice, follow_up_in_days,
-                   status, supersedes_prescription_id, amendment_reason, created_at
-            FROM docslot.prescriptions WHERE prescription_id = @p0 AND tenant_id = @p1
+            SELECT p.prescription_id, p.prescription_number, p.booking_id, p.patient_id, p.doctor_id, p.tenant_id,
+                   p.chief_complaints, p.examination, p.diagnosis, p.medications #>> '{}', p.advice, p.follow_up_in_days,
+                   p.status, p.supersedes_prescription_id, p.amendment_reason, p.created_at,
+                   d.full_name
+            FROM docslot.prescriptions p
+            LEFT JOIN docslot.doctors d ON d.doctor_id = p.doctor_id AND d.tenant_id = p.tenant_id
+            WHERE p.prescription_id = @p0 AND p.tenant_id = @p1
             """, conn);
         cmd.Parameters.AddWithValue("@p0", prescriptionId);
         cmd.Parameters.AddWithValue("@p1", tenantId);
@@ -60,12 +64,14 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
         await using var rd = await cmd.ExecuteReaderAsync(ct);
         if (!await rd.ReadAsync(ct)) return null;
-        return Prescription.FromRow(
+        var prescription = Prescription.FromRow(
             rd.GetGuid(0), rd.IsDBNull(1) ? null : rd.GetString(1), rd.GetGuid(2), rd.GetGuid(3), rd.GetGuid(4), rd.GetGuid(5),
             rd.IsDBNull(6) ? null : rd.GetString(6), rd.IsDBNull(7) ? null : rd.GetString(7), rd.IsDBNull(8) ? null : rd.GetString(8),
             rd.GetString(9), rd.IsDBNull(10) ? null : rd.GetString(10), rd.IsDBNull(11) ? null : rd.GetInt32(11),
             rd.GetString(12), rd.IsDBNull(13) ? (Guid?)null : rd.GetGuid(13), rd.IsDBNull(14) ? null : rd.GetString(14),
             rd.GetDateTime(15));
+        var doctorName = rd.IsDBNull(16) ? null : rd.GetString(16);
+        return new PrescriptionDetail(prescription, doctorName);
     }
 
     public async Task<bool> MarkPrescriptionSupersededAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct)
@@ -88,13 +94,16 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
     {
         var rows = await db.Database.SqlQueryRaw<ListRow>(
                 """
-                SELECT prescription_id AS "PrescriptionId", prescription_number AS "PrescriptionNumber",
-                       patient_id AS "PatientId", doctor_id AS "DoctorId", status AS "Status", created_at AS "CreatedAt"
-                FROM docslot.prescriptions WHERE tenant_id = @p0 AND patient_id = @p1 ORDER BY created_at DESC
+                SELECT p.prescription_id AS "PrescriptionId", p.prescription_number AS "PrescriptionNumber",
+                       p.patient_id AS "PatientId", p.doctor_id AS "DoctorId", d.full_name AS "DoctorName",
+                       p.status AS "Status", p.created_at AS "CreatedAt"
+                FROM docslot.prescriptions p
+                LEFT JOIN docslot.doctors d ON d.doctor_id = p.doctor_id AND d.tenant_id = p.tenant_id
+                WHERE p.tenant_id = @p0 AND p.patient_id = @p1 ORDER BY p.created_at DESC
                 """,
                 Params(("@p0", tenantId), ("@p1", patientId)))
             .ToListAsync(ct);
-        return rows.Select(r => new PrescriptionRow(r.PrescriptionId, r.PrescriptionNumber, r.PatientId, r.DoctorId, r.Status, r.CreatedAt)).ToList();
+        return rows.Select(r => new PrescriptionRow(r.PrescriptionId, r.PrescriptionNumber, r.PatientId, r.DoctorId, r.DoctorName, r.Status, r.CreatedAt)).ToList();
     }
 
     // ---- Lab reports -----------------------------------------------------------------------------
@@ -119,28 +128,34 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         return rows.FirstOrDefault()?.Number;
     }
 
-    public async Task<LabReport?> GetLabReportAsync(Guid reportId, Guid tenantId, CancellationToken ct)
+    public async Task<LabReportDetail?> GetLabReportAsync(Guid reportId, Guid tenantId, CancellationToken ct)
     {
+        // LEFT JOIN docslot.test_catalog for the (plaintext, non-PHI) test name — mirrors ListLabReportsAsync.
         var conn = (NpgsqlConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
             """
-            SELECT report_id, report_number, booking_id, patient_id, tenant_id, test_id, file_name,
-                   file_url, file_size_bytes, file_mime_type,
-                   structured_results #>> '{}', status, has_critical_findings, created_at
-            FROM docslot.lab_reports WHERE report_id = @p0 AND tenant_id = @p1
+            SELECT lr.report_id, lr.report_number, lr.booking_id, lr.patient_id, lr.tenant_id, lr.test_id, lr.file_name,
+                   lr.file_url, lr.file_size_bytes, lr.file_mime_type,
+                   lr.structured_results #>> '{}', lr.status, lr.has_critical_findings, lr.created_at,
+                   COALESCE(tc.test_name, 'Lab Test') AS test_name
+            FROM docslot.lab_reports lr
+            LEFT JOIN docslot.test_catalog tc ON tc.test_id = lr.test_id AND tc.tenant_id = lr.tenant_id
+            WHERE lr.report_id = @p0 AND lr.tenant_id = @p1
             """, conn);
         cmd.Parameters.AddWithValue("@p0", reportId);
         cmd.Parameters.AddWithValue("@p1", tenantId);
         cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;   // ambient tx (house pattern)
         await using var rd = await cmd.ExecuteReaderAsync(ct);
         if (!await rd.ReadAsync(ct)) return null;
-        return LabReport.FromRow(
+        var report = LabReport.FromRow(
             rd.GetGuid(0), rd.IsDBNull(1) ? null : rd.GetString(1), rd.GetGuid(2), rd.GetGuid(3), rd.GetGuid(4),
             rd.IsDBNull(5) ? null : rd.GetGuid(5), rd.IsDBNull(6) ? null : rd.GetString(6),
             rd.IsDBNull(7) ? null : rd.GetString(7), rd.IsDBNull(8) ? (long?)null : rd.GetInt64(8),
             rd.IsDBNull(9) ? null : rd.GetString(9), rd.IsDBNull(10) ? null : rd.GetString(10),
             rd.GetString(11), rd.GetBoolean(12), rd.GetDateTime(13));
+        var testName = rd.IsDBNull(14) ? null : rd.GetString(14);
+        return new LabReportDetail(report, testName);
     }
 
     public async Task<bool> SetLabReportFileAsync(
@@ -174,7 +189,7 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
                        COALESCE(tc.test_name, 'Lab Test') AS "TestName", r.status AS "Status",
                        r.has_critical_findings AS "HasCriticalFindings", r.created_at AS "CreatedAt"
                 FROM docslot.lab_reports r
-                LEFT JOIN docslot.test_catalog tc ON tc.test_id = r.test_id
+                LEFT JOIN docslot.test_catalog tc ON tc.test_id = r.test_id AND tc.tenant_id = r.tenant_id
                 WHERE r.tenant_id = @p0 AND r.patient_id = @p1
                 ORDER BY r.created_at DESC
                 """,
@@ -476,7 +491,7 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         ps.Select(p => (object)new NpgsqlParameter(p.Name, p.Value)).ToArray();
 
     private sealed record NumberRow(string? Number);
-    private sealed record ListRow(Guid PrescriptionId, string? PrescriptionNumber, Guid PatientId, Guid DoctorId, string Status, DateTime CreatedAt);
+    private sealed record ListRow(Guid PrescriptionId, string? PrescriptionNumber, Guid PatientId, Guid DoctorId, string? DoctorName, string Status, DateTime CreatedAt);
     private sealed record LabListRow(Guid ReportId, string? ReportNumber, string TestName, string Status, bool HasCriticalFindings, DateTime CreatedAt);
     private sealed record DeliverRow(string Status, DateTime? DeliveredAt);
     private sealed record AmendedRow(string Status);

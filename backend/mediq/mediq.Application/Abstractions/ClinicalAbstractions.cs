@@ -11,7 +11,9 @@ namespace mediq.Application.Abstractions;
 public interface IClinicalRepository
 {
     Task<string?> AddPrescriptionAsync(Prescription prescription, CancellationToken ct);   // returns prescription_number
-    Task<Prescription?> GetPrescriptionAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct);
+    /// <summary>Detail read: the entity PLUS the joined doctor name (plaintext directory data, NOT PHI).
+    /// Callers that only need the entity (amend, drug-alerts) unwrap <c>.Prescription</c>.</summary>
+    Task<PrescriptionDetail?> GetPrescriptionAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<PrescriptionRow>> ListPrescriptionsAsync(Guid tenantId, Guid patientId, CancellationToken ct);
     /// <summary>Conditionally marks an amendable prescription (status finalized/delivered) as 'amended'.
     /// Returns false if it was not in an amendable state (already amended / draft / cross-tenant) — the
@@ -19,7 +21,9 @@ public interface IClinicalRepository
     Task<bool> MarkPrescriptionSupersededAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct);
 
     Task<string?> AddLabReportAsync(LabReport report, CancellationToken ct);               // returns report_number
-    Task<LabReport?> GetLabReportAsync(Guid reportId, Guid tenantId, CancellationToken ct);
+    /// <summary>Detail read: the entity PLUS the joined test name (plaintext catalog data, NOT PHI).
+    /// Callers that only need the entity (file upload/download) unwrap <c>.Report</c>.</summary>
+    Task<LabReportDetail?> GetLabReportAsync(Guid reportId, Guid tenantId, CancellationToken ct);
     /// <summary>Attaches (or replaces) the stored PHI artifact reference (blob key + file metadata) on a
     /// tenant-scoped report; pending → ready. Returns false if the report was not found in this tenant.</summary>
     Task<bool> SetLabReportFileAsync(Guid reportId, Guid tenantId, string storageKey, string fileName,
@@ -78,8 +82,18 @@ public interface IClinicalRepository
 public sealed record ConsentContextRow(
     Guid PatientId, string MaskedPhone, bool ClinicalConsentActive, bool AbdmConsentActive, DateTime? AbdmConsentExpiresAt);
 
-/// <summary>Lightweight projection of a prescription header (ciphertext fields decrypted by the handler).</summary>
-public sealed record PrescriptionRow(Guid PrescriptionId, string? PrescriptionNumber, Guid PatientId, Guid DoctorId, string Status, DateTime CreatedAt);
+/// <summary>Lightweight projection of a prescription header (ciphertext fields decrypted by the handler).
+/// DoctorName is plaintext directory data joined from docslot.doctors (NOT PHI).</summary>
+public sealed record PrescriptionRow(Guid PrescriptionId, string? PrescriptionNumber, Guid PatientId, Guid DoctorId, string? DoctorName, string Status, DateTime CreatedAt);
+
+/// <summary>Prescription detail-read projection: the domain entity PLUS the joined doctor name (plaintext
+/// directory data from docslot.doctors — NOT PHI, not encrypted). DoctorName is read-only presentation and is
+/// deliberately kept off the domain entity.</summary>
+public sealed record PrescriptionDetail(Prescription Prescription, string? DoctorName);
+
+/// <summary>Lab-report detail-read projection: the domain entity PLUS the joined test name (plaintext catalog
+/// data from docslot.test_catalog — NOT PHI). TestName is read-only presentation, kept off the domain entity.</summary>
+public sealed record LabReportDetail(LabReport Report, string? TestName);
 
 /// <summary>Lab-report list header (NO clinical content — the structured results are not selected/decrypted).</summary>
 public sealed record LabReportListRow(Guid ReportId, string? ReportNumber, string TestName, string Status, bool HasCriticalFindings, DateTime CreatedAt);
