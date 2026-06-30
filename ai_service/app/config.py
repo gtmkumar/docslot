@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     jwt_issuer: str = "docslot-platform"
     jwt_audience: str = "docslot-clients"
     jwt_algorithm: str = "HS256"
+    # Clock-skew leeway (seconds) for token exp/nbf validation. MUST match the .NET
+    # API's TokenValidationParameters.ClockSkew (30s) so the two services agree on a
+    # token's validity window. Without it, a token the .NET API still accepts within
+    # its skew is rejected here (401), making forwarded-JWT AI calls (triage/RAG/OCR)
+    # intermittently fail in the ~30s window after a user's access token expires. (#51)
+    jwt_leeway_seconds: int = 30
 
     # --- PHI-at-rest encryption ---
     # Master passphrase for envelope encryption of AI-derived PHI (RAG chunk text +
