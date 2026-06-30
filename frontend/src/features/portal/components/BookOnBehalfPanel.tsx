@@ -16,6 +16,7 @@ import { SlideOver } from '@/components/ui/SlideOver';
 import { FieldShell, Select, TextArea, TextInput, labelClass } from '@/components/ui/Field';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { idempotencyKey } from '@/lib/api-client';
+import { toUserError } from '@/lib/backend';
 import { istSlot } from '@/lib/format';
 import { useCreatePortalBooking, usePortalPractitioners, usePortalSlots } from '../api';
 import type { BrokerGender } from '@/lib/mock/contracts';
@@ -61,21 +62,27 @@ export function BookOnBehalfPanel({ open, onClose }: { open: boolean; onClose: (
       toast.error(t('portal.behalf.pickSlot'));
       return;
     }
-    const result = await create.mutateAsync({
-      patientPhone: values.patientPhone,
-      patientName: values.patientName.trim() || null,
-      patientAge: ageNum(values.patientAge),
-      patientGender: gender || null,
-      // Live: the slot GUID; mock: the time string (the mock create ignores it).
-      slotId: slotKey,
-      doctorId,
-      departmentId: null,
-      chiefComplaint: values.chiefComplaint.trim() || null,
-      idempotencyKey: idempotencyKey(),
-    });
-    // The status is 'awaiting_patient_consent' — reinforce the OTP step in the toast.
-    toast.success(t('portal.behalf.created', { ref: result.bookingNumber ?? '' }));
-    onClose();
+    // try/catch so a server rejection surfaces an error toast (and leaves the panel open to retry)
+    // instead of an unhandled rejection with no feedback (#55).
+    try {
+      const result = await create.mutateAsync({
+        patientPhone: values.patientPhone,
+        patientName: values.patientName.trim() || null,
+        patientAge: ageNum(values.patientAge),
+        patientGender: gender || null,
+        // Live: the slot GUID; mock: the time string (the mock create ignores it).
+        slotId: slotKey,
+        doctorId,
+        departmentId: null,
+        chiefComplaint: values.chiefComplaint.trim() || null,
+        idempotencyKey: idempotencyKey(),
+      });
+      // The status is 'awaiting_patient_consent' — reinforce the OTP step in the toast.
+      toast.success(t('portal.behalf.created', { ref: result.bookingNumber ?? '' }));
+      onClose();
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
   });
 
   const errKey = (k: keyof BehalfForm) => {

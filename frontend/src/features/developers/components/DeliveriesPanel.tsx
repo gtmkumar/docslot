@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { dateTime } from '@/lib/format';
 import { idempotencyKey } from '@/lib/api-client';
+import { toUserError } from '@/lib/backend';
 import { usePermissions } from '@/lib/permissions';
 import { useRetryDelivery, useWebhookDeliveries, useWebhooks } from '../api';
 import { StatusBadge } from './StatusBadge';
@@ -29,7 +30,10 @@ export function DeliveriesPanel({ webhookId, open, onClose }: { webhookId: strin
   const onRetry = (deliveryId: string) => {
     retry.mutate(
       { deliveryId, idempotencyKey: idempotencyKey() },
-      { onSuccess: () => toast.success(t('developers.deliveries.retried')) },
+      {
+        onSuccess: () => toast.success(t('developers.deliveries.retried')),
+        onError: (e) => toast.error(toUserError(e)), // a 404/409 now surfaces instead of failing silently (#55)
+      },
     );
   };
 

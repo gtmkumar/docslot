@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Ban, ShieldX } from 'lucide-react';
 import { toast } from 'sonner';
+import { toUserError } from '@/lib/backend';
 import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
 import { TextArea, labelClass } from '@/components/ui/Field';
@@ -29,15 +30,16 @@ export function ManageBrokerPanel({ brokerId, open, onClose }: { brokerId: strin
   const [reason, setReason] = useState('');
   const reasonOk = reason.trim().length > 0;
 
+  // onError surfaces a 403/422/network rejection instead of failing silently (#55).
   const onSuspend = () =>
-    setStatus.mutate({ brokerId, isActive: false, idempotencyKey: idempotencyKey() }, { onSuccess: () => toast(t('commission.manage.suspended')) });
+    setStatus.mutate({ brokerId, isActive: false, idempotencyKey: idempotencyKey() }, { onSuccess: () => toast(t('commission.manage.suspended')), onError: (e) => toast.error(toUserError(e)) });
   const onActivate = () =>
-    setStatus.mutate({ brokerId, isActive: true, idempotencyKey: idempotencyKey() }, { onSuccess: () => toast.success(t('commission.manage.activated')) });
+    setStatus.mutate({ brokerId, isActive: true, idempotencyKey: idempotencyKey() }, { onSuccess: () => toast.success(t('commission.manage.activated')), onError: (e) => toast.error(toUserError(e)) });
   const onBlacklist = () => {
     if (!reasonOk) return;
     blacklist.mutate(
       { brokerId, reason: reason.trim(), idempotencyKey: idempotencyKey() },
-      { onSuccess: () => { toast(t('commission.manage.blacklisted')); onClose(); } },
+      { onSuccess: () => { toast(t('commission.manage.blacklisted')); onClose(); }, onError: (e) => toast.error(toUserError(e)) },
     );
   };
 
