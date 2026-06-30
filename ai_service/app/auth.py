@@ -66,6 +66,10 @@ def _principal_from_credentials(
             algorithms=[settings.jwt_algorithm],
             issuer=settings.jwt_issuer,
             audience=settings.jwt_audience,
+            # Match the .NET API's ClockSkew (30s) so the two validators agree on the
+            # token's validity window — a forwarded user JWT the .NET API accepts is
+            # not rejected here near expiry (issue #51).
+            leeway=settings.jwt_leeway_seconds,
             options={"require": ["exp", "sub"]},
         )
     except jwt.PyJWTError as exc:
