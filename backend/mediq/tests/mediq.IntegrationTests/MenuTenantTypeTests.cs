@@ -25,6 +25,7 @@ public sealed class MenuTenantTypeTests(MenuTenantTypeWebAppFactory factory) : I
         Assert.Contains("doctors", hospitalKeys);
         Assert.Contains("lab", hospitalKeys);
         Assert.Contains("dashboard", hospitalKeys);   // unscoped (applies_to_tenant_types NULL) → every type
+        Assert.Contains("ai_ops", hospitalKeys);       // slice-15 AI Operations nav row (gated on the clinical reads the super_admin holds)
 
         // Pathology-lab tenant: 'doctors' is NOT in the lab's tenant_type set → ABSENT; 'lab' + unscoped present.
         var lab = await MenusForTenantAsync(factory.LabTenantId);
@@ -33,6 +34,7 @@ public sealed class MenuTenantTypeTests(MenuTenantTypeWebAppFactory factory) : I
         Assert.Contains("lab", labKeys);               // scoped to pathology_lab → present
         Assert.Contains("dashboard", labKeys);         // unscoped → present
         Assert.Contains("team", labKeys);              // unscoped admin screen → present
+        Assert.Contains("ai_ops", labKeys);            // slice-15 AI Operations nav row (unscoped + perm-gated)
 
         // Same user, same permissions (super_admin) — so the ONLY thing that removed 'doctors' was tenant_type.
         // Sanity: the lab tree is a strict subset on this discriminator (hospital had 'doctors', lab does not).

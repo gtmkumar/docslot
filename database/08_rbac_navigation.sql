@@ -406,6 +406,7 @@ DECLARE
     m_team UUID;
     m_developers UUID;
     m_security UUID;
+    m_ai_ops UUID;
     m_settings UUID;
 BEGIN
     -- ---- Top-level menus ----------------------------------------------------
@@ -463,6 +464,12 @@ BEGIN
     INSERT INTO platform.navigation_menus (menu_key, menu_label, menu_label_hi, menu_icon, menu_url, display_order, applies_to_tenant_types)
     VALUES ('security', 'Security & Compliance', 'सुरक्षा और अनुपालन', 'shield', '/security', 110, NULL)
     RETURNING menu_id INTO m_security;
+
+    -- AI Operations (OCR extractions + RAG status — operational, non-PHI summaries). Visible to a holder of
+    -- either clinical read perm; each section self-gates server-side (slice 15).
+    INSERT INTO platform.navigation_menus (menu_key, menu_label, menu_label_hi, menu_icon, menu_url, display_order, applies_to_tenant_types)
+    VALUES ('ai_ops', 'AI Operations', 'एआई संचालन', 'sparkles', '/ai-ops', 115, NULL)
+    RETURNING menu_id INTO m_ai_ops;
 
     INSERT INTO platform.navigation_menus (menu_key, menu_label, menu_label_hi, menu_icon, menu_url, display_order, applies_to_tenant_types)
     VALUES ('settings', 'Settings', 'सेटिंग्स', 'gear', '/settings', 120, NULL)
@@ -556,6 +563,12 @@ BEGIN
     INSERT INTO platform.menu_permissions (menu_id, permission_id)
     SELECT m_security, p.permission_id FROM platform.permissions p
     WHERE p.permission_key = 'platform.audit.read' ON CONFLICT DO NOTHING;
+
+    -- AI Operations → docslot.report.read OR docslot.medical_history.read (ANY-of: each /ai-ops section
+    -- self-gates, so a holder of EITHER clinical read sees the menu and the section(s) they're entitled to).
+    INSERT INTO platform.menu_permissions (menu_id, permission_id)
+    SELECT m_ai_ops, p.permission_id FROM platform.permissions p
+    WHERE p.permission_key IN ('docslot.report.read', 'docslot.medical_history.read') ON CONFLICT DO NOTHING;
 
     -- settings.brokers → commission.rules.read
     INSERT INTO platform.menu_permissions (menu_id, permission_id)

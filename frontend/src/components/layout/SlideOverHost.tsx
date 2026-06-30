@@ -57,6 +57,8 @@ const UploadReportPanel = lazy(() => import('@/features/patients/components/Uplo
 const AbdmDetailPanel = lazy(() => import('@/features/patients/components/AbdmDetailPanel').then((m) => ({ default: m.AbdmDetailPanel })));
 const MedicalHistoryPanel = lazy(() => import('@/features/patients/components/MedicalHistoryPanel').then((m) => ({ default: m.MedicalHistoryPanel })));
 const ClinicalBreakGlassPanel = lazy(() => import('@/features/patients/components/ClinicalBreakGlassPanel').then((m) => ({ default: m.ClinicalBreakGlassPanel })));
+const OcrExtractPanel = lazy(() => import('@/features/patients/components/OcrExtractPanel').then((m) => ({ default: m.OcrExtractPanel })));
+const RagAskPanel = lazy(() => import('@/features/patients/components/RagAskPanel').then((m) => ({ default: m.RagAskPanel })));
 const RegisterBrokerPanel = lazy(() => import('@/features/commission/components/RegisterBrokerPanel').then((m) => ({ default: m.RegisterBrokerPanel })));
 const ManageBrokerPanel = lazy(() => import('@/features/commission/components/ManageBrokerPanel').then((m) => ({ default: m.ManageBrokerPanel })));
 const CommissionRulePanel = lazy(() => import('@/features/commission/components/CommissionRulePanel').then((m) => ({ default: m.CommissionRulePanel })));
@@ -86,7 +88,9 @@ type TransientPanelType =
   | 'abdmDetail'
   | 'createHistory'
   | 'editHistory'
-  | 'clinicalBreakGlass';
+  | 'clinicalBreakGlass'
+  | 'ocrExtract'
+  | 'ragAsk';
 /** URL-addressable panel types. */
 type UrlPanelType = Exclude<PanelType, TransientPanelType>;
 const TRANSIENT_SET = new Set<PanelType>([
@@ -95,6 +99,9 @@ const TRANSIENT_SET = new Set<PanelType>([
   // Medical-history create/edit + the clinical break-glass carry PHI and/or a
   // declared purpose-of-use — never URL-encoded or restored from a refresh.
   'createHistory', 'editHistory', 'clinicalBreakGlass',
+  // AI document assist (OCR extract / RAG ask): patient-bound PHI + declared
+  // purpose-of-use — never URL-encoded or restored from a refresh.
+  'ocrExtract', 'ragAsk',
 ]);
 /** Type guard: narrows a panel to the URL-addressable subset. */
 function isUrlPanel(type: PanelType): type is UrlPanelType {
@@ -303,6 +310,10 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <MedicalHistoryPanel patientId={panel.patientId} purpose={panel.purpose} entry={panel.entry} open onClose={closePanel} />;
     case 'clinicalBreakGlass':
       return <ClinicalBreakGlassPanel patientId={panel.patientId} resourceType={panel.resourceType} resourceId={panel.resourceId} reopen={panel.reopen} open onClose={closePanel} />;
+    case 'ocrExtract':
+      return <OcrExtractPanel patientId={panel.patientId} purpose={panel.purpose} bookingId={panel.bookingId} open onClose={closePanel} />;
+    case 'ragAsk':
+      return <RagAskPanel patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
     case 'registerBroker':
       return <RegisterBrokerPanel open onClose={closePanel} />;
     case 'manageBroker':

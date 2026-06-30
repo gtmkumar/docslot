@@ -58,6 +58,9 @@ const DoctorsScreen = lazy(() =>
 const AnalyticsScreen = lazy(() =>
   import('@/features/analytics/AnalyticsScreen').then((m) => ({ default: m.AnalyticsScreen })),
 );
+const AiOpsScreen = lazy(() =>
+  import('@/features/ai/AiOpsScreen').then((m) => ({ default: m.AiOpsScreen })),
+);
 
 // Shared slide-over search params (root-level so all routes carry them).
 // `clientSecret` and `deletionCertificate` are intentionally NOT here — each
@@ -148,6 +151,14 @@ const analyticsRoute = createRoute({
   path: '/analytics',
   component: AnalyticsScreen,
 });
+// AI Operations (Slice 11 + 14). Backend nav surfaces it for clinical-ops users
+// (docslot.report.read / docslot.medical_history.read); the screen gates each
+// section on its own permission. NON-PHI ops summaries only.
+const aiOpsRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/ai-ops',
+  component: AiOpsScreen,
+});
 const teamRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/team',
@@ -200,6 +211,7 @@ const routeTree = rootRoute.addChildren([
     patientsRoute,
     patientRecordsRoute,
     analyticsRoute,
+    aiOpsRoute,
     teamRoute,
     developersRoute,
     securityRoute,

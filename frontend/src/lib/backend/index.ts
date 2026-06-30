@@ -274,5 +274,18 @@ export const breakGlass = USE_REAL_API ? real.breakGlass : mock.breakGlass;
 export const getNoShowRisk = USE_REAL_API ? real.getNoShowRisk : mock.getNoShowRisk;
 export const submitTriage = USE_REAL_API ? real.submitTriage : mock.submitTriage;
 
+// ── AI DOCUMENT SURFACES (OCR extract + RAG ask + ops reads) — Slice 11 + 14 ──
+// PHI POSTs: extractLabReport (PERSISTED → Idempotency-Key) + askPatientRag
+// (advisory → none); both forward X-Purpose-Of-Use (patient-bound). Their results
+// (analyte values / RAG answer) AND the RAG question are PHI → consumed via
+// mutations, never cached in a query key. The ops reads (extractions list + RAG
+// status) are non-PHI summaries → cacheable queries. Mock side is deterministic +
+// clearly labelled (source 'mock-ui') so flag-off works without implying a real
+// model ran.
+export const extractLabReport = USE_REAL_API ? real.extractLabReport : mock.extractLabReport;
+export const askPatientRag = USE_REAL_API ? real.askPatientRag : mock.askPatientRag;
+export const listAiExtractions = USE_REAL_API ? real.listAiExtractions : mock.listAiExtractions;
+export const getRagStatus = USE_REAL_API ? real.getRagStatus : mock.getRagStatus;
+
 export { USE_REAL_API } from './flag';
 export { toUserError } from './real';
