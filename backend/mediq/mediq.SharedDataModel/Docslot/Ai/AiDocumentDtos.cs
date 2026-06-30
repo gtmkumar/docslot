@@ -63,3 +63,26 @@ public sealed record RagAnswerDto(
     IReadOnlyList<RagCitationDto> Citations,
     int? Retrieved,
     string? Source = null);
+
+// ---- AI operational reads (extraction list + RAG status) — non-PHI summaries ----------------------
+
+/// <summary>One extraction SUMMARY (header only — never the analyte values). <see cref="AbnormalCount"/> is an
+/// aggregate count, not an individual result.</summary>
+public sealed record OcrExtractionSummaryDto(
+    string ExtractionId, string SourceType, string Status, double? OverallConfidence,
+    bool RequiresHumanReview, int AbnormalCount, string CreatedAt);
+
+/// <summary>The tenant's recent OCR extractions (ops/forensics list — summaries only, no PHI analyte values).
+/// <see cref="Available"/> is false when the AI service is unreachable; an authorization failure surfaces as
+/// 403/422, never a masked false. <see cref="Source"/> records provenance ('ai-service-http' | 'stub-dev').</summary>
+public sealed record OcrExtractionListDto(
+    bool Available, IReadOnlyList<OcrExtractionSummaryDto> Extractions, string? Source = null);
+
+/// <summary>A RAG knowledge base's summary counts.</summary>
+public sealed record RagKnowledgeBaseDto(string KbKey, string Name, int DocumentCount);
+
+/// <summary>The tenant's RAG knowledge-base status (operational counts — embeddings/patients-indexed/KBs; no PHI).
+/// <see cref="Available"/> is false when the AI service is unreachable. <see cref="Source"/> records provenance.</summary>
+public sealed record RagStatusDto(
+    bool Available, int? Embeddings, int? PatientsIndexed,
+    IReadOnlyList<RagKnowledgeBaseDto> KnowledgeBases, string? Source = null);

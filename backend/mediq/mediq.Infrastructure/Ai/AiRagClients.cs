@@ -61,11 +61,47 @@ public sealed class HttpAiRagClient(
         }
     }
 
+    public async Task<RagStatusResult?> GetStatusAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, "/ai/v1/rag/status");
+            var auth = context.HttpContext?.Request.Headers.Authorization.ToString();
+            if (!string.IsNullOrWhiteSpace(auth))
+                req.Headers.TryAddWithoutValidation("Authorization", auth);
+
+            using var resp = await http.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                logger.LogWarning("AI RAG status returned {Status}", (int)resp.StatusCode);
+                AiErrorMapper.ThrowIfClientError(resp.StatusCode);
+                return null;
+            }
+
+            var dto = await resp.Content.ReadFromJsonAsync<AiRagStatusResponse>(ct);
+            if (dto is null) return null;
+            return new RagStatusResult(
+                dto.Embeddings, dto.PatientsIndexed,
+                (dto.KnowledgeBases ?? []).Select(k => new RagKnowledgeBaseResult(
+                    k.KbKey ?? "", k.Name ?? "", k.DocumentCount)).ToList(),
+                "ai-service-http");
+        }
+        catch (Exception ex) when (ex is not AppExceptionBase and not KeyNotFoundException)
+        {
+            logger.LogWarning(ex, "AI RAG status call failed; status unavailable.");
+            return null;
+        }
+    }
+
     // Matches the AI service's RagAskResponse schema (camelCase). The echoed question is INTENTIONALLY not bound
     // (the caller already holds it; keeps PHI out of the response envelope).
     private sealed record AiRagAskResponse(
         string? PatientId, string? Answer, string? Mode, List<AiRagCitation>? Citations, int Retrieved);
     private sealed record AiRagCitation(string? HistoryId, string? RecordType, string? Title, string? Severity, double Score);
+
+    // Matches the AI service's RagStatusResponse / KnowledgeBaseInfo schema (camelCase) — operational counts.
+    private sealed record AiRagStatusResponse(int Embeddings, int PatientsIndexed, List<AiKnowledgeBaseInfo>? KnowledgeBases);
+    private sealed record AiKnowledgeBaseInfo(string? KbKey, string? Name, int DocumentCount);
 }
 
 /// <summary>
@@ -83,4 +119,9 @@ public sealed class StubAiRagClient : IAiRagClient
             Citations: [],
             Retrieved: 0,
             Source: "stub-dev"));
+
+    public Task<RagStatusResult?> GetStatusAsync(CancellationToken ct) =>
+        // Deterministic empty status so the ops view renders WITHOUT the AI service.
+        Task.FromResult<RagStatusResult?>(new RagStatusResult(
+            Embeddings: 0, PatientsIndexed: 0, KnowledgeBases: [], Source: "stub-dev"));
 }

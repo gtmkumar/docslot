@@ -68,12 +68,48 @@ public sealed class HttpAiOcrClient(
         }
     }
 
+    public async Task<IReadOnlyList<OcrExtractionSummaryResult>?> ListExtractionsAsync(int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"/ai/v1/extractions?limit={limit}");
+            var auth = context.HttpContext?.Request.Headers.Authorization.ToString();
+            if (!string.IsNullOrWhiteSpace(auth))
+                req.Headers.TryAddWithoutValidation("Authorization", auth);
+
+            using var resp = await http.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                logger.LogWarning("AI extraction list returned {Status}", (int)resp.StatusCode);
+                AiErrorMapper.ThrowIfClientError(resp.StatusCode);
+                return null;
+            }
+
+            var dto = await resp.Content.ReadFromJsonAsync<AiExtractionListResponse>(ct);
+            if (dto is null) return null;
+            return (dto.Extractions ?? []).Select(e => new OcrExtractionSummaryResult(
+                e.ExtractionId ?? "", e.SourceType ?? "unknown", e.Status ?? "unknown",
+                e.OverallConfidence, e.RequiresHumanReview, e.AbnormalCount, e.CreatedAt ?? "", "ai-service-http")).ToList();
+        }
+        catch (Exception ex) when (ex is not AppExceptionBase and not KeyNotFoundException)
+        {
+            logger.LogWarning(ex, "AI extraction-list call failed; list unavailable.");
+            return null;
+        }
+    }
+
     // Matches the AI service's LabReportExtractResponse schema (camelCase). rawTextPreview is INTENTIONALLY not
     // bound — the proxy never surfaces the decrypted OCR text (PHI minimization at the boundary).
     private sealed record AiLabReportExtractResponse(
         string? ExtractionId, string? SourceUrl, string? OcrEngine, double OverallConfidence,
         bool RequiresHumanReview, List<AiAnalyte>? Analytes, int AbnormalCount);
     private sealed record AiAnalyte(string? Test, double Value, string? Unit, double RefLow, double RefHigh, string? Flag);
+
+    // Matches the AI service's ExtractionListResponse / ExtractionListItem schema (camelCase) — summaries only.
+    private sealed record AiExtractionListResponse(int Count, List<AiExtractionListItem>? Extractions);
+    private sealed record AiExtractionListItem(
+        string? ExtractionId, string? SourceType, string? Status, double? OverallConfidence,
+        bool RequiresHumanReview, int AbnormalCount, string? CreatedAt);
 }
 
 /// <summary>
@@ -101,4 +137,12 @@ public sealed class StubAiOcrClient : IAiOcrClient
             Analytes: analytes,
             Source: "stub-dev"));
     }
+
+    public Task<IReadOnlyList<OcrExtractionSummaryResult>?> ListExtractionsAsync(int limit, CancellationToken ct) =>
+        // One clearly-labelled stub summary so the ops list renders WITHOUT the AI service. Deterministic.
+        Task.FromResult<IReadOnlyList<OcrExtractionSummaryResult>?>(new List<OcrExtractionSummaryResult>
+        {
+            new("stub-extraction", "lab_report", "completed", 0.5, RequiresHumanReview: true, AbnormalCount: 0,
+                CreatedAt: "1970-01-01T00:00:00Z", Source: "stub-dev"),
+        });
 }
