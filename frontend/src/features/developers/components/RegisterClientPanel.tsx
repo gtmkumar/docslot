@@ -2,18 +2,22 @@
 // created inactive/unverified. On success we DON'T close to nothing — we swap the
 // panel to the one-time secret reveal (carrying the plaintext secret in-store).
 // POST carries a stable Idempotency-Key.
+//
+// NOTE: no scopes picker. The register request has no scopes field — scopes are a
+// SEPARATE, distinctly-gated grant (PUT /api-clients/{id}/scopes) managed on the
+// client detail AFTER approval. The old "Requested scopes" list was never sent
+// (#57); it was removed rather than shipping a control whose selection is
+// discarded, and chaining a scopes call would risk the one-time-secret reveal.
 
-import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
 import { FieldShell, Select, TextArea, TextInput, labelClass } from '@/components/ui/Field';
-import { Skeleton } from '@/components/ui/Skeleton';
 import { idempotencyKey } from '@/lib/api-client';
 import { useUI } from '@/stores/ui';
-import { useRegisterClient, useScopes } from '../api';
+import { useRegisterClient } from '../api';
 
 const schema = z.object({
   clientName: z.string().trim().min(1, 'name'),
@@ -30,10 +34,8 @@ type RegisterForm = z.infer<typeof schema>;
 
 export function RegisterClientPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useTranslation();
-  const { data: scopes, isLoading: scopesLoading } = useScopes();
   const register_ = useRegisterClient();
   const openPanel = useUI((s) => s.openPanel);
-  const [selectedScopes, setSelectedScopes] = useState<Set<string>>(new Set());
 
   const { register, handleSubmit, formState } = useForm<RegisterForm>({
     defaultValues: { clientName: '', clientCode: '', clientType: 'partner', ownerEmail: '', ownerOrganization: '', purpose: '' },
@@ -45,14 +47,6 @@ export function RegisterClientPanel({ open, onClose }: { open: boolean; onClose:
       return { values: {}, errors };
     },
   });
-
-  const toggleScope = (key: string) =>
-    setSelectedScopes((s) => {
-      const next = new Set(s);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
 
   const onSubmit = handleSubmit(async (values) => {
     const result = await register_.mutateAsync({
@@ -128,35 +122,9 @@ export function RegisterClientPanel({ open, onClose }: { open: boolean; onClose:
           <TextArea id="rc-purpose" rows={2} placeholder={t('developers.register.purposePlaceholder')} {...register('purpose')} aria-invalid={Boolean(formState.errors.purpose)} />
         </FieldShell>
 
-        <section>
-          <span className={labelClass}>{t('developers.register.requestedScopes')}</span>
-          {scopesLoading || !scopes ? (
-            <div className="flex flex-col gap-1.5" role="status" aria-busy="true">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-9 w-full" />
-              ))}
-            </div>
-          ) : (
-            <ul className="flex flex-col divide-y divide-line rounded-[var(--radius-sm)] border border-line">
-              {scopes.map((s) => (
-                <li key={s.scopeKey}>
-                  <label className="flex cursor-pointer items-center gap-2.5 px-3 py-2 transition-colors hover:bg-surface-sunk">
-                    <input
-                      type="checkbox"
-                      checked={selectedScopes.has(s.scopeKey)}
-                      onChange={() => toggleScope(s.scopeKey)}
-                      className="h-4 w-4 accent-[var(--primary)]"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="mono block truncate text-[12px] text-ink">{s.scopeKey}</span>
-                      <span className="block truncate text-[11px] text-muted">{s.description}</span>
-                    </span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <p className="rounded-[var(--radius-sm)] bg-surface-sunk px-3 py-2 text-[12px] text-muted">
+          {t('developers.register.scopesAfterApproval')}
+        </p>
       </form>
     </SlideOver>
   );

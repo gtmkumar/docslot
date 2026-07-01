@@ -28,7 +28,15 @@ const schema = z.object({
 });
 type RuleForm = z.infer<typeof schema>;
 
-const num = (s: string): number | null => (s.trim() === '' ? null : Number(s) || null);
+// Empty → null (unset); otherwise the parsed number, PRESERVING a legitimate 0.
+// The old `Number(s) || null` coerced an entered 0 to null (0 is falsy), silently
+// dropping a 0 cap/floor/amount as "unset" (#57).
+const num = (s: string): number | null => {
+  const trimmed = s.trim();
+  if (trimmed === '') return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : null;
+};
 
 export function CommissionRulePanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useTranslation();

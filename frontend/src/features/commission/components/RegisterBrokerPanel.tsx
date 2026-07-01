@@ -1,7 +1,12 @@
 // Register Care Partner slide-over. phone-canonical + type + PAN (masked,
-// sensitive — never displayed in full anywhere) + tier + GST. Gated upstream by
+// sensitive — never displayed in full anywhere) + GST. Gated upstream by
 // commission.broker.invite. POST carries a stable Idempotency-Key. The register
 // result returns NO PAN, so there is no show-once step.
+//
+// NOTE: no tier control. Dashboard-onboarded Care Partners get a server-defaulted
+// tier (the register endpoint intentionally has no tier field); the previous tier
+// selector was silently dropped in real-API mode (#57), so it was removed rather
+// than shipping a control that does nothing.
 
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -12,10 +17,9 @@ import { SlideOver } from '@/components/ui/SlideOver';
 import { FieldShell, Select, TextInput, labelClass } from '@/components/ui/Field';
 import { idempotencyKey } from '@/lib/api-client';
 import { useRegisterBroker } from '../api';
-import type { BrokerType, TierLevel } from '@/lib/mock/contracts';
+import type { BrokerType } from '@/lib/mock/contracts';
 
 const BROKER_TYPES: BrokerType[] = ['medical_rep', 'corporate_hr', 'insurance_panel', 'aggregator_agent', 'community_worker', 'hotel_concierge', 'individual', 'platform_partner'];
-const TIERS: TierLevel[] = ['basic', 'silver', 'gold', 'platinum'];
 
 const schema = z.object({
   phone: z.string().trim().regex(/^\+?[0-9\s-]{8,16}$/, 'phone'),
@@ -29,7 +33,6 @@ const schema = z.object({
     .default('')
     .refine((v) => v === '' || /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(v), 'pan'),
   gstNumber: z.string().trim().optional().default(''),
-  tierLevel: z.enum(['basic', 'silver', 'gold', 'platinum']),
 });
 type RegisterForm = z.infer<typeof schema>;
 
@@ -38,7 +41,7 @@ export function RegisterBrokerPanel({ open, onClose }: { open: boolean; onClose:
   const register_ = useRegisterBroker();
 
   const { register, handleSubmit, formState } = useForm<RegisterForm>({
-    defaultValues: { phone: '', fullName: '', email: '', brokerType: 'medical_rep', pan: '', gstNumber: '', tierLevel: 'basic' },
+    defaultValues: { phone: '', fullName: '', email: '', brokerType: 'medical_rep', pan: '', gstNumber: '' },
     resolver: async (values) => {
       const parsed = schema.safeParse(values);
       if (parsed.success) return { values: parsed.data, errors: {} };
@@ -56,7 +59,6 @@ export function RegisterBrokerPanel({ open, onClose }: { open: boolean; onClose:
       brokerType: values.brokerType,
       pan: values.pan || null,
       gstNumber: values.gstNumber || null,
-      tierLevel: values.tierLevel,
       idempotencyKey: idempotencyKey(),
     });
     toast.success(t('commission.register.registered'));
@@ -99,31 +101,17 @@ export function RegisterBrokerPanel({ open, onClose }: { open: boolean; onClose:
           <TextInput id="rb-email" type="email" {...register('email')} />
         </FieldShell>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label htmlFor="rb-type" className={labelClass}>
-              {t('commission.register.type')}
-            </label>
-            <Select id="rb-type" {...register('brokerType')}>
-              {BROKER_TYPES.map((bt) => (
-                <option key={bt} value={bt}>
-                  {t(`commission.type.${bt}`)}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div>
-            <label htmlFor="rb-tier" className={labelClass}>
-              {t('commission.register.tier')}
-            </label>
-            <Select id="rb-tier" {...register('tierLevel')}>
-              {TIERS.map((tier) => (
-                <option key={tier} value={tier}>
-                  {t(`commission.tier.${tier}`)}
-                </option>
-              ))}
-            </Select>
-          </div>
+        <div>
+          <label htmlFor="rb-type" className={labelClass}>
+            {t('commission.register.type')}
+          </label>
+          <Select id="rb-type" {...register('brokerType')}>
+            {BROKER_TYPES.map((bt) => (
+              <option key={bt} value={bt}>
+                {t(`commission.type.${bt}`)}
+              </option>
+            ))}
+          </Select>
         </div>
 
         {/* PAN — sensitive. Masked-style input; stored encrypted; NEVER displayed
