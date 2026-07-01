@@ -15,3 +15,4 @@
 - [Broker portal + Campaigns + Form 16A](project_broker-portal-campaigns-form16a.md) — Phase-2 commission: /portal self-service (IDOR-safe me/* + consent-OTP), Campaigns tab (budget bar), Form 16A TDS (full-PAN via transient blob, never in state).
 - [AI document surfaces](project_ai-document-surfaces.md) — Slice 15: OCR extract + RAG ask (PHI mutations, purpose-of-use, out-of-cache) on patient view + /ai-ops non-PHI ops screen; nav gap flagged.
 - [Team Audit log + Sessions](project_team-audit-sessions.md) — #86/#87: /security endpoints surfaced in /team; CSV auth-fetch, range-independent facets, useOptimistic revoke, lastActivityAt Online dot.
+- [Invitations](project_invitations.md) — #89: token-based invites in /team Invites tab; one-time-token reveal panel, surgical-cache resend/revoke, list-has-no-inviter-name quirk, accept flow is out of scope (#93).

@@ -1,5 +1,7 @@
 # dotnet-microservices-architect — Memory Index
 
+- [Slice 89 invitations](project_slice89_invitations.md) — token-based invitations (SHA-256 hash, unauth accept via definer fn). GOTCHAs: text→citext overload fails (declare TEXT params); OUT-name/ON CONFLICT column collision (42702, out_-prefix); audit of uncommitted new user needs NULL actor (dedicated-conn FK).
+
 - [Dashboard API Contracts (Wave 2)](project_dashboard_contracts.md) — DocSlot dashboard DTO/enum contracts in mediq.SharedDataModel, what they mirror in canonical SQL, envelope/timezone/PHI/idempotency conventions.
 - [Slice 01 platform_core](project_slice01_platform_core.md) — backend topology, custom CQRS shape, EF database-first (inet converter gotcha), resolve-once RBAC, bcrypt+argon2 auth, audit-chain trigger, Swashbuckle-incompatible-with-net10.
 - [Slice 02 platform_api](project_slice02_platform_api.md) — OAuth client-credentials, dual auth (perm vs scope via token_use claim), webhook HMAC+Polly retry+outbox, secret-at-rest rules (webhook secret AES-encrypted not hashed).
