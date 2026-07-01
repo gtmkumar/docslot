@@ -374,6 +374,8 @@ export const en = {
     confirmSlot: 'Confirm slot',
     confirmWhatsapp: 'Confirm + WhatsApp',
     reserved: 'Slot reserved',
+    noSlots: 'No available slots for this practitioner today.',
+    noPractitioners: 'No practitioners available.',
   },
   addDoctor: {
     eyebrow: 'Doctors',
@@ -2076,6 +2078,8 @@ export const hi: typeof en = {
     confirmSlot: 'स्लॉट पुष्ट करें',
     confirmWhatsapp: 'पुष्ट करें + व्हाट्सऐप',
     reserved: 'स्लॉट आरक्षित',
+    noSlots: 'इस चिकित्सक के लिए आज कोई स्लॉट उपलब्ध नहीं है।',
+    noPractitioners: 'कोई चिकित्सक उपलब्ध नहीं है।',
   },
   addDoctor: {
     eyebrow: 'डॉक्टर',

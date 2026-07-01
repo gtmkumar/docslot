@@ -1,6 +1,11 @@
 // Book time / Reserve a slot slide-over (image copy 9/10). Practitioner select →
 // morning/afternoon IST slot grids → reserve. A functional shell: selecting a
 // slot enables Confirm; confirm reserves via the payment-link-less path (toast).
+//
+// The practitioner list is sourced from the live practitioners query (real ids),
+// NOT a hardcoded mock id — feeding a mock id ('d1') into useSlots hit the .NET
+// {doctorId:guid} route as a 404 and the panel spun on the skeleton forever
+// (#60). Both the practitioner and slot reads now surface isError with a retry.
 
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -9,16 +14,25 @@ import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
 import { Select, labelClass } from '@/components/ui/Field';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { istSlot } from '@/lib/format';
-import { DOCTORS } from '@/lib/data';
-import { useSlots } from '../api';
+import { usePractitioners, useSlots } from '../api';
 import type { Slot } from '@/lib/mock/contracts';
 
 export function BookTimePanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useTranslation();
-  const [doctorId, setDoctorId] = useState(DOCTORS[0].id);
+  // No preselected doctor id: fall back to the first loaded practitioner so the
+  // slots query always fires with a real id (never a mock 'd1' → 404).
+  const [doctorId, setDoctorId] = useState<string | undefined>(undefined);
   const [slot, setSlot] = useState<string | null>(null);
-  const { data: slots, isLoading } = useSlots(doctorId);
+  const {
+    data: practitioners,
+    isLoading: pLoading,
+    isError: pError,
+    refetch: pRefetch,
+  } = usePractitioners();
+  const activeDoctorId = doctorId ?? practitioners?.[0]?.id;
+  const { data: slots, isLoading: sLoading, isError: sError, refetch: sRefetch } = useSlots(activeDoctorId);
 
   const isAfternoon = (time: string) => Number(time.split(':')[0]) >= 13;
   const morning = (slots ?? []).filter((s) => !isAfternoon(s.time));
@@ -52,28 +66,50 @@ export function BookTimePanel({ open, onClose }: { open: boolean; onClose: () =>
           <label htmlFor="bt-doctor" className={labelClass}>
             {t('bookTime.practitioner')}
           </label>
-          <Select
-            id="bt-doctor"
-            value={doctorId}
-            onChange={(e) => {
-              setDoctorId(e.target.value);
-              setSlot(null);
-            }}
-          >
-            {DOCTORS.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name} · {d.spec}
-              </option>
-            ))}
-          </Select>
+          {pError ? (
+            <EmptyState
+              title={t('error.genericTitle')}
+              description={t('error.genericBody')}
+              actionLabel={t('common.retry')}
+              onAction={() => void pRefetch()}
+            />
+          ) : pLoading || !practitioners ? (
+            <Skeleton className="h-10 w-full" />
+          ) : practitioners.length === 0 ? (
+            <p className="text-[12px] text-muted">{t('bookTime.noPractitioners')}</p>
+          ) : (
+            <Select
+              id="bt-doctor"
+              value={activeDoctorId ?? ''}
+              onChange={(e) => {
+                setDoctorId(e.target.value);
+                setSlot(null);
+              }}
+            >
+              {practitioners.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} · {d.spec}
+                </option>
+              ))}
+            </Select>
+          )}
         </div>
 
-        {isLoading || !slots ? (
+        {!activeDoctorId ? null : sError ? (
+          <EmptyState
+            title={t('error.genericTitle')}
+            description={t('error.genericBody')}
+            actionLabel={t('common.retry')}
+            onAction={() => void sRefetch()}
+          />
+        ) : sLoading || !slots ? (
           <div className="grid grid-cols-4 gap-2" role="status" aria-busy="true">
             {Array.from({ length: 12 }).map((_, i) => (
               <Skeleton key={i} className="h-12 w-full" />
             ))}
           </div>
+        ) : slots.length === 0 ? (
+          <p className="text-[12px] text-muted">{t('bookTime.noSlots')}</p>
         ) : (
           <>
             <SlotSection title={t('bookTime.morning')} slots={morning} selected={slot} onSelect={setSlot} />
