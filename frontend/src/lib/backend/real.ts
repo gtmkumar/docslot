@@ -1042,11 +1042,16 @@ export async function setBrokerStatus(
   input: { isActive: boolean; reason?: string },
   idempotencyKey: string,
 ): Promise<CommissionCreated> {
+  // Suspend and activate are SEPARATE endpoints gated by DISTINCT permissions
+  // (commission.broker.suspend vs .activate — SoD). Route by the requested
+  // transition so the server gate matches the UI gate (#58); the transition is
+  // implied by the path, so only the reason travels in the body.
+  const action = input.isActive ? 'activate' : 'suspend';
   // 204 No Content — synthesize the mock's { id } result so the hook is mode-blind.
-  await apiFetch<void>(`/commission/brokers/${brokerId}/status`, {
+  await apiFetch<void>(`/commission/brokers/${brokerId}/${action}`, {
     method: 'POST',
     idempotency: idempotencyKey,
-    body: { isActive: input.isActive, reason: input.reason ?? null },
+    body: { reason: input.reason ?? null },
   });
   return CommissionCreatedSchema.parse({ id: brokerId });
 }

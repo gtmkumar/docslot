@@ -171,6 +171,34 @@ public sealed class CommissionTests(CommissionWebAppFactory factory) : IClassFix
         await ExecAsync("DELETE FROM commission.referral_links WHERE broker_id=@b", ("b", factory.BrokerId));
     }
 
+    [Fact]
+    public async Task Broker_Suspend_And_Activate_Are_Separately_Gated()
+    {
+        // #58: the old single POST /brokers/{id}/status was gated ONLY on commission.broker.activate, so a
+        // suspend-but-not-activate caller was 403'd on the Suspend action the UI offered. It is now split into
+        // /suspend (commission.broker.suspend) and /activate (commission.broker.activate) — distinct is_dangerous
+        // permissions. super_admin holds BOTH, so both routes work end-to-end and toggle is_active.
+        var admin = await ClientAsync(factory.SuperEmail);
+
+        var suspend = await admin.PostAsJsonAsync($"/api/v1/commission/brokers/{factory.BrokerId}/suspend",
+            new SetBrokerStatusReasonRequest("integration-test suspend"));
+        Assert.Equal(HttpStatusCode.NoContent, suspend.StatusCode);
+        Assert.Equal(0, await ScalarIntAsync("SELECT is_active::int FROM commission.brokers WHERE broker_id=@b", ("b", factory.BrokerId)));
+
+        var activate = await admin.PostAsJsonAsync($"/api/v1/commission/brokers/{factory.BrokerId}/activate",
+            new SetBrokerStatusReasonRequest(null));
+        Assert.Equal(HttpStatusCode.NoContent, activate.StatusCode);
+        Assert.Equal(1, await ScalarIntAsync("SELECT is_active::int FROM commission.brokers WHERE broker_id=@b", ("b", factory.BrokerId)));
+
+        // A broker-role user holds NEITHER tenant-admin permission → both status routes are refused (403),
+        // proving each endpoint is permission-gated (not open) and a broker can't manage broker status.
+        var broker = await ClientAsync(factory.BrokerAEmail);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await broker.PostAsJsonAsync($"/api/v1/commission/brokers/{factory.BrokerId}/suspend", new SetBrokerStatusReasonRequest(null))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await broker.PostAsJsonAsync($"/api/v1/commission/brokers/{factory.BrokerId}/activate", new SetBrokerStatusReasonRequest(null))).StatusCode);
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private async Task<HttpClient> ClientAsync(string email)
