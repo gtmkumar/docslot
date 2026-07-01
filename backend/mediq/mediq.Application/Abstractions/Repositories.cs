@@ -1,4 +1,5 @@
 using mediq.Domain.Platform;
+using mediq.SharedDataModel.Docslot.Admin;
 
 namespace mediq.Application.Abstractions;
 
@@ -43,6 +44,10 @@ public interface IRoleAssignmentRepository
 {
     // ---- Reads (unchanged — no RLS write guard applies) ----
     Task<IReadOnlyList<Role>> ListRolesAsync(Guid? tenantId, CancellationToken ct);
+
+    /// <summary>Lists roles visible in the resolved tenant scope (system roles + own custom roles), each carrying
+    /// its active-assignee <c>MemberCount</c> for the current tenant, computed in ONE grouped query (no N+1).</summary>
+    Task<IReadOnlyList<RoleDto>> ListRolesWithMemberCountsAsync(Guid? tenantId, CancellationToken ct);
     Task<bool> RoleKeyExistsAsync(string roleKey, Guid? tenantId, CancellationToken ct);
     Task<UserTenantRole?> FindAssignmentAsync(Guid userId, Guid? tenantId, Guid roleId, CancellationToken ct);
     Task<Guid?> FindPermissionIdAsync(string permissionKey, CancellationToken ct);

@@ -139,6 +139,16 @@ public sealed class IamController(ICommandDispatcher commands, IQueryDispatcher 
         Guid userId, [FromQuery] Guid? tenantId = null, CancellationToken ct = default)
         => Ok(await queries.Query(new GetEffectivePermissionsQuery(userId, tenantId), ct));
 
+    /// <summary>ALL active per-user permission overrides for the caller's CURRENT tenant (the console's tenant-wide
+    /// "Per-user overrides" tab). Same gate as the per-user read (<c>platform.overrides.read</c>, SoD-distinct from
+    /// the dangerous grant). Tenant-scoped by the server-signed context + RLS + an explicit predicate — never leaks
+    /// another tenant's override. Includes each target user's identity plus a <c>Count</c> for the tab badge.</summary>
+    [HttpGet("overrides")]
+    [RequirePermission("platform.overrides.read")]
+    [ProducesResponseType<TenantOverridesListDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<TenantOverridesListDto>> ListTenantOverrides(CancellationToken ct)
+        => Ok(await queries.Query(new ListTenantOverridesQuery(), ct));
+
     /// <summary>A user's currently-effective per-user permission overrides (deny-wins, time-boxed). Gated by the
     /// purpose-built <c>platform.overrides.read</c> — read authority distinct from the dangerous
     /// <c>platform.overrides.grant</c> (SoD). RLS bounds the result to the caller's tenant.</summary>

@@ -65,6 +65,18 @@ public sealed record EffectivePermissionDto(string PermissionKey, string Source,
 public sealed record UserPermissionOverrideDto(
     Guid OverrideId, string PermissionKey, bool IsAllowed, string Reason, DateTime? ExpiresAt);
 
+/// <summary>One row of the tenant-wide "Per-user overrides" tab: a per-user override PLUS the target user's
+/// identity (so the list renders without a second lookup). Every row is scoped to the CURRENT tenant (never
+/// another tenant's, never a platform-wide NULL-tenant override). <c>Active</c> = currently effective
+/// (started, not expired); <c>IsAllowed</c> false = DENY (deny-wins), true = GRANT.</summary>
+public sealed record TenantPermissionOverrideDto(
+    Guid OverrideId, Guid UserId, string UserDisplayName, string UserEmail,
+    string PermissionKey, bool IsAllowed, string Reason,
+    DateTime EffectiveFrom, DateTime? ExpiresAt, bool Active);
+
+/// <summary>The tenant-wide overrides list plus a <c>Count</c> for the tab badge.</summary>
+public sealed record TenantOverridesListDto(int Count, IReadOnlyList<TenantPermissionOverrideDto> Overrides);
+
 // ---- Catalog plane (platform-governed): create modules + permissions ----------------------------
 // The "vocabulary" of authority. Creating these is a platform-admin act gated on
 // platform.permissions.manage. A permission is inert until application code checks it.

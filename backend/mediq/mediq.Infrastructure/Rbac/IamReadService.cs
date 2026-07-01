@@ -188,6 +188,31 @@ public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac,
                 new NpgsqlParameter("@p_tenant", (object?)tenantId ?? DBNull.Value))
             .ToListAsync(ct);
 
+    public async Task<TenantOverridesListDto> ListTenantOverridesAsync(Guid? tenantId, CancellationToken ct)
+    {
+        // Tenant-wide overrides tab. Two boundaries stack: the upo_read RLS policy (rls_can_see_tenant, signed
+        // GUC) AND the EXPLICIT o.tenant_id = @p_tenant predicate. Strict equality deliberately excludes both
+        // other tenants' rows and platform-wide (NULL-tenant) overrides — this tab is per-tenant only. Only
+        // non-revoked (is_active) rows; each carries a computed Active = currently-effective flag for the badge.
+        var rows = await db.Database.SqlQueryRaw<TenantPermissionOverrideDto>(
+                """
+                SELECT o.override_id AS "OverrideId", o.user_id AS "UserId",
+                       u.full_name AS "UserDisplayName", u.email::text AS "UserEmail",
+                       p.permission_key AS "PermissionKey", o.is_allowed AS "IsAllowed",
+                       o.reason AS "Reason", o.effective_from AS "EffectiveFrom", o.expires_at AS "ExpiresAt",
+                       (o.effective_from <= NOW() AND (o.expires_at IS NULL OR o.expires_at > NOW())) AS "Active"
+                FROM platform.user_permission_overrides o
+                JOIN platform.permissions p ON p.permission_id = o.permission_id
+                JOIN platform.users u ON u.user_id = o.user_id
+                WHERE o.is_active = true
+                  AND o.tenant_id = @p_tenant::uuid
+                ORDER BY u.full_name, p.permission_key
+                """,
+                new NpgsqlParameter("@p_tenant", (object?)tenantId ?? DBNull.Value))
+            .ToListAsync(ct);
+        return new TenantOverridesListDto(rows.Count, rows);
+    }
+
     /// <summary>The set of module (resource_type) ids the tenant has explicitly UN-licensed (denylist).
     /// Empty when there's no tenant context — modules then render as licensed by default.</summary>
     private async Task<HashSet<Guid>> UnlicensedModuleIdsAsync(Guid? tenantId, CancellationToken ct)

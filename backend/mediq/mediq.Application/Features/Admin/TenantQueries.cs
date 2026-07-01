@@ -37,13 +37,13 @@ public sealed record ListRolesQuery(Guid? TenantId) : IQuery<IReadOnlyList<RoleD
 public sealed class ListRolesQueryHandler(IRoleAssignmentRepository roles, ICurrentUserContext ctx)
     : IQueryHandler<ListRolesQuery, IReadOnlyList<RoleDto>>
 {
-    public async Task<IReadOnlyList<RoleDto>> Handle(ListRolesQuery query, CancellationToken ct)
+    public Task<IReadOnlyList<RoleDto>> Handle(ListRolesQuery query, CancellationToken ct)
     {
         // Default to the caller's tenant so a tenant admin sees system roles PLUS their own custom roles.
         // Without this, an omitted tenantId returns only global/system rows and custom roles vanish from
         // the list (they carry a tenant_id). A super_admin can still target another tenant explicitly.
+        // MemberCount is computed for that same resolved tenant scope in a single grouped query.
         var tenantId = query.TenantId ?? ctx.TenantId;
-        var rows = await roles.ListRolesAsync(tenantId, ct);
-        return rows.Select(r => new RoleDto(r.RoleId, r.RoleKey, r.Name, r.Scope, r.IsSystem, r.TenantId)).ToList();
+        return roles.ListRolesWithMemberCountsAsync(tenantId, ct);
     }
 }

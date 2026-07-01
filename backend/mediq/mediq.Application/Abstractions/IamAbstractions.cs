@@ -29,4 +29,9 @@ public interface IIamReadService
     /// <summary>A user's currently-effective per-tenant permission overrides (deny-wins, time-boxed). Plain
     /// request-tx read so the <c>upo_read</c> RLS policy bounds it to the caller's tenant.</summary>
     Task<IReadOnlyList<UserPermissionOverrideDto>> ListUserOverridesAsync(Guid userId, Guid? tenantId, CancellationToken ct);
+
+    /// <summary>ALL active per-user overrides for the CURRENT tenant (the console's tenant-wide overrides tab),
+    /// joined to the target user's identity. Bounded by BOTH the <c>upo_read</c> RLS policy AND an explicit
+    /// <c>tenant_id = @tenant</c> predicate — never leaks another tenant's (or a platform-wide) override.</summary>
+    Task<TenantOverridesListDto> ListTenantOverridesAsync(Guid? tenantId, CancellationToken ct);
 }

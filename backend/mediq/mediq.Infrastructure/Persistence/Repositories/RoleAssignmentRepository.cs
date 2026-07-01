@@ -1,5 +1,6 @@
 using mediq.Application.Abstractions;
 using mediq.Domain.Platform;
+using mediq.SharedDataModel.Docslot.Admin;
 using mediq.Utilities.Exceptions;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -32,6 +33,31 @@ public sealed class RoleAssignmentRepository(PlatformDbContext db) : IRoleAssign
         await db.Roles.AsNoTracking()
             .Where(r => r.DeletedAt == null && (r.IsSystem || r.TenantId == tenantId))
             .OrderBy(r => r.Scope).ThenBy(r => r.Name)
+            .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<RoleDto>> ListRolesWithMemberCountsAsync(Guid? tenantId, CancellationToken ct) =>
+        // ONE grouped query: each visible role plus its active-assignee count in the resolved tenant scope. A
+        // correlated COUNT(DISTINCT user_id) sub-select avoids N+1 and matches the EF list's visibility filter
+        // (system roles + own custom roles). IS NOT DISTINCT FROM keeps NULL==NULL for the platform scope. RLS
+        // (roles_read / utr_read via rls_can_see_tenant) still bounds both the outer rows and the counted rows.
+        await db.Database.SqlQueryRaw<RoleDto>(
+                """
+                SELECT r.role_id AS "RoleId", r.role_key AS "RoleKey", r.name AS "Name", r.scope AS "Scope",
+                       r.is_system AS "IsSystem", r.tenant_id AS "TenantId",
+                       COALESCE((
+                           SELECT COUNT(DISTINCT utr.user_id)
+                           FROM platform.user_tenant_roles utr
+                           WHERE utr.role_id = r.role_id
+                             AND utr.tenant_id IS NOT DISTINCT FROM @p_tenant::uuid
+                             AND utr.revoked_at IS NULL
+                             AND (utr.expires_at IS NULL OR utr.expires_at > NOW())
+                       ), 0)::int AS "MemberCount"
+                FROM platform.roles r
+                WHERE r.deleted_at IS NULL
+                  AND (r.is_system OR r.tenant_id IS NOT DISTINCT FROM @p_tenant::uuid)
+                ORDER BY r.scope, r.name
+                """,
+                new NpgsqlParameter("@p_tenant", (object?)tenantId ?? DBNull.Value))
             .ToListAsync(ct);
 
     public Task<bool> RoleKeyExistsAsync(string roleKey, Guid? tenantId, CancellationToken ct) =>

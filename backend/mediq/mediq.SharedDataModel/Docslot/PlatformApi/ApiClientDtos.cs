@@ -16,7 +16,9 @@ public sealed record ApiClientDto(
     int BurstLimit,
     IReadOnlyList<string> GrantedScopes,
     DateTime CreatedAt,
-    DateTime? LastUsedAt);
+    DateTime? LastUsedAt,
+    // Rolling 24h request volume from platform_api.api_requests (developer-portal "Clients" list metric).
+    int RequestsLast24h = 0);
 
 /// <summary>Register a new API client (manual-approval workflow — created inactive/unverified).</summary>
 public sealed record RegisterApiClientRequest(

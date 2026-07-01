@@ -448,7 +448,107 @@ public sealed class IamAdminTests(IamAdminWebAppFactory factory) : IClassFixture
         }
     }
 
+    // ---- #84: per-role active member count -------------------------------------------------------
+
+    [Fact]
+    public async Task ListRoles_IncludesActiveMemberCount_ExcludingRevokedAndExpired()
+    {
+        var client = await AuthedClientAsync(factory.OwnerEmail);
+
+        // A fresh custom role in THIS tenant with a KNOWN set of assignments: two active, one revoked,
+        // one expired. Seeded via the RLS-exempt owner connection (arrangement only).
+        var roleId = Guid.NewGuid();
+        var roleKey = $"iam_mc_{roleId:N}"[..16];
+        await ExecAsync(
+            "INSERT INTO platform.roles (role_id, role_key, name, tenant_id, scope, is_system, created_at, updated_at) VALUES (@id,@k,'MC Role',@t,'tenant',false,NOW(),NOW())",
+            ("id", roleId), ("k", roleKey), ("t", factory.TenantId));
+        try
+        {
+            await AssignRawAsync(roleId, factory.OwnerUserId, revoked: false, expired: false);   // counts
+            await AssignRawAsync(roleId, factory.ViewerUserId, revoked: false, expired: false);   // counts
+            await AssignRawAsync(roleId, factory.TargetUserId, revoked: true, expired: false);    // revoked → excluded
+            await AssignRawAsync(roleId, factory.SuperAdminUserId, revoked: false, expired: true);// expired → excluded
+
+            var roles = (await client.GetFromJsonAsync<List<RoleDto>>("/api/v1/roles"))!;
+
+            var mc = roles.Single(r => r.RoleId == roleId);
+            Assert.Equal(2, mc.MemberCount);   // only the two active, non-expired assignees
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform.user_tenant_roles WHERE role_id=@r", ("r", roleId));
+            await ExecAsync("DELETE FROM platform.roles WHERE role_id=@r", ("r", roleId));
+        }
+    }
+
+    // ---- #85: tenant-wide per-user overrides list ------------------------------------------------
+
+    [Fact]
+    public async Task ListTenantOverrides_ReturnsOwnTenant_WithUserIdentity_AndNeverLeaksAnotherTenant()
+    {
+        var owner = await AuthedClientAsync(factory.OwnerEmail);   // tenant_owner holds platform.overrides.read
+
+        var tenantB = Guid.NewGuid();
+        try
+        {
+            // An own-tenant GRANT override for the target user.
+            await SeedOverrideAsync(factory.TargetUserId, TenantPermissionKey, isAllowed: true, expiresInMinutes: null);
+            // A SECOND tenant with a recognizable override for the SAME user — must NEVER appear in tenant A's list.
+            await ExecAsync(
+                """
+                INSERT INTO platform.tenants (tenant_id, tenant_code, legal_name, display_name, tenant_type, primary_email, primary_phone, status)
+                VALUES (@id, @code, 'Overrides Tenant B', 'Overrides B', 'hospital', @code||'@ovb.test', '+919600000088', 'active')
+                """,
+                ("id", tenantB), ("code", $"ovb-{tenantB.ToString()[..8]}"));
+            await SeedOverrideAsync(factory.TargetUserId, "docslot.patient.read", isAllowed: false, expiresInMinutes: null, tenantId: tenantB);
+
+            var list = (await owner.GetFromJsonAsync<TenantOverridesListDto>("/api/v1/iam/overrides"))!;
+
+            // Own-tenant override present, carrying the target user's identity for the row.
+            var own = Assert.Single(list.Overrides, o => o.UserId == factory.TargetUserId && o.PermissionKey == TenantPermissionKey);
+            Assert.True(own.IsAllowed);
+            Assert.True(own.Active);
+            Assert.NotEmpty(own.Reason);
+            Assert.NotEmpty(own.UserDisplayName);
+            Assert.NotEmpty(own.UserEmail);
+            // The tenant-B override is ABSENT (no cross-tenant leak).
+            Assert.DoesNotContain(list.Overrides, o => o.PermissionKey == "docslot.patient.read");
+            // The badge count matches the returned rows.
+            Assert.Equal(list.Overrides.Count, list.Count);
+        }
+        finally
+        {
+            await ClearOverridesAsync(factory.TargetUserId);
+            await ExecAsync("DELETE FROM platform.user_permission_overrides WHERE tenant_id = @t", ("t", tenantB));
+            await ExecAsync("UPDATE platform.tenants SET deleted_at = NOW(), status = 'archived' WHERE tenant_id = @t", ("t", tenantB));
+        }
+    }
+
+    [Fact]
+    public async Task ListTenantOverrides_Requires_OverridesRead_Not_Just_UsersRead()
+    {
+        // The viewer holds tenant.users.read but NOT platform.overrides.read (the SoD-distinct read authority)
+        // → the tenant-wide overrides list is 403.
+        var viewer = await AuthedClientAsync(factory.ViewerEmail);
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await viewer.GetAsync("/api/v1/iam/overrides")).StatusCode);
+    }
+
     // ---- helpers ----------------------------------------------------------------------------------
+
+    /// <summary>Seeds a user_tenant_roles assignment in the test tenant (RLS-exempt owner connection).
+    /// <paramref name="revoked"/>/<paramref name="expired"/> exercise the active-only member-count filter.</summary>
+    private Task AssignRawAsync(Guid roleId, Guid userId, bool revoked, bool expired) =>
+        ExecAsync(
+            """
+            INSERT INTO platform.user_tenant_roles
+                (user_tenant_role_id, user_id, tenant_id, role_id, is_primary, granted_at, revoked_at, expires_at)
+            VALUES (gen_random_uuid(), @u, @t, @r, false, NOW(),
+                    CASE WHEN @revoked THEN NOW() ELSE NULL END,
+                    CASE WHEN @expired THEN NOW() - INTERVAL '1 hour' ELSE NULL END)
+            ON CONFLICT (user_id, tenant_id, role_id) DO NOTHING
+            """,
+            ("u", userId), ("t", factory.TenantId), ("r", roleId), ("revoked", revoked), ("expired", expired));
 
     private Task SeedOverrideAsync(Guid userId, string permissionKey, bool isAllowed, int? expiresInMinutes, Guid? tenantId = null) =>
         ExecAsync(

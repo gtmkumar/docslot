@@ -36,15 +36,35 @@ public sealed class WebhookSubscriptionRepository(PlatformDbContext db) : IWebho
     public Task<WebhookSubscription?> GetByIdAsync(Guid webhookId, CancellationToken ct) =>
         db.WebhookSubscriptions.FirstOrDefaultAsync(w => w.WebhookId == webhookId, ct);
 
-    public async Task<IReadOnlyList<WebhookSubscriptionDto>> ListByClientAsync(Guid clientId, CancellationToken ct) =>
-        await db.WebhookSubscriptions.AsNoTracking()
+    public async Task<IReadOnlyList<WebhookSubscriptionDto>> ListByClientAsync(Guid clientId, CancellationToken ct)
+    {
+        var subs = await db.WebhookSubscriptions.AsNoTracking()
             .Where(w => w.ClientId == clientId)
             .OrderBy(w => w.Name)
-            .Select(w => new WebhookSubscriptionDto(
-                w.WebhookId, w.ClientId, w.TenantId, w.Name, w.Url, w.EventTypes, w.MaxRetries,
-                w.RetryBackoff, w.TimeoutSeconds, w.IsActive, w.ConsecutiveFailures,
-                w.LastSuccessAt, w.LastFailureAt, w.AutoDisabledAt, w.CreatedAt))
             .ToListAsync(ct);
+
+        // Last-7d success rate per subscription — ONE grouped query over the deliveries of this page's webhooks
+        // (no per-subscription N+1). A webhook with no deliveries in the window is simply absent from the map,
+        // so its rate resolves to null (divide-by-zero guarded).
+        var ids = subs.Select(w => w.WebhookId).ToList();
+        var since = DateTime.UtcNow.AddDays(-7);
+        var stats = ids.Count == 0
+            ? []
+            : await db.WebhookDeliveries.AsNoTracking()
+                .Where(d => ids.Contains(d.WebhookId) && d.CreatedAt >= since)
+                .GroupBy(d => d.WebhookId)
+                .Select(g => new { WebhookId = g.Key, Total = g.Count(), Delivered = g.Count(d => d.Status == "success") })
+                .ToListAsync(ct);
+        var rateByWebhook = stats.ToDictionary(
+            s => s.WebhookId,
+            s => s.Total == 0 ? (double?)null : (double)s.Delivered / s.Total);
+
+        return subs.Select(w => new WebhookSubscriptionDto(
+            w.WebhookId, w.ClientId, w.TenantId, w.Name, w.Url, w.EventTypes, w.MaxRetries,
+            w.RetryBackoff, w.TimeoutSeconds, w.IsActive, w.ConsecutiveFailures,
+            w.LastSuccessAt, w.LastFailureAt, w.AutoDisabledAt, w.CreatedAt,
+            rateByWebhook.GetValueOrDefault(w.WebhookId))).ToList();
+    }
 
     public Task UpdateAsync(Guid webhookId, UpdateWebhookRequest r, CancellationToken ct) =>
         db.Database.ExecuteSqlRawAsync(

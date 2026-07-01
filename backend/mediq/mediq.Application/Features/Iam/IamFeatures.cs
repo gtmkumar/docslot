@@ -78,6 +78,19 @@ public sealed class ListUserOverridesQueryHandler(IIamReadService iam, ICurrentU
         => iam.ListUserOverridesAsync(query.UserId, query.TenantId ?? ctx.TenantId, ct);
 }
 
+/// <summary>ALL active per-user overrides for the caller's CURRENT tenant (the tenant-wide overrides tab).</summary>
+public sealed record ListTenantOverridesQuery : IQuery<TenantOverridesListDto>;
+
+public sealed class ListTenantOverridesQueryHandler(IIamReadService iam, ICurrentUserContext ctx)
+    : IQueryHandler<ListTenantOverridesQuery, TenantOverridesListDto>
+{
+    public Task<TenantOverridesListDto> Handle(ListTenantOverridesQuery query, CancellationToken ct)
+        // Tenant is bound STRICTLY from the server-signed context — never a client param — so the list can
+        // only ever be the caller's own tenant. A null tenant (platform actor w/o a tenant) yields an empty
+        // list (the strict = @p_tenant predicate matches nothing), never a cross-tenant disclosure.
+        => iam.ListTenantOverridesAsync(ctx.TenantId, ct);
+}
+
 // ---- Grant a permission to a role (matrix checkbox ON) -------------------------------------------
 
 public sealed record GrantRolePermissionCommand(Guid RoleId, Guid PermissionId, Guid? TenantId, bool Grantable)

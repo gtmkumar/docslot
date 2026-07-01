@@ -16,7 +16,10 @@ public sealed record WebhookSubscriptionDto(
     DateTime? LastSuccessAt,
     DateTime? LastFailureAt,
     DateTime? AutoDisabledAt,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    // Last-7d delivery success rate (delivered / total). NULL when there were no deliveries in the window
+    // (divide-by-zero guarded) so the UI can render "—" rather than a misleading 0%.
+    double? DeliverySuccessRate7d = null);
 
 /// <summary>
 /// Create a webhook subscription. The signing <see cref="Secret"/> is provided by the caller (or generated

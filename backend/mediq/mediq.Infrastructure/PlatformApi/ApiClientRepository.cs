@@ -38,10 +38,27 @@ public sealed class ApiClientRepository(PlatformDbContext db) : IApiClientReposi
         var byClient = scopeMap.GroupBy(x => x.ClientId)
             .ToDictionary(g => g.Key, g => g.Select(x => x.ScopeKey).ToList());
 
+        // Rolling 24h request volume per client — ONE grouped subquery over api_requests for the page's ids
+        // (no per-client N+1). Clients with no traffic simply fall through to 0.
+        var since = DateTime.UtcNow.AddHours(-24);
+        var reqRows = ids.Count == 0
+            ? []
+            : await db.Database.SqlQueryRaw<ClientRequestCount>(
+                    """
+                    SELECT client_id AS "ClientId", COUNT(*)::int AS "Count"
+                    FROM platform_api.api_requests
+                    WHERE client_id = ANY(@p0) AND occurred_at >= @p1
+                    GROUP BY client_id
+                    """,
+                    new NpgsqlParameter("@p0", ids.ToArray()), new NpgsqlParameter("@p1", since))
+                .ToListAsync(ct);
+        var reqByClient = reqRows.ToDictionary(x => x.ClientId, x => x.Count);
+
         return clients.Select(c => new ApiClientDto(
             c.ClientId, c.ClientCode, c.ClientName, c.ClientType, c.OwnerTenantId, c.OwnerEmail,
             c.OwnerOrganization, c.IsActive, c.IsVerified, c.RateLimitPerMinute, c.RateLimitPerDay,
-            c.BurstLimit, byClient.GetValueOrDefault(c.ClientId, []), c.CreatedAt, c.LastUsedAt)).ToList();
+            c.BurstLimit, byClient.GetValueOrDefault(c.ClientId, []), c.CreatedAt, c.LastUsedAt,
+            reqByClient.GetValueOrDefault(c.ClientId, 0))).ToList();
     }
 
     public async Task<IReadOnlySet<string>> GetGrantedScopeKeysAsync(Guid clientId, CancellationToken ct)
@@ -117,4 +134,7 @@ public sealed class ApiClientRepository(PlatformDbContext db) : IApiClientReposi
 
     private static object[] P(params (string Name, object Value)[] ps) =>
         ps.Select(p => (object)new NpgsqlParameter(p.Name, p.Value)).ToArray();
+
+    /// <summary>Row shape for the per-client 24h request-count grouped subquery.</summary>
+    private sealed record ClientRequestCount(Guid ClientId, int Count);
 }

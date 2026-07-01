@@ -45,8 +45,11 @@ public sealed record ResetAccessRequest(string Reason);
 
 public sealed record ResetAccessResult(Guid UserId);
 
-/// <summary>Role summary (maps to <c>platform.roles</c>).</summary>
-public sealed record RoleDto(Guid RoleId, string RoleKey, string Name, string Scope, bool IsSystem, Guid? TenantId);
+/// <summary>Role summary (maps to <c>platform.roles</c>). <c>MemberCount</c> = distinct users holding this role
+/// with an ACTIVE assignment (revoked_at IS NULL AND not expired) in the resolved tenant scope. For a system
+/// (cross-tenant) role it counts only members within the current tenant, consistent with how the list is scoped.</summary>
+public sealed record RoleDto(Guid RoleId, string RoleKey, string Name, string Scope, bool IsSystem, Guid? TenantId,
+    int MemberCount = 0);
 
 /// <summary>Create a custom (tenant-scoped) role. System roles are seeded in SQL and cannot be created here.</summary>
 public sealed record CreateRoleRequest(

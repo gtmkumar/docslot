@@ -530,6 +530,91 @@ public sealed class PlatformApiTests(PlatformApiWebAppFactory factory) : IClassF
         }
     }
 
+    // ---- #88: developer-portal read aggregates --------------------------------------------------
+
+    [Fact]
+    public async Task ApiClientList_Includes_Last24hRequestCount()
+    {
+        var admin = factory.CreateClient();
+        var token = await AdminLoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+
+        // Deterministic window: clear this client's request log, then seed two rows inside 24h + one outside.
+        await ExecAsync("DELETE FROM platform_api.api_requests WHERE client_id=@c", ("c", factory.ClientId));
+        await SeedApiRequestAsync(hoursAgo: 1);
+        await SeedApiRequestAsync(hoursAgo: 5);
+        await SeedApiRequestAsync(hoursAgo: 48);   // outside the 24h window → excluded
+        try
+        {
+            var clients = (await admin.GetFromJsonAsync<List<ApiClientDto>>("/api/v1/api-clients?take=200"))!;
+            var c = clients.Single(x => x.ClientId == factory.ClientId);
+            Assert.Equal(2, c.RequestsLast24h);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform_api.api_requests WHERE client_id=@c", ("c", factory.ClientId));
+        }
+    }
+
+    [Fact]
+    public async Task WebhookList_Includes_Last7dDeliverySuccessRate_AndGuardsDivideByZero()
+    {
+        var admin = factory.CreateClient();
+        var token = await AdminLoginAsync(admin);
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+
+        var whRated = Guid.NewGuid();
+        var whEmpty = Guid.NewGuid();
+        try
+        {
+            await SeedWebhookAsync(whRated, "rate-hook-a");
+            await SeedWebhookAsync(whEmpty, "rate-hook-b");
+            // 3 success + 1 failed inside 7d → 0.75; one older success is outside the window (excluded).
+            await SeedDeliveryAsync(whRated, "success", daysAgo: 1);
+            await SeedDeliveryAsync(whRated, "success", daysAgo: 2);
+            await SeedDeliveryAsync(whRated, "success", daysAgo: 3);
+            await SeedDeliveryAsync(whRated, "failed", daysAgo: 1);
+            await SeedDeliveryAsync(whRated, "success", daysAgo: 10);   // outside window → excluded
+
+            var subs = (await admin.GetFromJsonAsync<List<WebhookSubscriptionDto>>(
+                $"/api/v1/webhooks?clientId={factory.ClientId}"))!;
+
+            var rated = subs.Single(s => s.WebhookId == whRated);
+            Assert.NotNull(rated.DeliverySuccessRate7d);
+            Assert.Equal(0.75, rated.DeliverySuccessRate7d!.Value, 3);   // 3 of 4 in-window deliveries succeeded
+
+            var empty = subs.Single(s => s.WebhookId == whEmpty);
+            Assert.Null(empty.DeliverySuccessRate7d);   // no deliveries → null (divide-by-zero guarded)
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform_api.webhook_deliveries WHERE webhook_id = ANY(@w)", ("w", new[] { whRated, whEmpty }));
+            await ExecAsync("DELETE FROM platform_api.webhook_subscriptions WHERE webhook_id = ANY(@w)", ("w", new[] { whRated, whEmpty }));
+        }
+    }
+
+    private Task SeedApiRequestAsync(int hoursAgo) =>
+        ExecAsync(
+            "INSERT INTO platform_api.api_requests (client_id, method, path, status_code, occurred_at) VALUES (@c,'GET','/x',200, NOW() - make_interval(hours => @h))",
+            ("c", factory.ClientId), ("h", hoursAgo));
+
+    private Task SeedWebhookAsync(Guid webhookId, string name) =>
+        ExecAsync(
+            """
+            INSERT INTO platform_api.webhook_subscriptions
+                (webhook_id, client_id, tenant_id, name, url, secret_hash, event_types, max_retries, timeout_seconds, is_active, created_at, updated_at)
+            VALUES (@id, @c, NULL, @n, 'https://example.test/hook', 'x', ARRAY['booking.created'], 5, 30, true, NOW(), NOW())
+            """,
+            ("id", webhookId), ("c", factory.ClientId), ("n", name));
+
+    private static Task SeedDeliveryAsync(Guid webhookId, string status, int daysAgo) =>
+        ExecAsync(
+            """
+            INSERT INTO platform_api.webhook_deliveries (webhook_id, event_type, event_id, payload, status, attempt_count, created_at)
+            VALUES (@w, 'booking.created', gen_random_uuid(), '{}'::jsonb, @s, 1, NOW() - make_interval(days => @d))
+            """,
+            ("w", webhookId), ("s", status), ("d", daysAgo));
+
     /// <summary>One drain pass: mirrors WebhookDeliveryWorker.DrainOnce against the live DB via the real drain
     /// store + signer + the fake dispatcher. A failed delivery is rescheduled in the PAST so the next pass
     /// re-claims it immediately (fast retry for the test, vs the worker's real exponential backoff).</summary>
