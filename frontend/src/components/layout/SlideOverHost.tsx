@@ -31,6 +31,7 @@ const BookTimePanel = lazy(() => import('@/features/bookings/components/BookTime
 const AddDoctorPanel = lazy(() => import('@/features/doctors/components/AddDoctorPanel').then((m) => ({ default: m.AddDoctorPanel })));
 const AddPatientPanel = lazy(() => import('@/features/patients/components/AddPatientPanel').then((m) => ({ default: m.AddPatientPanel })));
 const InviteUserPanel = lazy(() => import('@/features/team/components/InviteUserPanel').then((m) => ({ default: m.InviteUserPanel })));
+const BulkImportUsersPanel = lazy(() => import('@/features/team/components/BulkImportUsersPanel').then((m) => ({ default: m.BulkImportUsersPanel })));
 const NewInvitationPanel = lazy(() => import('@/features/team/components/NewInvitationPanel').then((m) => ({ default: m.NewInvitationPanel })));
 const InvitationTokenPanel = lazy(() => import('@/features/team/components/InvitationTokenPanel').then((m) => ({ default: m.InvitationTokenPanel })));
 const ManageUserPanel = lazy(() => import('@/features/team/components/ManageUserPanel').then((m) => ({ default: m.ManageUserPanel })));
@@ -112,7 +113,7 @@ function isUrlPanel(type: PanelType): type is UrlPanelType {
 }
 
 const PAYLOADLESS: PanelType[] = [
-  'newBooking', 'addDoctor', 'addPatient', 'bookTime', 'inviteUser', 'newInvitation', 'createRole',
+  'newBooking', 'addDoctor', 'addPatient', 'bookTime', 'inviteUser', 'bulkImportUsers', 'newInvitation', 'createRole',
   'createModule', 'createPermission',
   'registerClient', 'createWebhook',
   'exportData', 'reportBreach', 'breakGlass',
@@ -257,6 +258,8 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <AddPatientPanel open onClose={closePanel} />;
     case 'inviteUser':
       return <InviteUserPanel open onClose={closePanel} />;
+    case 'bulkImportUsers':
+      return <BulkImportUsersPanel open onClose={closePanel} />;
     case 'newInvitation':
       return <NewInvitationPanel open onClose={closePanel} />;
     case 'invitationToken':

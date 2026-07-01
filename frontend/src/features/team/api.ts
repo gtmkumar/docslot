@@ -15,9 +15,11 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import {
   addIpAllowlist,
   assignRole,
+  bulkImportUsers,
   createInvitation,
   createModule,
   exportAuditLog,
+  exportTenantUsers,
   getSecurityPolicy,
   listActiveSessions,
   listAuditLog,
@@ -60,6 +62,7 @@ import type {
   AddIpAllowlistRequest,
   AssignRoleRequest,
   AuditLogFilter,
+  BulkImportUsersRequest,
   CreateInvitationRequest,
   CreateModuleRequest,
   CreatePermissionRequest,
@@ -209,6 +212,33 @@ export function useCreateUser() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ idempotencyKey, ...req }: CreateUserInput) => createUser(req, idempotencyKey),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: usersQueryKey }),
+  });
+}
+
+// ── EXPORT + BULK IMPORT (#95) — People-tab toolbar ───────────────────────────
+// Export is a side-effecting fetch that returns {fileName, content}; the caller
+// triggers the browser download and discards the payload — it is NEVER written into
+// any query cache. Bulk import POSTs the parsed rows with a stable Idempotency-Key and
+// invalidates the users list on success so the People list refreshes with the newly
+// created/linked members.
+
+/** Export the tenant's members to CSV. Gated tenant.users.read (server-side). Returns
+ *  {fileName, content}; the caller triggers the download. Never cached. */
+export function useExportTenantUsers() {
+  return useMutation({ mutationFn: () => exportTenantUsers() });
+}
+
+export interface BulkImportInput extends BulkImportUsersRequest {
+  idempotencyKey: string;
+}
+/** Bulk-import members from parsed CSV rows. Gated tenant.users.create (server-side).
+ *  Refreshes the People list on success. The per-row result is returned to the panel;
+ *  it is not cached. */
+export function useBulkImportUsers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ idempotencyKey, ...req }: BulkImportInput) => bulkImportUsers(req, idempotencyKey),
     onSuccess: () => void qc.invalidateQueries({ queryKey: usersQueryKey }),
   });
 }

@@ -10,16 +10,20 @@
 // (#89) lists pending token-based invitations with per-row resend/revoke and a tab
 // badge for the pending count; Security (#91) surfaces the tenant security policy
 // (2FA / password & session / access restrictions) above the active-sessions panel (#87).
-// Export + Bulk import are D4 (#95): rendered for visual parity but disabled
-// (non-functional) stubs.
+// Export + Bulk import (#95) are LIVE toolbar actions: Export streams the members CSV
+// (gated tenant.users.read → browser download); Bulk import opens a slide-over that
+// parses a CSV client-side and provisions rows (gated tenant.users.create).
 
 import * as Tabs from '@radix-ui/react-tabs';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
 import { Download, MailPlus, Upload, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { usePermissions } from '@/lib/permissions';
+import { downloadTextFile } from '@/lib/download';
+import { toUserError } from '@/lib/backend';
 import { useUI } from '@/stores/ui';
 import { UsersTab } from './components/UsersTab';
 import { RolesPermissionsTab } from './components/RolesPermissionsTab';
@@ -27,7 +31,7 @@ import { ApiIntegrationsTab } from './components/ApiIntegrationsTab';
 import { AuditLogTab } from './components/AuditLogTab';
 import { SecurityTab } from './components/SecurityTab';
 import { InvitesTab } from './components/InvitesTab';
-import { useBranches, useInvitations, useRoles, useTenantUsers } from './api';
+import { useBranches, useExportTenantUsers, useInvitations, useRoles, useTenantUsers } from './api';
 
 const tabTrigger =
   'shrink-0 whitespace-nowrap px-3 py-2 text-[13px] font-medium text-muted border-b-2 border-transparent transition-colors ' +
@@ -61,6 +65,20 @@ export function TeamScreen() {
   // Branch count (#90) for the header stat line. Gated on tenant.users.read (same
   // read plane as the users list) so a viewer without it never fires a 403.
   const { data: branches } = useBranches(canReadUsers);
+  // Export (#95): a side-effecting fetch that streams the members CSV (gated
+  // tenant.users.read). We trigger the browser download and toast; the payload is
+  // never cached. Bulk import (#95) opens its own slide-over (gated tenant.users.create).
+  const exportUsers = useExportTenantUsers();
+  const onExport = async () => {
+    try {
+      const result = await exportUsers.mutateAsync();
+      downloadTextFile(result.fileName, result.content);
+      toast.success(t('team.export.done'));
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
+  };
+
   const activeCount = users?.filter((u) => u.isActive).length;
   const roleCount = roles?.length;
   const customCount = roles?.filter((r) => !r.isSystem).length;
@@ -124,15 +142,21 @@ export function TeamScreen() {
               {t('team.invitePeople')}
             </Button>
           ) : null}
-          {/* D4 (#95) stubs — visual parity only, deliberately non-functional. */}
-          <Button variant="ghost" size="sm" disabled title={t('team.comingSoon')} aria-disabled="true">
-            <Download size={15} aria-hidden="true" />
-            {t('team.exportLabel')}
-          </Button>
-          <Button variant="ghost" size="sm" disabled title={t('team.comingSoon')} aria-disabled="true">
-            <Upload size={15} aria-hidden="true" />
-            {t('team.bulkImport')}
-          </Button>
+          {/* Export (#95) — download the members CSV. Gated tenant.users.read (same
+              read plane as the People list); disabled while the fetch is in flight. */}
+          {canReadUsers ? (
+            <Button variant="ghost" size="sm" onClick={onExport} disabled={exportUsers.isPending}>
+              <Download size={15} aria-hidden="true" />
+              {exportUsers.isPending ? t('team.export.exporting') : t('team.exportLabel')}
+            </Button>
+          ) : null}
+          {/* Bulk import (#95) — open the import slide-over. Gated tenant.users.create. */}
+          {canCreateUsers ? (
+            <Button variant="ghost" size="sm" onClick={() => openPanel({ type: 'bulkImportUsers' })}>
+              <Upload size={15} aria-hidden="true" />
+              {t('team.bulkImport')}
+            </Button>
+          ) : null}
         </div>
       </header>
 

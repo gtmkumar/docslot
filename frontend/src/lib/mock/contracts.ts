@@ -693,6 +693,62 @@ export const CreateUserResultSchema = z.object({
 });
 export type CreateUserResult = z.infer<typeof CreateUserResultSchema>;
 
+// ── EXPORT + BULK IMPORT (#95) ─────────────────────────────────────────────────
+// GET /tenants/{id}/users/export (gated tenant.users.read) streams a text/csv of
+// the tenant's members; POST /tenants/{id}/users/bulk-import (gated tenant.users.create)
+// provisions each parsed row via the single-user path (per-row atomic; role subject
+// to the R3 no-escalation guard). The CSV export result is built client-side (the
+// real endpoint streams text/csv with a Content-Disposition filename) and NEVER cached.
+
+/** One import row, parsed client-side from the pasted/uploaded CSV. `roleKey` is
+ *  OPTIONAL — omit it and the invitee is provisioned with no tenant role. */
+export const BulkImportRowSchema = z.object({
+  email: z.string(),
+  fullName: z.string(),
+  roleKey: z.string().nullable().optional(),
+});
+export type BulkImportRow = z.infer<typeof BulkImportRowSchema>;
+
+/** `POST /tenants/{id}/users/bulk-import` body. Batch cap is 500 server-side (oversize
+ *  → 422); the panel enforces the same cap before it POSTs. */
+export const BulkImportUsersRequestSchema = z.object({
+  rows: z.array(BulkImportRowSchema),
+});
+export type BulkImportUsersRequest = z.infer<typeof BulkImportUsersRequestSchema>;
+
+/** Per-row outcome. `status` is left a string (not an enum) so an additive backend
+ *  status doesn't break parsing; the UI lower-cases it for its label/tint lookup and
+ *  falls back to a neutral pill for anything unknown. `row` is the 1-based input index. */
+export const BulkImportResultRowSchema = z.object({
+  row: z.number(),
+  email: z.string(),
+  status: z.string(),
+  message: z.string().nullable().optional().default(''),
+});
+export type BulkImportResultRow = z.infer<typeof BulkImportResultRowSchema>;
+
+/** Summary + per-row results. The summary counts are authoritative (server-computed);
+ *  the panel renders them directly rather than recomputing from `rows`. Passthrough so
+ *  additive backend fields survive. */
+export const BulkImportResultSchema = z
+  .object({
+    total: z.number(),
+    created: z.number(),
+    linked: z.number(),
+    skipped: z.number(),
+    errored: z.number(),
+    rows: z.array(BulkImportResultRowSchema),
+  })
+  .passthrough();
+export type BulkImportResult = z.infer<typeof BulkImportResultSchema>;
+
+/** The CSV download result the seam hands to the toolbar to trigger a browser download.
+ *  Same shape as {@link AuditCsvResult}; kept distinct for call-site clarity. Never cached. */
+export interface UserCsvResult {
+  fileName: string;
+  content: string;
+}
+
 // ── User lifecycle (deactivate/reactivate, edit profile, reset access) ─────────
 /** `PUT /tenants/{id}/users/{userId}/status`. Reason mandatory when deactivating. */
 export const SetUserStatusRequestSchema = z.object({

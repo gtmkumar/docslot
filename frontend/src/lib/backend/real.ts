@@ -65,6 +65,9 @@ import {
   type AuditCsvResult,
   type AuditLogFilter,
   type AuditLogPage,
+  type BulkImportResult,
+  type BulkImportUsersRequest,
+  type UserCsvResult,
   type RevokeAllSessionsResult,
   BadgesResponseSchema,
   AbdmRecordDetailSchema,
@@ -130,6 +133,7 @@ import {
   type SetMemberScopeRequest,
   type SetMemberScopeResult,
   CreateUserResultSchema,
+  BulkImportResultSchema,
   SetUserStatusResultSchema,
   UpdateUserProfileResultSchema,
   ResetAccessResultSchema,
@@ -2359,6 +2363,56 @@ export async function createUser(
     },
   });
   return CreateUserResultSchema.parse(raw);
+}
+
+// ── EXPORT + BULK IMPORT (#95) ─────────────────────────────────────────────────
+// GET /tenants/{id}/users/export (gated tenant.users.read) streams text/csv of the
+// tenant's members; the tenant is bound from the JWT (the route id is cross-checked).
+// POST /tenants/{id}/users/bulk-import (gated tenant.users.create) provisions each row
+// via the single-user path (per-row atomic; role subject to R3 no-escalation), batch
+// cap 500 (oversize → 422). The export is fetched WITH auth headers into a transient
+// blob (a bare link wouldn't authenticate) and returned as {fileName, content} for the
+// caller to download — the CSV is NEVER cached.
+
+/** GET /tenants/{tenantId}/users/export → text/csv download of the tenant's members.
+ *  Fetched with auth headers; returns {fileName, content}. Prefers the server's
+ *  Content-Disposition filename, falling back to a dated default. */
+export async function exportTenantUsers(): Promise<UserCsvResult> {
+  const { accessToken, tenantId } = getSessionSnapshot();
+  const headers: Record<string, string> = { Accept: 'text/csv' };
+  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+  if (tenantId) headers['X-Tenant-Id'] = tenantId;
+
+  const res = await fetch(`/api/v1/tenants/${tenantId}/users/export`, { headers });
+  if (!res.ok) throw new ApiError(res.status, `Team members CSV export failed: ${res.status}`);
+  const content = await res.text();
+
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  const fileName = match?.[1] ?? `team-members-${new Date().toISOString().slice(0, 10)}.csv`;
+  return { fileName, content };
+}
+
+/** POST /tenants/{tenantId}/users/bulk-import — provision each parsed row. Carries an
+ *  Idempotency-Key (retry-safe). Returns the per-row + summary result. A 422 (oversize
+ *  batch) surfaces via toUserError; the panel also caps at 500 before POSTing. */
+export async function bulkImportUsers(
+  req: BulkImportUsersRequest,
+  idempotencyKey: string,
+): Promise<BulkImportResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/users/bulk-import`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      rows: req.rows.map((r) => ({
+        email: r.email,
+        fullName: r.fullName,
+        roleKey: r.roleKey ?? null,
+      })),
+    },
+  });
+  return BulkImportResultSchema.parse(raw);
 }
 
 /** PUT /tenants/{tenantId}/users/{userId}/status — deactivate (revoke memberships in this

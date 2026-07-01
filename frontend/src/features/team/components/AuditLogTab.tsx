@@ -19,6 +19,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { TextInput } from '@/components/ui/Field';
 import { shortDate } from '@/lib/format';
+import { downloadTextFile } from '@/lib/download';
 import { toUserError } from '@/lib/backend';
 import { useAuditLog, useExportAuditLog } from '../api';
 import type { AuditFacetCount, AuditLogFilter, AuditLogRow } from '@/lib/mock/contracts';
@@ -76,18 +77,6 @@ function useDebounced<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
-function downloadCsv(fileName: string, content: string): void {
-  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
 export function AuditLogTab() {
   const { t } = useTranslation();
 
@@ -143,7 +132,7 @@ export function AuditLogTab() {
   const onExport = async () => {
     try {
       const result = await exportCsv.mutateAsync(filter);
-      downloadCsv(result.fileName, result.content);
+      downloadTextFile(result.fileName, result.content);
       toast.success(t('team.audit.exportDone'));
     } catch (e) {
       toast.error(toUserError(e));

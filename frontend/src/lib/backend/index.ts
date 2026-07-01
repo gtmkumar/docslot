@@ -243,6 +243,16 @@ export const setUserActive = USE_REAL_API ? real.setUserActive : mock.setUserAct
 export const updateUser = USE_REAL_API ? real.updateUser : mock.updateUser;
 export const resetUserAccess = USE_REAL_API ? real.resetUserAccess : mock.resetUserAccess;
 
+// ── EXPORT + BULK IMPORT (#95) — People-tab toolbar ───────────────────────────
+// Live: GET /tenants/{id}/users/export (text/csv, gated tenant.users.read; tenant
+// bound from the JWT) + POST /tenants/{id}/users/bulk-import (gated tenant.users.create;
+// per-row atomic; role via the R3 no-escalation guard; batch cap 500 → 422). The export
+// returns {fileName, content} for the caller to download — never cached. The import
+// carries an Idempotency-Key. Mock side builds the CSV from + provisions into the RBAC
+// seed so flag-off renders + refreshes.
+export const exportTenantUsers = USE_REAL_API ? real.exportTenantUsers : mock.exportTenantUsers;
+export const bulkImportUsers = USE_REAL_API ? real.bulkImportUsers : mock.bulkImportUsers;
+
 // ── BRANCH / MEMBERSHIP SCOPE (#90) ───────────────────────────────────────────
 // listBranches (GET /tenants/{id}/branches, gated tenant.users.read) heads the
 // People "All branches" filter + the "N branches" stat + the manage-panel picker.

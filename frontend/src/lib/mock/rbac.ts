@@ -11,6 +11,7 @@ import { maskPhone } from '@/lib/format';
 import {
   AssignRoleResultSchema,
   BranchSchema,
+  BulkImportResultSchema,
   CreateModuleResultSchema,
   CreatePermissionResultSchema,
   CreateUserResultSchema,
@@ -37,6 +38,9 @@ import {
   type AssignRoleRequest,
   type AssignRoleResult,
   type Branch,
+  type BulkImportResult,
+  type BulkImportUsersRequest,
+  type UserCsvResult,
   type RevokeRoleResult,
   type SetMemberScopeRequest,
   type SetMemberScopeResult,
@@ -477,6 +481,114 @@ export function createUser(req: CreateUserRequest, idempotencyKey: string): Prom
   return withIdem(idempotencyKey, () => {
     void req;
     return CreateUserResultSchema.parse({ userId: crypto.randomUUID() });
+  });
+}
+
+// ── Export + bulk import (#95) ────────────────────────────────────────────────
+// Mock parity for GET /users/export + POST /users/bulk-import. The export builds a
+// text/csv from the USERS seed with the documented header, CSV-injection-safe
+// (RFC-4180 quoting + a leading =,+,-,@,tab,CR neutralised) exactly like the server.
+// Bulk import simulates the single-user provisioning path per row: an email matching
+// an existing member LINKS, a duplicate WITHIN the batch SKIPS, a malformed row or an
+// unknown role ERRORS, everything else is CREATED (and pushed into USERS so the People
+// list refresh shows it flag-off).
+
+const IMPORT_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+/** CSV-injection-safe cell: neutralise a leading formula trigger (=,+,-,@,tab,CR)
+ *  with a leading apostrophe, then RFC-4180 quote if it contains a comma, quote,
+ *  CR or LF. Mirrors the server's export encoding. */
+function csvUserCell(value: string | null | undefined): string {
+  let s = value ?? '';
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function roleByKey(key: string): SeedRole | undefined {
+  return ROLES.find((r) => r.roleKey === key);
+}
+
+export function exportTenantUsers(): Promise<UserCsvResult> {
+  const header = ['full_name', 'email', 'roles', 'branch', 'department', 'status', 'two_factor', 'last_active'];
+  const lines = USERS.map((u) => {
+    const roles = u.roleIds.map((a) => roleById(a.roleId)?.name ?? a.roleId).join('; ');
+    return [
+      u.fullName,
+      u.email,
+      roles,
+      branchNameById(u.branchId) ?? '',
+      u.department ?? '',
+      u.isActive ? 'active' : 'inactive',
+      u.mfaEnabled ? 'on' : 'off',
+      u.lastActivityAt ?? u.lastLoginAt ?? '',
+    ]
+      .map(csvUserCell)
+      .join(',');
+  });
+  const content = [header.join(','), ...lines].join('\r\n');
+  const stamp = new Date().toISOString().slice(0, 10);
+  return delay({ fileName: `team-members-${stamp}.csv`, content });
+}
+
+export function bulkImportUsers(
+  req: BulkImportUsersRequest,
+  idempotencyKey: string,
+): Promise<BulkImportResult> {
+  return withIdem(idempotencyKey, () => {
+    let created = 0;
+    let linked = 0;
+    let skipped = 0;
+    let errored = 0;
+    const seenInBatch = new Set<string>();
+    const rows = req.rows.map((r, i) => {
+      const row = i + 1;
+      const emailRaw = r.email.trim();
+      const email = emailRaw.toLowerCase();
+      const mk = (status: string, message: string) => ({ row, email: emailRaw, status, message });
+      if (!IMPORT_EMAIL_RE.test(email) || !r.fullName.trim()) {
+        errored += 1;
+        return mk('errored', 'Missing or invalid email / name');
+      }
+      if (seenInBatch.has(email)) {
+        skipped += 1;
+        return mk('skipped', 'Duplicate row in this file');
+      }
+      seenInBatch.add(email);
+      let roleId: string | null = null;
+      if (r.roleKey) {
+        const role = roleByKey(r.roleKey);
+        if (!role) {
+          errored += 1;
+          return mk('errored', `Unknown role: ${r.roleKey}`);
+        }
+        roleId = role.roleId;
+      }
+      const existing = USERS.find((u) => u.email.toLowerCase() === email);
+      if (existing) {
+        linked += 1;
+        return mk('linked', 'Linked to existing account');
+      }
+      // Provision a new member so the People list refresh shows it flag-off.
+      USERS.push({
+        userId: crypto.randomUUID(),
+        email: emailRaw,
+        fullName: r.fullName.trim(),
+        phone: null,
+        isActive: true,
+        mfaEnabled: false,
+        lastLoginAt: null,
+        lastActivityAt: null,
+        branchId: null,
+        department: null,
+        roleIds: roleId
+          ? [{ userTenantRoleId: crypto.randomUUID(), roleId, isPrimary: true, expiresAt: null }]
+          : [],
+        overrides: [],
+      });
+      created += 1;
+      return mk('created', 'Account created');
+    });
+    return BulkImportResultSchema.parse({ total: req.rows.length, created, linked, skipped, errored, rows });
   });
 }
 
