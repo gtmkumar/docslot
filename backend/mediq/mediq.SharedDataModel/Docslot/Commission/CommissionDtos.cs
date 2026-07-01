@@ -29,6 +29,12 @@ public sealed record BrokerDto(
     string CarePartnerLabel);   // "Care Partner" — the customer-facing term
 
 public sealed record SetBrokerStatusRequest(bool IsActive, string? Reason);
+/// <summary>
+/// Body for the split <c>/suspend</c> and <c>/activate</c> broker endpoints. The transition (active flag) is
+/// implied by the route — each route is gated by its OWN permission (<c>commission.broker.suspend</c> vs
+/// <c>commission.broker.activate</c>, SoD) — so only an optional reason travels in the body.
+/// </summary>
+public sealed record SetBrokerStatusReasonRequest(string? Reason);
 public sealed record BlacklistBrokerRequest(string Reason);
 
 // ---- Referral links ------------------------------------------------------------------------------

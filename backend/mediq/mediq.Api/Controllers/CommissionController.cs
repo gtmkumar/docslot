@@ -34,12 +34,26 @@ public sealed class CommissionController(
     public async Task<ActionResult<RegisterBrokerResult>> RegisterBroker([FromBody] RegisterBrokerRequest request, CancellationToken ct)
         => Ok(await commands.Send(new RegisterBrokerCommand(RequireTenant(), request), ct));
 
-    [HttpPost("brokers/{brokerId:guid}/status")]
+    // Suspend and activate are SEPARATE endpoints, each gated by its OWN dangerous permission
+    // (commission.broker.suspend vs commission.broker.activate — distinct is_dangerous keys in the seed).
+    // They were previously collapsed into one POST /status gated ONLY on .activate, so a caller holding
+    // suspend-but-not-activate saw the Suspend button and was rejected 403 (#58). The transition is now
+    // implied by the route; both dispatch the same SetBrokerStatusCommand.
+    [HttpPost("brokers/{brokerId:guid}/suspend")]
+    [RequirePermission("commission.broker.suspend")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> SuspendBroker(Guid brokerId, [FromBody] SetBrokerStatusReasonRequest request, CancellationToken ct)
+    {
+        await commands.Send(new SetBrokerStatusCommand(RequireTenant(), brokerId, new SetBrokerStatusRequest(false, request.Reason)), ct);
+        return NoContent();
+    }
+
+    [HttpPost("brokers/{brokerId:guid}/activate")]
     [RequirePermission("commission.broker.activate")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    public async Task<IActionResult> SetBrokerStatus(Guid brokerId, [FromBody] SetBrokerStatusRequest request, CancellationToken ct)
+    public async Task<IActionResult> ActivateBroker(Guid brokerId, [FromBody] SetBrokerStatusReasonRequest request, CancellationToken ct)
     {
-        await commands.Send(new SetBrokerStatusCommand(RequireTenant(), brokerId, request), ct);
+        await commands.Send(new SetBrokerStatusCommand(RequireTenant(), brokerId, new SetBrokerStatusRequest(true, request.Reason)), ct);
         return NoContent();
     }
 
