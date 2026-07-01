@@ -118,6 +118,11 @@ import {
   SetOverrideResultSchema,
   UserListItemSchema,
   UserListItemDtoSchema,
+  BranchSchema,
+  SetMemberScopeResultSchema,
+  type Branch,
+  type SetMemberScopeRequest,
+  type SetMemberScopeResult,
   CreateUserResultSchema,
   SetUserStatusResultSchema,
   UpdateUserProfileResultSchema,
@@ -2203,6 +2208,11 @@ export async function listTenantUsers(): Promise<UserListItem[]> {
       lastLoginAt: d.lastLoginAt ?? null,
       lockedUntil: d.lockedUntil ?? null,
       mustChangePassword: d.mustChangePassword ?? false,
+      // #90 — org scope (display-only). Server sends branchName resolved; null → the
+      // row renders "All branches / All departments".
+      branchId: d.branchId ?? null,
+      branchName: d.branchName ?? null,
+      department: d.department ?? null,
       roles: (d.roles ?? []).map((r) => ({
         userTenantRoleId: r.userTenantRoleId,
         roleId: r.roleId,
@@ -2213,6 +2223,33 @@ export async function listTenantUsers(): Promise<UserListItem[]> {
       })),
     }),
   );
+}
+
+/** GET /tenants/{tenantId}/branches — active branches for the People "All branches"
+ *  filter + the "N branches" header stat + the manage-panel scope picker. Gated
+ *  `tenant.users.read` (same read plane as the users list). Pure pass-through. */
+export async function listBranches(): Promise<Branch[]> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown[]>(`/tenants/${tenantId}/branches`);
+  return BranchSchema.array().parse(raw);
+}
+
+/** PUT /tenants/{tenantId}/users/{userId}/scope — set a member's org scope (branch +
+ *  department), DISPLAY-only. Routed server-side through `platform.set_membership_scope`,
+ *  which re-checks `tenant.users.update` and writes ONLY branch_id/department (never
+ *  role_id) so it can never change effective access. Idempotency-Key on the write. */
+export async function setMemberScope(
+  userId: string,
+  req: SetMemberScopeRequest,
+  idempotencyKey: string,
+): Promise<SetMemberScopeResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/users/${userId}/scope`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: { branchId: req.branchId, department: req.department },
+  });
+  return SetMemberScopeResultSchema.parse(raw);
 }
 
 /** POST /tenants/{tenantId}/users — invite/create a user (the tenant comes from the

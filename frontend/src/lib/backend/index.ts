@@ -231,6 +231,16 @@ export const setUserActive = USE_REAL_API ? real.setUserActive : mock.setUserAct
 export const updateUser = USE_REAL_API ? real.updateUser : mock.updateUser;
 export const resetUserAccess = USE_REAL_API ? real.resetUserAccess : mock.resetUserAccess;
 
+// ── BRANCH / MEMBERSHIP SCOPE (#90) ───────────────────────────────────────────
+// listBranches (GET /tenants/{id}/branches, gated tenant.users.read) heads the
+// People "All branches" filter + the "N branches" stat + the manage-panel picker.
+// setMemberScope (PUT /tenants/{id}/users/{userId}/scope, gated tenant.users.update)
+// writes DISPLAY-only branch/department via platform.set_membership_scope — it can
+// never change effective access. Idempotency-Key on the write. Mock persists the
+// change in-memory so flag-off is functional + the optimistic UI reconciles.
+export const listBranches = USE_REAL_API ? real.listBranches : mock.listBranches;
+export const setMemberScope = USE_REAL_API ? real.setMemberScope : mock.setMemberScope;
+
 export const listModules = USE_REAL_API ? real.listModules : mock.listModules;
 export const listIamPermissions = USE_REAL_API ? real.listIamPermissions : mock.listIamPermissions;
 // CATALOG-PLANE CREATES (platform.permissions.manage) — real POSTs to /iam/modules

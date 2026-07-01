@@ -1,15 +1,20 @@
 // People list (Team & Roles console). Toolbar (debounced search + status filter +
-// an All-roles dropdown) above a list with four data states: loading skeleton,
-// error, tenant-has-no-users empty, and a DISTINCT filtered-empty state. A muted
-// "showing X of Y" count sits above the list.
+// an All-roles dropdown + an All-branches dropdown) above a list with four data
+// states: loading skeleton, error, tenant-has-no-users empty, and a DISTINCT
+// filtered-empty state. A muted "showing X of Y" count sits above the list.
 //
 // People-tab reskin (#82), UI-only over the live UserListItemDto (no backend
 // change): the current user gets a YOU badge (self id from useSession); each role
 // renders a colour-coded, token-based badge (deterministic hue per role key — no
 // hex); 2FA shows an explicit On/Off pill; and each row's actions live behind a
 // `…` kebab (Manage access / Edit profile / View effective access) instead of a
-// whole-row button. SCOPE (branch/department) column + All-branches filter are #90
-// (no data yet) — intentionally omitted.
+// whole-row button.
+//
+// SCOPE (#90): each row shows the member's branch + a department sub-line ("All
+// branches" / "All departments" when null, from UserListItemDto.branchName/
+// department). The All-branches dropdown filters CLIENT-SIDE over the loaded rows;
+// its options come from GET /tenants/{id}/branches (useBranches). Scope is a
+// display-only org attribute — it never confers permissions.
 //
 // PHI: no raw phone — the list DTO carries maskedPhone only (not rendered here).
 // Filtering is client-side over the loaded list; the React Compiler memoizes the
@@ -28,8 +33,8 @@ import { dateTime, relativeTime } from '@/lib/format';
 import { usePermissions } from '@/lib/permissions';
 import { useSession } from '@/stores/session';
 import { useUI, type Panel } from '@/stores/ui';
-import { useTenantUsers } from '../api';
-import type { UserListItem } from '@/lib/mock/contracts';
+import { useBranches, useTenantUsers } from '../api';
+import type { Branch, UserListItem } from '@/lib/mock/contracts';
 
 type StatusFilter = 'all' | 'active' | 'inactive';
 
@@ -74,14 +79,20 @@ export function UsersTab() {
   const { t } = useTranslation();
   const { can } = usePermissions();
   const { data, isLoading, isError, refetch } = useTenantUsers();
+  // Branches head the "All branches" filter (#90). The People tab is already gated on
+  // tenant.users.read, so the query is safe to enable here. Undefined while loading →
+  // the dropdown just shows "All branches" until options arrive.
+  const { data: branches } = useBranches();
   const openPanel = useUI((s) => s.openPanel);
   const selfId = useSession((s) => s.user?.userId);
 
   // Toolbar state. `search` is the live input; `debounced` lags it by 200ms so
-  // filtering doesn't run on every keystroke. `roleFilter` is a role key or 'all'.
+  // filtering doesn't run on every keystroke. `roleFilter` is a role key or 'all';
+  // `branchFilter` is a branchId or 'all'.
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
   const [roleFilter, setRoleFilter] = useState<string>('all');
+  const [branchFilter, setBranchFilter] = useState<string>('all');
   const debounced = useDebounced(search, 200);
 
   // Managers act via the kebab (manage access / edit profile); read-only viewers
@@ -113,6 +124,9 @@ export function UsersTab() {
           roleFilter={roleFilter}
           onRoleFilter={setRoleFilter}
           roleOptions={[]}
+          branchFilter={branchFilter}
+          onBranchFilter={setBranchFilter}
+          branchOptions={[]}
           disabled
         />
         <Card>
@@ -159,13 +173,15 @@ export function UsersTab() {
       u.fullName.toLowerCase().includes(query) ||
       u.email.toLowerCase().includes(query);
     const matchesRole = roleFilter === 'all' || u.roles.some((r) => r.roleKey === roleFilter);
-    return matchesStatus && matchesQuery && matchesRole;
+    const matchesBranch = branchFilter === 'all' || u.branchId === branchFilter;
+    return matchesStatus && matchesQuery && matchesRole && matchesBranch;
   });
 
   const clearFilters = () => {
     setSearch('');
     setStatus('all');
     setRoleFilter('all');
+    setBranchFilter('all');
   };
 
   return (
@@ -178,6 +194,9 @@ export function UsersTab() {
         roleFilter={roleFilter}
         onRoleFilter={setRoleFilter}
         roleOptions={roleOptions}
+        branchFilter={branchFilter}
+        onBranchFilter={setBranchFilter}
+        branchOptions={branches ?? []}
       />
 
       <p className="text-[12px] text-muted-2" aria-live="polite">
@@ -222,6 +241,9 @@ function Toolbar({
   roleFilter,
   onRoleFilter,
   roleOptions,
+  branchFilter,
+  onBranchFilter,
+  branchOptions,
   disabled,
 }: {
   search: string;
@@ -231,6 +253,9 @@ function Toolbar({
   roleFilter: string;
   onRoleFilter: (v: string) => void;
   roleOptions: RoleOption[];
+  branchFilter: string;
+  onBranchFilter: (v: string) => void;
+  branchOptions: Branch[];
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
@@ -268,6 +293,25 @@ function Toolbar({
             {roleOptions.map((r) => (
               <option key={r.roleKey} value={r.roleKey}>
                 {r.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        {/* All-branches filter (#90) — client-side over the loaded rows. Disabled when
+            no branches are configured (nothing to filter by). */}
+        <div className="w-40 shrink-0">
+          <Select
+            value={branchFilter}
+            disabled={disabled || branchOptions.length === 0}
+            onChange={(e) => onBranchFilter(e.target.value)}
+            aria-label={t('team.allBranches')}
+            className="py-1.5 text-[12px]"
+          >
+            <option value="all">{t('team.allBranches')}</option>
+            {branchOptions.map((b) => (
+              <option key={b.branchId} value={b.branchId}>
+                {b.name}
               </option>
             ))}
           </Select>
@@ -413,6 +457,17 @@ function UserRow({
             {r.isPrimary ? <span className="text-[9px] uppercase opacity-70">{t('team.primary')}</span> : null}
           </span>
         ))}
+      </div>
+
+      {/* SCOPE (#90): branch + department sub-line; "All branches / All departments"
+          when unscoped. Display-only — never a permission signal. */}
+      <div className="hidden w-32 shrink-0 lg:block">
+        <p className="truncate text-[12px] text-ink" title={user.branchName ?? t('team.allBranches')}>
+          {user.branchName ?? t('team.allBranches')}
+        </p>
+        <p className="truncate text-[11px] text-muted-2" title={user.department ?? t('team.allDepartments')}>
+          {user.department ?? t('team.allDepartments')}
+        </p>
       </div>
 
       <div className="hidden w-28 shrink-0 text-right md:block">

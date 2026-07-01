@@ -19,6 +19,7 @@ import {
   exportAuditLog,
   listActiveSessions,
   listAuditLog,
+  listBranches,
   listInvitations,
   resendInvitation,
   revokeAllSessions,
@@ -43,6 +44,7 @@ import {
   resetUserAccess,
   revokeRoleAssignment,
   revokeRolePermission,
+  setMemberScope,
   setOverride,
   setUserActive,
   updateUser,
@@ -59,9 +61,11 @@ import type {
   DuplicateRoleRequest,
   InvitationList,
   RoleMatrix,
+  SetMemberScopeRequest,
   SetOverrideRequest,
   SetUserStatusRequest,
   UpdateUserProfileRequest,
+  UserListItem,
 } from '@/lib/mock/contracts';
 
 export const usersQueryKey = ['team', 'users'] as const;
@@ -74,6 +78,47 @@ export const effectiveAccessQueryKey = (userId: string | undefined) => ['team', 
 
 export function useTenantUsers() {
   return useQuery({ queryKey: usersQueryKey, queryFn: listTenantUsers });
+}
+
+// ── BRANCHES + MEMBERSHIP SCOPE (#90) ─────────────────────────────────────────
+export const branchesQueryKey = ['team', 'branches'] as const;
+
+/** Active branches for the People "All branches" filter, the "N branches" header
+ *  stat, and the manage-panel scope picker. Gated `tenant.users.read` server-side;
+ *  pass `enabled=false` when the caller lacks it so we never fire a 403. Session-stable. */
+export function useBranches(enabled = true) {
+  return useQuery({ queryKey: branchesQueryKey, queryFn: listBranches, enabled, staleTime: 5 * 60_000 });
+}
+
+/**
+ * Set a member's org scope (branch + department) — DISPLAY only, never role. The
+ * change is applied OPTIMISTICALLY to the cached users list (the row's branch/
+ * department flip instantly), rolled back on error, then reconciled on settle via a
+ * users-list invalidate (server state wins). `branchName` is threaded so the optimistic
+ * patch shows the picked branch's label immediately without waiting for the refetch.
+ */
+export function useSetMemberScope() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: SetMemberScopeRequest & { userId: string; branchName: string | null; idempotencyKey: string }) =>
+      setMemberScope(vars.userId, { branchId: vars.branchId, department: vars.department }, vars.idempotencyKey),
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: usersQueryKey });
+      const previous = qc.getQueryData<UserListItem[]>(usersQueryKey);
+      qc.setQueryData<UserListItem[]>(usersQueryKey, (old) =>
+        old?.map((u) =>
+          u.userId === vars.userId
+            ? { ...u, branchId: vars.branchId, branchName: vars.branchName, department: vars.department }
+            : u,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_e, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(usersQueryKey, ctx.previous);
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: usersQueryKey }),
+  });
 }
 
 export function useRoles() {

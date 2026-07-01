@@ -10,9 +10,11 @@
 import { maskPhone } from '@/lib/format';
 import {
   AssignRoleResultSchema,
+  BranchSchema,
   CreateModuleResultSchema,
   CreatePermissionResultSchema,
   CreateUserResultSchema,
+  SetMemberScopeResultSchema,
   DuplicateRoleResultSchema,
   EffectiveAccessSchema,
   EffectivePermissionSchema,
@@ -34,7 +36,10 @@ import {
   UserOverrideSchema,
   type AssignRoleRequest,
   type AssignRoleResult,
+  type Branch,
   type RevokeRoleResult,
+  type SetMemberScopeRequest,
+  type SetMemberScopeResult,
   type CreateModuleRequest,
   type CreateModuleResult,
   type CreatePermissionRequest,
@@ -243,8 +248,35 @@ interface SeedUser {
   /** #87 — most-recent active session activity; drives the People "Online" dot.
    *  Relative to import time so the mock shows a couple of "online" teammates. */
   lastActivityAt: string | null;
+  /** #90 — org SCOPE (display-only). Null branch = "All branches"; null/blank
+   *  department = "All departments". MUTABLE so the setMemberScope mock persists a
+   *  scope change flag-off (the optimistic UI reconciles against a real change). */
+  branchId: string | null;
+  department: string | null;
   roleIds: { userTenantRoleId: string; roleId: string; isPrimary: boolean; expiresAt: string | null }[];
   overrides: UserOverride[];
+}
+
+// ── BRANCHES (seed, #90) ──────────────────────────────────────────────────────
+// A tenant's physical locations. MUTABLE so createBranch could extend it flag-off;
+// heads the People "All branches" filter + the "N branches" header stat and the
+// manage-panel scope picker. Display-only — a branch never confers permissions.
+interface SeedBranch {
+  branchId: string;
+  name: string;
+  code: string | null;
+  isActive: boolean;
+}
+
+const BRANCHES: SeedBranch[] = [
+  { branchId: 'br-1', name: 'Jubilee Hills (Main)', code: 'JH', isActive: true },
+  { branchId: 'br-2', name: 'Gachibowli', code: 'GB', isActive: true },
+  { branchId: 'br-3', name: 'Secunderabad', code: 'SC', isActive: true },
+];
+
+function branchNameById(id: string | null): string | null {
+  if (!id) return null;
+  return BRANCHES.find((b) => b.branchId === id)?.name ?? null;
 }
 
 /** Minutes-ago ISO for relative presence seeds (evaluated once at import). */
@@ -254,12 +286,14 @@ const USERS: SeedUser[] = [
   {
     userId: ADMIN_USER_ID, email: DEMO_EMAIL, fullName: 'Priyanka R', phone: '+91 98200 11223',
     isActive: true, mfaEnabled: false, lastLoginAt: '2026-06-14T09:12:00+05:30', lastActivityAt: minsAgoIso(1),
+    branchId: 'br-1', department: 'Front desk',
     roleIds: [{ userTenantRoleId: 'utr-1', roleId: 'r-admin', isPrimary: true, expiresAt: null }],
     overrides: [],
   },
   {
     userId: 'u-2', email: 'arjun.sharma@apollocare.in', fullName: 'Dr. Arjun Sharma', phone: '+91 99203 44556',
     isActive: true, mfaEnabled: true, lastLoginAt: '2026-06-13T18:40:00+05:30', lastActivityAt: minsAgoIso(3),
+    branchId: 'br-2', department: 'Cardiology OPD',
     roleIds: [{ userTenantRoleId: 'utr-2', roleId: 'r-staff', isPrimary: true, expiresAt: null }],
     overrides: [
       { overrideId: 'ov-1', permissionKey: 'docslot.booking.cancel', isAllowed: false, reason: 'Under review after a wrong-cancel incident (2026-05)', expiresAt: '2026-09-01T00:00:00+05:30' },
@@ -268,12 +302,14 @@ const USERS: SeedUser[] = [
   {
     userId: 'u-3', email: 'meena.r@apollocare.in', fullName: 'Meena R', phone: '+91 98765 77889',
     isActive: true, mfaEnabled: false, lastLoginAt: '2026-06-14T08:02:00+05:30', lastActivityAt: minsAgoIso(42),
+    branchId: null, department: null,
     roleIds: [{ userTenantRoleId: 'utr-3', roleId: 'r-viewer', isPrimary: true, expiresAt: '2026-12-31T00:00:00+05:30' }],
     overrides: [],
   },
   {
     userId: 'u-4', email: 'rohit.billing@apollocare.in', fullName: 'Rohit Billing', phone: null,
     isActive: false, mfaEnabled: false, lastLoginAt: null, lastActivityAt: null,
+    branchId: 'br-1', department: null,
     roleIds: [{ userTenantRoleId: 'utr-4', roleId: 'r-billing', isPrimary: true, expiresAt: null }],
     overrides: [
       { overrideId: 'ov-2', permissionKey: 'docslot.analytics.read', isAllowed: true, reason: 'Temporary access for the Q2 revenue report', expiresAt: '2026-07-15T00:00:00+05:30' },
@@ -316,6 +352,9 @@ function toUserListItem(u: SeedUser): UserListItem {
     mfaEnabled: u.mfaEnabled,
     lastLoginAt: u.lastLoginAt,
     lastActivityAt: u.lastActivityAt,
+    branchId: u.branchId,
+    branchName: branchNameById(u.branchId),
+    department: u.department,
     roles: u.roleIds.map((a) => {
       const role = roleById(a.roleId);
       return {
@@ -334,6 +373,35 @@ function toUserListItem(u: SeedUser): UserListItem {
 
 export function listTenantUsers(): Promise<UserListItem[]> {
   return delay(USERS.map(toUserListItem));
+}
+
+/** #90 — active branches for the People "All branches" filter + the "N branches"
+ *  header stat + the manage-panel scope picker. */
+export function listBranches(): Promise<Branch[]> {
+  return delay(BRANCHES.filter((b) => b.isActive).map((b) => BranchSchema.parse(b)));
+}
+
+/** #90 — set a member's org scope (DISPLAY-only). Unlike the other user mutations
+ *  (no-ops), this MUTATES the seed so the change persists flag-off and the optimistic
+ *  UI reconciles against a real value after invalidate. Never touches roles. */
+export function setMemberScope(
+  userId: string,
+  req: SetMemberScopeRequest,
+  idempotencyKey: string,
+): Promise<SetMemberScopeResult> {
+  return withIdem(idempotencyKey, () => {
+    const dept = req.department?.trim() ? req.department.trim() : null;
+    const u = USERS.find((x) => x.userId === userId);
+    if (u) {
+      u.branchId = req.branchId ?? null;
+      u.department = dept;
+    }
+    return SetMemberScopeResultSchema.parse({
+      userTenantRoleId: u?.roleIds[0]?.userTenantRoleId ?? crypto.randomUUID(),
+      branchId: req.branchId ?? null,
+      department: dept,
+    });
+  });
 }
 
 export function listRoles(): Promise<Role[]> {

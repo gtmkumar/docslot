@@ -14,7 +14,7 @@ import { Info, KeyRound, Pencil, Plus, ShieldAlert, Trash2 } from 'lucide-react'
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
-import { Select, TextArea, labelClass } from '@/components/ui/Field';
+import { Select, TextArea, TextInput, labelClass } from '@/components/ui/Field';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { dateTime, shortDate } from '@/lib/format';
@@ -26,11 +26,13 @@ import { useUI } from '@/stores/ui';
 import type { UserListItem } from '@/lib/mock/contracts';
 import {
   useAssignRole,
+  useBranches,
   useEffectivePermissions,
   usePermissionRegistry,
   useResetUserAccess,
   useRevokeRole,
   useRoles,
+  useSetMemberScope,
   useSetOverride,
   useSetUserStatus,
   useTenantUsers,
@@ -76,6 +78,10 @@ export function ManageUserPanel({ userId, open, onClose }: { userId: string; ope
 
         {user ? <AccountSection user={user} isSelf={isSelf} canManage={canManage} /> : null}
         <RolesSection userId={userId} canAssign={canAssign} />
+        {/* Org SCOPE (#90) — branch + department. DISPLAY-only (never changes access),
+            so it's editable for self too. Keyed by userId so switching the target user
+            re-seeds the form from that user's persisted scope. */}
+        {user && canManage ? <ScopeSection key={user.userId} user={user} /> : null}
         {canOverride ? <OverridesSection userId={userId} /> : null}
         <EffectiveSection userId={userId} />
       </div>
@@ -362,6 +368,102 @@ function RolesSection({ userId, canAssign }: { userId: string; canAssign: boolea
           </Button>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+// ── 1b. Org scope (branch + department) — DISPLAY-only (#90) ──────────────────
+// A branch picker + a free-text department. The write goes through
+// platform.set_membership_scope, which touches ONLY branch_id/department (never
+// role_id) — so this can never change effective access. Optimistic (the People row
+// flips instantly) + invalidate on settle. Branches come from GET /branches with
+// full skeleton / error / empty (no-branches) handling.
+function ScopeSection({ user }: { user: UserListItem }) {
+  const { t } = useTranslation();
+  const { data: branches, isLoading, isError, refetch } = useBranches();
+  const setScope = useSetMemberScope();
+
+  const [branchId, setBranchId] = useState<string>(user.branchId ?? '');
+  const [department, setDepartment] = useState<string>(user.department ?? '');
+
+  const trimmedDept = department.trim();
+  // Dirty vs the persisted scope. After a successful save the cached user row updates
+  // to match, so this naturally settles to false without a sync effect.
+  const dirty = branchId !== (user.branchId ?? '') || trimmedDept !== (user.department ?? '');
+
+  const onSave = async () => {
+    const branchName = branchId ? (branches?.find((b) => b.branchId === branchId)?.name ?? null) : null;
+    try {
+      await setScope.mutateAsync({
+        userId: user.userId,
+        branchId: branchId || null,
+        department: trimmedDept || null,
+        branchName,
+        idempotencyKey: idempotencyKey(),
+      });
+      toast.success(t('team.manage.scopeSaved'));
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
+  };
+
+  return (
+    <section>
+      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-2">
+        {t('team.manage.scopeHeading')}
+      </h3>
+      <p className="mb-2 text-[12px] text-muted">{t('team.manage.scopeSub')}</p>
+
+      <div className="flex flex-col gap-3">
+        <div>
+          <label htmlFor="scope-branch" className={labelClass}>
+            {t('team.manage.branchLabel')}
+          </label>
+          {isLoading ? (
+            <Skeleton className="h-9 w-full" />
+          ) : isError ? (
+            <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-line px-3 py-2 text-[12px] text-muted">
+              <span className="flex-1">{t('team.manage.branchesError')}</span>
+              <Button variant="ghost" size="sm" onClick={() => void refetch()}>
+                {t('common.retry')}
+              </Button>
+            </div>
+          ) : (
+            <>
+              <Select id="scope-branch" value={branchId} onChange={(e) => setBranchId(e.target.value)}>
+                <option value="">{t('team.manage.branchAll')}</option>
+                {branches?.map((b) => (
+                  <option key={b.branchId} value={b.branchId}>
+                    {b.name}
+                  </option>
+                ))}
+              </Select>
+              {(branches?.length ?? 0) === 0 ? (
+                <p className="mt-1 text-[11px] text-muted">{t('team.manage.noBranches')}</p>
+              ) : null}
+            </>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="scope-dept" className={labelClass}>
+            {t('team.manage.departmentLabel')}
+          </label>
+          <TextInput
+            id="scope-dept"
+            value={department}
+            onChange={(e) => setDepartment(e.target.value)}
+            placeholder={t('team.manage.departmentPlaceholder')}
+          />
+          <p className="mt-1 text-[11px] text-muted">{t('team.manage.departmentHint')}</p>
+        </div>
+
+        <div className="flex justify-end">
+          <Button variant="primary" size="sm" disabled={!dirty || setScope.isPending} onClick={() => void onSave()}>
+            {t('team.manage.saveScope')}
+          </Button>
+        </div>
+      </div>
     </section>
   );
 }

@@ -26,7 +26,7 @@ import { ApiIntegrationsTab } from './components/ApiIntegrationsTab';
 import { AuditLogTab } from './components/AuditLogTab';
 import { SessionsTab } from './components/SessionsTab';
 import { InvitesTab } from './components/InvitesTab';
-import { useInvitations, useRoles, useTenantUsers } from './api';
+import { useBranches, useInvitations, useRoles, useTenantUsers } from './api';
 
 const tabTrigger =
   'shrink-0 whitespace-nowrap px-3 py-2 text-[13px] font-medium text-muted border-b-2 border-transparent transition-colors ' +
@@ -50,18 +50,22 @@ export function TeamScreen() {
   const canApi = can('platform.api_clients.manage');
 
   // Header stats: only what is derivable TODAY. Active users come from the loaded
-  // users list; role counts from the roles list (custom = !isSystem). Pending
-  // invites (#89) and branches (#90) have no data yet — omitted, not fabricated.
+  // users list; role counts from the roles list (custom = !isSystem); the branch
+  // count (#90) from the branches list.
   const { data: users } = useTenantUsers();
   const { data: roles } = useRoles();
   // Pending-invitation count (#89) — feeds the Invites tab badge. Gated on
   // tenant.users.read so we never fire a 403 when the tab itself is hidden.
   const { data: invites } = useInvitations('pending', canReadUsers);
+  // Branch count (#90) for the header stat line. Gated on tenant.users.read (same
+  // read plane as the users list) so a viewer without it never fires a 403.
+  const { data: branches } = useBranches(canReadUsers);
   const activeCount = users?.filter((u) => u.isActive).length;
   const roleCount = roles?.length;
   const customCount = roles?.filter((r) => !r.isSystem).length;
   const pendingInvites = invites?.count;
-  const hasStats = activeCount !== undefined || roleCount !== undefined;
+  const branchCount = branches?.length;
+  const hasStats = activeCount !== undefined || roleCount !== undefined || branchCount !== undefined;
 
   // Visible tabs, in mockup order. Each carries its own permission gate; the first
   // visible tab becomes the default so the screen never opens on a hidden tab. An
@@ -102,6 +106,12 @@ export function TeamScreen() {
               {roleCount !== undefined ? (
                 <span>{t('team.statRoles', { count: roleCount, custom: customCount ?? 0 })}</span>
               ) : null}
+              {branchCount !== undefined && (activeCount !== undefined || roleCount !== undefined) ? (
+                <span aria-hidden="true" className="text-muted-2">
+                  ·
+                </span>
+              ) : null}
+              {branchCount !== undefined ? <span>{t('team.statBranches', { count: branchCount })}</span> : null}
             </p>
           ) : null}
         </div>

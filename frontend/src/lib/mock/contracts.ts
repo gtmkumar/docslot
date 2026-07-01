@@ -581,6 +581,13 @@ export const UserListItemSchema = z.object({
   // password change is pending (after an admin reset). Both nullable/defaulted for resilience.
   lockedUntil: z.string().nullable().default(null),
   mustChangePassword: z.boolean().default(false),
+  // Org SCOPE (#90) — a DISPLAY-only branch + department for the membership. Never
+  // confers permissions. Null branch = "All branches"; null/blank department = "All
+  // departments". `branchName` is the resolved label for the row (the id drives the
+  // People "All branches" filter). All defaulted so older responses parse unchanged.
+  branchId: z.string().nullable().default(null),
+  branchName: z.string().nullable().default(null),
+  department: z.string().nullable().default(null),
   // Roles the user holds in this tenant — assembled for the list row (the backend
   // join over user_tenant_roles → roles). Each carries the assignment id so the
   // manage panel can revoke without a second lookup.
@@ -618,6 +625,11 @@ export const UserListItemDtoSchema = z
     lastActivityAt: z.string().nullable().optional(),
     lockedUntil: z.string().nullable().optional(),
     mustChangePassword: z.boolean().optional().default(false),
+    // #90 — org scope (display-only): appended nullable/optional so older builds that
+    // omit them still parse (the row degrades to "All branches / All departments").
+    branchId: z.string().nullable().optional(),
+    branchName: z.string().nullable().optional(),
+    department: z.string().nullable().optional(),
     roles: z
       .array(
         z.object({
@@ -634,6 +646,34 @@ export const UserListItemDtoSchema = z
   })
   .passthrough();
 export type UserListItemDto = z.infer<typeof UserListItemDtoSchema>;
+
+/** A tenant's physical branch/location (#90). Mirrors `BranchDto`. An organizational
+ *  DISPLAY attribute only — it heads the People "All branches" filter + the header
+ *  "N branches" stat and never confers permissions. `code` is an optional short label. */
+export const BranchSchema = z.object({
+  branchId: z.string(),
+  name: z.string(),
+  code: z.string().nullable().optional(),
+  isActive: z.boolean(),
+});
+export type Branch = z.infer<typeof BranchSchema>;
+
+/** `PUT /tenants/{id}/users/{userId}/scope` body — set a member's org scope (DISPLAY
+ *  only). Null `branchId` = "All branches"; null/blank `department` = "All departments".
+ *  Routed server-side through `platform.set_membership_scope`, which writes ONLY
+ *  branch_id/department (never role_id) so it can never change effective access. */
+export interface SetMemberScopeRequest {
+  branchId: string | null;
+  department: string | null;
+}
+
+/** Result of the scope write. Echoes the affected membership row + its new scope. */
+export const SetMemberScopeResultSchema = z.object({
+  userTenantRoleId: z.string(),
+  branchId: z.string().nullable(),
+  department: z.string().nullable(),
+});
+export type SetMemberScopeResult = z.infer<typeof SetMemberScopeResultSchema>;
 
 /** `POST /tenants/{id}/users` body. Mirrors CreateUserRequest. */
 export const CreateUserRequestSchema = z.object({
