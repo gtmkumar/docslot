@@ -9,7 +9,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { shortDate } from '@/lib/format';
 import { useAbdmRecord } from '../api';
-import { ConsentRequiredError } from '@/lib/mock';
+import { isConsentDenied } from './ConsentBlocked';
 import type { PurposeOfUse } from '@/lib/mock/contracts';
 
 export function AbdmDetailPanel({
@@ -27,7 +27,10 @@ export function AbdmDetailPanel({
 }) {
   const { t } = useTranslation();
   const { data, isLoading, isError, error } = useAbdmRecord(recordId, patientId, purpose);
-  const consentBlocked = isError && error instanceof ConsentRequiredError;
+  // Mode-agnostic consent detection: real mode throws ApiError(403), mock mode
+  // throws ConsentRequiredError. `error instanceof ConsentRequiredError` missed
+  // the real 403 → the panel fell through to the generic-error state (#56).
+  const consentBlocked = isError && isConsentDenied(error);
 
   return (
     <SlideOver
