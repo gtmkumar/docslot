@@ -18,7 +18,7 @@ import { Select, TextArea, labelClass } from '@/components/ui/Field';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { dateTime, shortDate } from '@/lib/format';
-import { idempotencyKey } from '@/lib/api-client';
+import { ApiError, idempotencyKey } from '@/lib/api-client';
 import { toUserError } from '@/lib/backend';
 import { usePermissions } from '@/lib/permissions';
 import { useSession } from '@/stores/session';
@@ -371,7 +371,11 @@ type ExpiryChoice = 'none' | '30' | '90';
 
 function OverridesSection({ userId }: { userId: string }) {
   const { t } = useTranslation();
-  const { data: overrides, isLoading } = useUserOverrides(userId);
+  // The overrides read is distinctly gated. A 403 must NOT collapse to the
+  // "no overrides" empty state (that reads as "clean slate" when the caller is
+  // actually forbidden) — surface the forbidden/error state explicitly (#56).
+  const { data: overrides, isLoading, isError, error, refetch } = useUserOverrides(userId);
+  const forbidden = isError && error instanceof ApiError && error.status === 403;
   const { data: registry } = usePermissionRegistry();
   const setOverride = useSetOverride();
 
@@ -428,6 +432,20 @@ function OverridesSection({ userId }: { userId: string }) {
 
       {isLoading ? (
         <Skeleton className="h-12 w-full" />
+      ) : isError ? (
+        forbidden ? (
+          <EmptyState
+            title={t('team.manage.overridesForbiddenTitle')}
+            description={t('team.manage.overridesForbiddenBody')}
+          />
+        ) : (
+          <EmptyState
+            title={t('error.genericTitle')}
+            description={t('error.genericBody')}
+            actionLabel={t('common.retry')}
+            onAction={() => void refetch()}
+          />
+        )
       ) : (overrides?.length ?? 0) === 0 && !adding ? (
         <p className="rounded-[var(--radius-sm)] border border-line px-3 py-2 text-[12px] text-muted">
           {t('team.manage.noOverrides')}
