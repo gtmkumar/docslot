@@ -45,3 +45,33 @@ public interface IInvitationRepository
     /// Tenant scoping is enforced by RLS (invitations_read) + the explicit predicate.</summary>
     Task<IReadOnlyList<InvitationDto>> ListAsync(Guid tenantId, string? status, CancellationToken ct);
 }
+
+/// <summary>
+/// Delivers a freshly-minted invitation link/token to the invitee (issue #93, epic #80 Phase D). Sits behind
+/// an OFFLINE PROVIDER SEAM exactly like <see cref="IWhatsAppSender"/>: the dev/default
+/// <c>StubInvitationNotifier</c> RECORDS the intended send (observable/testable) but performs NO live delivery;
+/// a real email/WhatsApp transport is wired ONLY when its credentials are configured
+/// (<c>Invitations:NotifierProvider</c> + the provider secret). The dispatch is ADVISORY / NON-BLOCKING — the
+/// create/resend handlers swallow any failure so the one-time token is still returned to the admin. The raw
+/// token/link is NEVER logged at info/prod level (debug-only, if at all): it is a live credential.
+/// </summary>
+public interface IInvitationNotifier
+{
+    /// <summary>Best-effort delivery of the invite link to the invitee. Implementations must not throw for a
+    /// transient failure on the offline path; the caller treats this as advisory regardless.</summary>
+    Task NotifyAsync(InvitationNotification notification, CancellationToken ct);
+}
+
+/// <summary>
+/// The payload handed to <see cref="IInvitationNotifier"/>: who to reach (<paramref name="InvitedEmail"/>),
+/// the tenant context, and the ONE-TIME plaintext <paramref name="Token"/> (from which the notifier builds the
+/// accept link). <paramref name="IsResend"/> lets the transport pick a "reminder" vs "new invite" template.
+/// The token is a live credential — never persist or log it.
+/// </summary>
+public sealed record InvitationNotification(
+    Guid InvitationId,
+    Guid TenantId,
+    string InvitedEmail,
+    string Token,
+    DateTime ExpiresAt,
+    bool IsResend);

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **DocSlot** — a WhatsApp-first, multi-tenant healthcare SaaS for the Indian market (appointment booking, prescriptions, lab reports, ABDM/ABHA-integrated medical records, broker-referral commissions). Intended runtime is two services: a **.NET 10 transactional service** (system of record) and a **Python AI sibling service** (LangGraph triage, RAG, OCR, no-show prediction), with a **React 19.2 SPA** admin/staff frontend.
 
-**Maturity matters when deciding where truth lives:** the PostgreSQL schema in `database/` is the mature, authoritative artifact (113 tables, verified end-to-end). The .NET backend (`backend/mediq/`) is an early skeleton — only two shared library projects exist so far. The Python service and React frontend are specified but not yet in this tree. Build the app *from* the schema, not the other way around.
+**Maturity matters when deciding where truth lives:** the PostgreSQL schema in `database/` is the mature, authoritative artifact (114 tables, verified end-to-end). The .NET backend (`backend/mediq/`) is an early skeleton — only two shared library projects exist so far. The Python service and React frontend are specified but not yet in this tree. Build the app *from* the schema, not the other way around.
 
 ## Repository layout
 

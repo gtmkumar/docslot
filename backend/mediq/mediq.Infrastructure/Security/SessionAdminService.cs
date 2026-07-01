@@ -17,7 +17,7 @@ namespace mediq.Infrastructure.Security;
 /// command's UnitOfWork transaction (alongside the audit row), unlike the theft-mitigation
 /// <see cref="SessionStore.RevokeAllForUserAsync"/> which deliberately uses a survive-rollback connection.
 /// </summary>
-public sealed class SessionAdminService(PlatformDbContext db) : ISessionAdminService
+public sealed class SessionAdminService(PlatformDbContext db, IGeoIpResolver geo) : ISessionAdminService
 {
     public async Task<IReadOnlyList<ActiveSessionDto>> ListActiveForTenantAsync(
         Guid tenantId, Guid? currentUserId, int take, CancellationToken ct)
@@ -45,11 +45,28 @@ public sealed class SessionAdminService(PlatformDbContext db) : ISessionAdminSer
             new NpgsqlParameter("@p0", tenantId), new NpgsqlParameter("@p1", take))
             .ToListAsync(ct);
 
+        // #94: resolve each distinct IP to a city via the seam. Offline (NullGeoIpResolver) → all null, so the
+        // UI shows just the IP; a live provider fills City without any other change.
+        var cities = await ResolveCitiesAsync(rows.Select(r => r.IpAddress), ct);
+
         return rows.Select(r => new ActiveSessionDto(
             r.SessionId, r.UserId, r.UserName, r.UserEmail, r.IpAddress,
             Utc(r.StartedAt), Utc(r.LastActivityAt), Utc(r.ExpiresAt),
-            currentUserId is not null && r.UserId == currentUserId.Value)).ToList();
+            currentUserId is not null && r.UserId == currentUserId.Value,
+            City(cities, r.IpAddress))).ToList();
     }
+
+    /// <summary>Resolve the distinct non-empty IPs to a city map (one lookup per unique IP; null offline).</summary>
+    private async Task<Dictionary<string, string?>> ResolveCitiesAsync(IEnumerable<string?> ips, CancellationToken ct)
+    {
+        var map = new Dictionary<string, string?>();
+        foreach (var ip in ips.Where(ip => !string.IsNullOrEmpty(ip)).Distinct())
+            map[ip!] = await geo.ResolveCityAsync(ip, ct);
+        return map;
+    }
+
+    private static string? City(IReadOnlyDictionary<string, string?> map, string? ip) =>
+        ip is not null && map.TryGetValue(ip, out var c) ? c : null;
 
     public async Task<bool> RevokeMemberSessionAsync(Guid sessionId, Guid tenantId, string reason, CancellationToken ct)
     {

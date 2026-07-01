@@ -14,7 +14,7 @@ namespace mediq.Infrastructure.Security;
 /// the subject phone is MASKED here (<see cref="PhoneMasker"/>) — raw subject_phone never leaves this seam;
 /// key rows carry NO key material (only metadata). Reads use a direct reader for array/jsonb columns.
 /// </summary>
-public sealed class SecurityReadService(PlatformDbContext db) : ISecurityReadService
+public sealed class SecurityReadService(PlatformDbContext db, IGeoIpResolver geo) : ISecurityReadService
 {
     public async Task<IReadOnlyList<AuditAnchorDto>> ListAnchorsAsync(int take, CancellationToken ct)
     {
@@ -252,9 +252,26 @@ public sealed class SecurityReadService(PlatformDbContext db) : ISecurityReadSer
             .OrderBy(f => AuditTaxonomy.Severities.ToList().IndexOf(f.Key))
             .ToList();
 
-        return new AuditLogPageDto(page, size, total, rows.Select(MapRow).ToList(),
+        // #94: enrich each page row with a geo-IP city via the seam (one lookup per distinct IP; null offline,
+        // so the UI shows just the IP). The export path deliberately stays city-less (unchanged CSV columns).
+        var cities = await ResolveCitiesAsync(rows.Select(r => r.IpAddress), ct);
+        var items = rows.Select(r => MapRow(r) with { City = CityFor(cities, r.IpAddress) }).ToList();
+
+        return new AuditLogPageDto(page, size, total, items,
             categoryFacets, severityFacets, filter.From, filter.To);
     }
+
+    /// <summary>Resolve the distinct non-empty IPs to a city map (one lookup per unique IP; null offline).</summary>
+    private async Task<Dictionary<string, string?>> ResolveCitiesAsync(IEnumerable<string?> ips, CancellationToken ct)
+    {
+        var map = new Dictionary<string, string?>();
+        foreach (var ip in ips.Where(ip => !string.IsNullOrEmpty(ip)).Distinct())
+            map[ip!] = await geo.ResolveCityAsync(ip, ct);
+        return map;
+    }
+
+    private static string? CityFor(IReadOnlyDictionary<string, string?> map, string? ip) =>
+        ip is not null && map.TryGetValue(ip, out var c) ? c : null;
 
     public async Task<IReadOnlyList<AuditLogRowDto>> ReadAuditLogRowsForExportAsync(
         Guid? tenantId, AuditLogFilter filter, int cap, CancellationToken ct)

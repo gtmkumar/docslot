@@ -3,6 +3,7 @@ using mediq.Application.Abstractions;
 using mediq.Application.Cqrs;
 using mediq.SharedDataModel.Docslot.Admin;
 using mediq.Utilities.Exceptions;
+using Microsoft.Extensions.Logging;
 
 namespace mediq.Application.Features.Invitations;
 
@@ -20,6 +21,31 @@ namespace mediq.Application.Features.Invitations;
 internal static class InvitationPolicy
 {
     public static readonly TimeSpan Ttl = TimeSpan.FromDays(7);
+}
+
+/// <summary>
+/// ADVISORY dispatch of the invite link through <see cref="IInvitationNotifier"/> (issue #93). Best-effort and
+/// NON-BLOCKING: any notifier failure is swallowed + logged (warning) so the invitation write still commits and
+/// the one-time token is still returned to the admin. The token is a live credential — never logged here.
+/// </summary>
+internal static class InvitationNotify
+{
+    public static async Task AdvisoryAsync(
+        IInvitationNotifier notifier, ILogger logger, InvitationNotification notification, CancellationToken ct)
+    {
+        try
+        {
+            await notifier.NotifyAsync(notification, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The invite already exists + the token was returned — delivery is advisory, so a notifier failure
+            // must NOT surface to the caller. Log the failure WITHOUT the token/link.
+            logger.LogWarning(ex,
+                "Invitation notifier failed for invitation={InvitationId} tenant={TenantId} (advisory — invite still created)",
+                notification.InvitationId, notification.TenantId);
+        }
+    }
 }
 
 // ---- List invitations (query) --------------------------------------------------------------------
@@ -58,7 +84,8 @@ public sealed class CreateInvitationValidator : AbstractValidator<CreateInvitati
 
 public sealed class CreateInvitationCommandHandler(
     IInvitationRepository invitations, IInvitationTokenFactory tokens,
-    IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    IAuditTrailWriter audit, IInvitationNotifier notifier, ILogger<CreateInvitationCommandHandler> logger,
+    ICurrentUserContext ctx, IClock clock)
     : ICommandHandler<CreateInvitationCommand, InvitationTokenResult>
 {
     public async Task<InvitationTokenResult> Handle(CreateInvitationCommand command, CancellationToken ct)
@@ -78,6 +105,10 @@ public sealed class CreateInvitationCommandHandler(
             ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
             ChangeSummary: $"Invited {command.Request.Email} to tenant {tenantId}"
                 + (command.Request.RoleId is { } r ? $" with role {r}" : " (no role)")), ct);
+
+        // #93: hand the one-time link to the (offline-by-default) notifier. Advisory — a failure never fails the invite.
+        await InvitationNotify.AdvisoryAsync(notifier, logger,
+            new InvitationNotification(invitationId, tenantId, command.Request.Email, token, expiresAt, IsResend: false), ct);
 
         return new InvitationTokenResult(invitationId, token, expiresAt, ResendCount: 0);
     }
@@ -100,7 +131,8 @@ public sealed record ResendInvitationCommand(Guid RouteTenantId, Guid Invitation
 
 public sealed class ResendInvitationCommandHandler(
     IInvitationRepository invitations, IInvitationTokenFactory tokens,
-    IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    IAuditTrailWriter audit, IInvitationNotifier notifier, ILogger<ResendInvitationCommandHandler> logger,
+    ICurrentUserContext ctx, IClock clock)
     : ICommandHandler<ResendInvitationCommand, InvitationTokenResult>
 {
     public async Task<InvitationTokenResult> Handle(ResendInvitationCommand command, CancellationToken ct)
@@ -114,12 +146,17 @@ public sealed class ResendInvitationCommandHandler(
         await invitations.ResendAsync(ctx.UserId!.Value, tenantId, command.InvitationId, tokenHash, expiresAt, ct);
 
         var list = await invitations.ListAsync(tenantId, null, ct);
-        var resendCount = list.FirstOrDefault(i => i.InvitationId == command.InvitationId)?.ResendCount ?? 0;
+        var row = list.FirstOrDefault(i => i.InvitationId == command.InvitationId);
+        var resendCount = row?.ResendCount ?? 0;
 
         await audit.RecordAsync(new AuditEntry(
             "resend", "invitation", command.InvitationId, null, ctx.UserId, tenantId,
             ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
             ChangeSummary: $"Resent invitation {command.InvitationId} (new token)"), ct);
+
+        // #93: re-deliver the rotated one-time link. Advisory — a failure never fails the resend.
+        await InvitationNotify.AdvisoryAsync(notifier, logger,
+            new InvitationNotification(command.InvitationId, tenantId, row?.InvitedEmail ?? string.Empty, token, expiresAt, IsResend: true), ct);
 
         return new InvitationTokenResult(command.InvitationId, token, expiresAt, resendCount);
     }

@@ -95,6 +95,14 @@ public class ExceptionHandler
                     ErrorMessageEnum.ValidationFailed, HttpStatusCode.UnprocessableEntity,
                     ex.Message, SingleError(ex, ex.Message));
 
+            // Distinct login outcome (issue #91): correct credentials, but the tenant policy forces 2FA
+            // enrolment first. 403 with the stable machine code 'mfa_enrollment_required' so the client can
+            // route into the enrolment flow rather than treat it as a plain authz denial.
+            case MfaEnrollmentRequiredException:
+                return new MappedError(
+                    ErrorMessageEnum.Forbidden, HttpStatusCode.Forbidden,
+                    MfaEnrollmentRequiredException.Code, SingleError(ex, MfaEnrollmentRequiredException.Code));
+
             case ForbiddenException:
                 return new MappedError(
                     ErrorMessageEnum.Forbidden, HttpStatusCode.Forbidden,

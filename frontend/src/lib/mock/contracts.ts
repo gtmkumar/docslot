@@ -1238,7 +1238,8 @@ export type SecurityCreated = z.infer<typeof SecurityCreatedSchema>;
 // AUDIT LOG (#86) — mirrors mediq.SharedDataModel/Docslot/Security/AuditReadDtos.cs
 // (camelCase wire). Surfaced in the Team console "Audit log" tab, gated on
 // tenant.audit.read. NO PHI: actor is a staff identity (same directory as People);
-// resourceLabel is a server-humanized label; ipAddress is raw only (geo-IP is #94).
+// resourceLabel is a server-humanized label; ipAddress carries an optional resolved
+// `city` (#94, IGeoIpResolver) — null offline (NullGeoIpResolver) → raw IP only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Derived category bucket. The server humanizes raw verbs into these. */
@@ -1283,6 +1284,10 @@ export const AuditLogRowSchema = z.object({
   category: z.string(),
   severity: z.string(),
   ipAddress: z.string().nullable(),
+  /** Resolved city for `ipAddress` (#94, IGeoIpResolver enrichment). Null when the
+   *  resolver is the offline NullGeoIpResolver or the IP can't be located; the row
+   *  then shows just the raw IP. Optional so pre-#94 payloads still parse. */
+  city: z.string().nullable().optional(),
   success: z.boolean(),
   errorCode: z.string().nullable(),
 });
@@ -1337,6 +1342,10 @@ export const ActiveSessionSchema = z.object({
   userName: z.string(),
   userEmail: z.string().nullable(),
   ipAddress: z.string().nullable(),
+  /** Resolved city for `ipAddress` (#94, IGeoIpResolver enrichment). Null when the
+   *  resolver is the offline NullGeoIpResolver or the IP can't be located; the row
+   *  then shows just the raw IP. Optional so pre-#94 payloads still parse. */
+  city: z.string().nullable().optional(),
   startedAt: z.string(),
   lastActivityAt: z.string(),
   expiresAt: z.string(),

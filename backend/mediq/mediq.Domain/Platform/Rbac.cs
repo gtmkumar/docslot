@@ -64,6 +64,11 @@ public sealed class UserTenantRole
     public Guid? RevokedBy { get; private set; }
     public string? RevokedReason { get; private set; }
 
+    /// <summary>Organizational scope of this membership — DISPLAY ONLY. NULL branch = "All branches",
+    /// NULL department = "All departments". Never read by permission resolution (see set_membership_scope).</summary>
+    public Guid? BranchId { get; private set; }
+    public string? Department { get; private set; }
+
     private UserTenantRole() { }
 
     public static UserTenantRole Assign(

@@ -17,7 +17,8 @@ public sealed record ActiveSessionDto(
     DateTimeOffset StartedAt,
     DateTimeOffset LastActivityAt,
     DateTimeOffset ExpiresAt,
-    bool IsSelf);
+    bool IsSelf,
+    string? City = null);          // geo-IP city (issue #94) — null offline (NullGeoIpResolver); UI then shows just the IP
 
 /// <summary>Result of an admin sign-out-all for one user: how many active sessions were revoked.</summary>
 public sealed record RevokeAllSessionsResult(Guid UserId, int RevokedCount);

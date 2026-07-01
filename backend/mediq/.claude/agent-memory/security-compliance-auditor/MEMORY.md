@@ -1,5 +1,6 @@
 # Security & Compliance Auditor — Memory Index
 
+- [Phase-D invite-notifier + geo-IP seams](phase-d-invite-notifier-geoip-seams.md) — #93/#94 offline seams; token hygiene, advisory dispatch, tenant-scoped city enrichment; PASS.
 - [Outbox + WhatsApp send path](outbox-whatsapp-send-path.md) — how outbound WA messages flow; intent-agnostic drain; template/opt-in NOT enforced.
 - [Cross-tenant SECURITY DEFINER sweep pattern](definer-sweep-pattern.md) — the established RLS-less maintenance-worker pattern and its hygiene checklist.
 - [Brokers are platform-global identity](brokers-global-identity.md) — broker phone is UNIQUE platform-wide; tenant linkage via broker_tenant_links.

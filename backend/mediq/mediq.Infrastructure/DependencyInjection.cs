@@ -61,6 +61,10 @@ public static class InfrastructureRegistration
         services.AddScoped<ISessionStore, SessionStore>();
         services.AddScoped<ISessionAdminService, Security.SessionAdminService>();
         services.AddScoped<ILoginAttemptService, LoginAttemptService>();
+        AddInvitationNotifier(services, config);
+        // Geo-IP city resolution for the audit-log + active-session surfaces (issue #94). Offline default:
+        // NullGeoIpResolver (no external lookup, city=null). A live provider (MaxMind/ip-api) is config-gated.
+        services.AddSingleton<IGeoIpResolver, Security.NullGeoIpResolver>();
 
         // RBAC + audit + DURABLE idempotency (slice 03 — table-backed, survives restart/scale-out).
         services.AddScoped<IRbacQueryService, RbacQueryService>();
@@ -299,5 +303,23 @@ public static class InfrastructureRegistration
         {
             services.AddScoped<IWhatsAppSender, Docslot.WhatsApp.StubWhatsAppSender>();
         }
+    }
+
+    /// <summary>
+    /// Selects the invitation notifier (issue #93) from config, mirroring <see cref="AddWhatsAppSender"/>. With
+    /// no live provider configured (dev/test DEFAULT) the offline <see cref="Security.StubInvitationNotifier"/>
+    /// is wired — it RECORDS the intended send but performs NO live delivery, so the invite-send path runs
+    /// end-to-end without an email/WhatsApp credential. A real transport is wired only when
+    /// <c>Invitations:NotifierProvider</c> names one (e.g. <c>email</c>/<c>whatsapp</c>) AND its secret is set;
+    /// that live wiring is the sole remaining credential step for this seam.
+    /// </summary>
+    private static void AddInvitationNotifier(IServiceCollection services, IConfiguration config)
+    {
+        var provider = config["Invitations:NotifierProvider"];
+
+        // No live email/WhatsApp invitation transport ships yet: every configured value falls back to the
+        // offline stub. When one is built, branch here on `provider` exactly like AddWhatsAppSender.
+        _ = provider;
+        services.AddScoped<IInvitationNotifier, Security.StubInvitationNotifier>();
     }
 }

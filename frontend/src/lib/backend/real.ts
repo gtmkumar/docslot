@@ -1805,7 +1805,8 @@ export async function listKeyStatus(): Promise<KeyStatus[]> {
 // AUDIT LOG (#86) + ACTIVE SESSIONS (#87) — Team console surfaces under /security.
 // Audit is gated tenant.audit.read; sessions are gated tenant.users.update. NO PHI:
 // actors + session users are STAFF identities (the same directory as People);
-// resourceLabel is a server-humanized label; ipAddress is raw only (geo-IP is #94).
+// resourceLabel is a server-humanized label; ipAddress carries an optional resolved
+// `city` (#94, server-side IGeoIpResolver) — null offline → the row shows raw IP only.
 // The CSV export streams text/csv WITH auth headers (a bare link wouldn't
 // authenticate), so we fetch the blob and hand {fileName, content} back for the
 // caller to trigger the download — the CSV is NEVER cached in a query key.

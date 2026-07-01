@@ -1,5 +1,10 @@
+using mediq.Application.Abstractions;
+using mediq.IntegrationTests.TestDoubles;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 
 namespace mediq.IntegrationTests;
@@ -52,7 +57,19 @@ public sealed class SecurityAuditSessionWebAppFactory : WebApplicationFactory<Pr
     // A Tenant-A member's session ESTABLISHED under Tenant B — must not list/revoke from Tenant A (#87 hardening).
     public Guid MemberOtherTenantSessionId { get; } = Guid.NewGuid();
 
-    protected override void ConfigureWebHost(IWebHostBuilder builder) => builder.UseEnvironment("Development");
+    /// <summary>The #94 geo-IP double swapped in for NullGeoIpResolver — defaults to null (offline behaviour);
+    /// a test sets <see cref="ConfigurableGeoIpResolver.City"/> to assert a resolved city surfaces.</summary>
+    public ConfigurableGeoIpResolver Geo { get; } = new();
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Development");
+        builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<IGeoIpResolver>();
+            services.AddSingleton<IGeoIpResolver>(Geo);
+        });
+    }
 
     public async Task InitializeAsync()
     {
@@ -129,8 +146,8 @@ public sealed class SecurityAuditSessionWebAppFactory : WebApplicationFactory<Pr
         await Exec(conn,
             """
             INSERT INTO platform.audit_log
-                (audit_id, occurred_at, user_id, tenant_id, action, resource_type, resource_id, resource_label, success)
-            VALUES (gen_random_uuid(), NOW(), @u, @t, @a, @rt, gen_random_uuid(), @label, @ok)
+                (audit_id, occurred_at, user_id, tenant_id, action, resource_type, resource_id, resource_label, ip_address, success)
+            VALUES (gen_random_uuid(), NOW(), @u, @t, @a, @rt, gen_random_uuid(), @label, CAST('203.0.113.7' AS inet), @ok)
             """,
             ("u", actorId), ("t", tenantId), ("a", action), ("rt", resourceType), ("label", label), ("ok", success));
 

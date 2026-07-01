@@ -2,7 +2,7 @@
 
 Production-ready PostgreSQL schema for the DocSlot multi-product healthcare platform.
 
-**Total: 113 tables across 8 schemas, designed for PostgreSQL 16+ with pgvector. Medical-grade security with DPDP Act 2023 compliance built in. AI-native via Python sibling service.**
+**Total: 114 tables across 8 schemas, designed for PostgreSQL 16+ with pgvector. Medical-grade security with DPDP Act 2023 compliance built in. AI-native via Python sibling service.**
 
 ---
 
@@ -59,7 +59,7 @@ Production-ready PostgreSQL schema for the DocSlot multi-product healthcare plat
 | `08_rbac_navigation.sql` | Backend-driven menus + per-user permission overrides | 5 | **Required** for backend-driven nav |
 | `09_chat_identity.sql` | WhatsApp identity (`wa_contact_profiles`), behalf-booking, direct-booking discount with DB-enforced broker mutual-exclusivity | 1 | **Required** — depends on 03 + 07 |
 | `10_roles_grants.sql` | Least-privilege `docslot_app` role (NOSUPERUSER/NOBYPASSRLS) + grants; no audit-log UPDATE/DELETE | 0 | **Required for production** — idempotent; runs LAST |
-| `11_rbac_hardening.sql` | RBAC hardening R1–R6: RLS on the RBAC/entitlement tables, tenant-status gating, privilege-escalation guard, SoD, super_admin cross-tenant | 2 | **Required for production** — runs after 10 |
+| `11_rbac_hardening.sql` | RBAC hardening R1–R6: RLS on the RBAC/entitlement tables, tenant-status gating, privilege-escalation guard, SoD, super_admin cross-tenant; plus token-based `invitations` (#89) | 3 | **Required for production** — runs after 10 |
 
 ## Execution Order
 
@@ -103,7 +103,7 @@ psql -d docslot_platform -f database/docslot_complete.sql
 ```
 
 **The bundle is verified end-to-end** against PostgreSQL 16.14. A clean run produces:
-- 113 tables across 8 schemas
+- 114 tables across 8 schemas
 - 317+ indexes
 - 18 PostgreSQL functions
 - All RLS policies, triggers, seed data, RBAC permissions

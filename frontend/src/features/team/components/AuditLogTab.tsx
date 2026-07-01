@@ -1,7 +1,8 @@
 // Audit log timeline (#86) — the Team console "Audit log" tab. A left CATEGORY
 // facet rail (with counts), a SEVERITY filter, a free-text search, a date-range
 // control (default: last 30 days), a CSV Export, and day-grouped rows (time,
-// actor, an action pill, the target, and the raw ip — NO city yet, that's #94).
+// actor, an action pill, the target, and the ip with its resolved city when the
+// geo-IP resolver returned one — "103.21.4.2 · Mumbai", raw IP only when null (#94)).
 //
 // Wired through the data seam (real GET /security/audit/logs + /export, mock
 // otherwise). Gated on tenant.audit.read by the parent tab. States: loading
@@ -515,10 +516,20 @@ function AuditRow({ row }: { row: AuditLogRow }) {
         </p>
       </div>
 
-      {/* Raw IP (no city — #94). */}
+      {/* IP + resolved city (#94) — "103.21.4.2 · Mumbai"; just the IP when the geo
+          resolver returned null (offline default). */}
       {row.ipAddress ? (
-        <span className="mono hidden shrink-0 self-center text-[11px] text-muted-2 sm:inline" title={t('team.audit.ipAddress')}>
-          {row.ipAddress}
+        <span
+          className="hidden shrink-0 self-center text-[11px] text-muted-2 sm:inline"
+          title={row.city ? t('team.audit.ipCity', { ip: row.ipAddress, city: row.city }) : t('team.audit.ipAddress')}
+        >
+          <span className="mono">{row.ipAddress}</span>
+          {row.city ? (
+            <>
+              <span aria-hidden="true"> · </span>
+              {row.city}
+            </>
+          ) : null}
         </span>
       ) : null}
     </li>

@@ -225,6 +225,61 @@ public sealed class SecurityAuditSessionTests(SecurityAuditSessionWebAppFactory 
         Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
     }
 
+    // ---- #94 geo-IP resolver seam ---------------------------------------------------------------
+
+    [Fact]
+    public async Task NullGeoIpResolver_ReturnsNullCity_ForAnyIp()
+    {
+        // The offline default performs NO external lookup — every IP resolves to null (unknown).
+        var resolver = new mediq.Infrastructure.Security.NullGeoIpResolver();
+        Assert.Null(await resolver.ResolveCityAsync("203.0.113.7", default));
+        Assert.Null(await resolver.ResolveCityAsync(null, default));
+    }
+
+    [Fact]
+    public async Task Sessions_And_Audit_Surface_Null_City_When_Resolver_Is_Unknown()
+    {
+        factory.Geo.City = null;   // offline / unknown — the seam returns no city
+        var client = factory.CreateClient();
+        await AuthAsync(client, factory.OwnerEmail, factory.TenantA);
+
+        var sessions = await (await client.GetAsync("/api/v1/security/sessions?take=500"))
+            .Content.ReadFromJsonAsync<List<ActiveSessionDto>>();
+        var member = Assert.Single(sessions!, s => s.SessionId == factory.MemberSessionListId);
+        Assert.NotNull(member.IpAddress);   // the IP is still shown…
+        Assert.Null(member.City);           // …but the city is null (UI shows just the IP)
+
+        var page = await (await client.GetAsync($"/api/v1/security/audit/logs?pageSize=200&search={factory.AuditMarker}"))
+            .Content.ReadFromJsonAsync<AuditLogPageDto>();
+        Assert.All(page!.Items, i => Assert.Null(i.City));
+    }
+
+    [Fact]
+    public async Task Sessions_And_Audit_Surface_Resolved_City_When_Provider_Returns_One()
+    {
+        factory.Geo.City = "Kolkata";   // a live provider would fill this in
+        try
+        {
+            var client = factory.CreateClient();
+            await AuthAsync(client, factory.OwnerEmail, factory.TenantA);
+
+            var sessions = await (await client.GetAsync("/api/v1/security/sessions?take=500"))
+                .Content.ReadFromJsonAsync<List<ActiveSessionDto>>();
+            var member = Assert.Single(sessions!, s => s.SessionId == factory.MemberSessionListId);
+            Assert.Equal("Kolkata", member.City);
+
+            // The audit rows (which carry the seeded 203.0.113.x-style IP) surface the same resolved city.
+            var page = await (await client.GetAsync($"/api/v1/security/audit/logs?pageSize=200&search={factory.AuditMarker}"))
+                .Content.ReadFromJsonAsync<AuditLogPageDto>();
+            Assert.NotEmpty(page!.Items);
+            Assert.All(page.Items.Where(i => i.IpAddress is not null), i => Assert.Equal("Kolkata", i.City));
+        }
+        finally
+        {
+            factory.Geo.City = null;
+        }
+    }
+
     private static async Task AuthAsync(HttpClient client, string email, Guid tenantId)
     {
         var resp = await client.PostAsJsonAsync("/api/v1/auth/login",

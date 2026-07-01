@@ -5,7 +5,8 @@
 // INVARIANTS baked in:
 //  - NO PHI. Audit actors + session users are STAFF identities (the same people
 //    directory as the People tab). resourceLabel is a humanized label, never
-//    patient content. ipAddress is raw only (geo-IP is #94, out of scope).
+//    patient content. Rows carry an optional resolved `city` (#94, IGeoIpResolver);
+//    some seeds leave it null to exercise the offline NullGeoIpResolver (raw-IP) path.
 //  - Facets reflect the current date-range + search, INDEPENDENT of the selected
 //    category/severity, so the counts stay stable while you toggle a facet.
 //  - Session revokes mutate an in-memory list so a refetch (after invalidation)
@@ -43,6 +44,19 @@ const HOUR = 3_600_000;
 const DAY = 86_400_000;
 
 const ADMIN_USER_ID = '00000000-0000-0000-0000-0000000admin';
+
+// #94 — a tiny offline stand-in for the server's IGeoIpResolver so the mock shows
+// the "IP · city" row. Indian ranges resolve to a city; the foreign / Tor-exit IPs
+// (185.220.101.44, 4.240.11.9) stay unmapped → city null, exercising the offline
+// NullGeoIpResolver (raw-IP-only) path exactly as production does when unconfigured.
+const CITY_BY_IP: Record<string, string> = {
+  '103.21.244.12': 'Mumbai',
+  '103.21.244.31': 'Pune',
+  '49.36.12.88': 'New Delhi',
+  '49.36.12.90': 'New Delhi',
+  '49.36.44.19': 'Bengaluru',
+};
+const cityFor = (ip: string | null | undefined): string | null => (ip ? (CITY_BY_IP[ip] ?? null) : null);
 
 // ── Audit timeline seed ──────────────────────────────────────────────────────
 // Spread across categories, severities, and days so faceting, filtering,
@@ -138,7 +152,8 @@ const RAW: Seed[] = [
 ];
 
 const AUDIT: AuditLogRow[] = RAW.map((r, i) =>
-  AuditLogRowSchema.parse({ auditId: r.auditId ?? `aud-${i + 1}`, ...r }),
+  // Enrich each row with a resolved city (#94) unless the seed set one explicitly.
+  AuditLogRowSchema.parse({ auditId: r.auditId ?? `aud-${i + 1}`, ...r, city: r.city ?? cityFor(r.ipAddress) }),
 );
 
 function inRange(row: AuditLogRow, fromMs: number, toMs: number): boolean {
@@ -230,19 +245,19 @@ export function exportAuditLog(filter: AuditLogFilter): Promise<AuditCsvResult> 
 let SESSIONS: ActiveSession[] = [
   ActiveSessionSchema.parse({
     sessionId: 's-1', userId: ADMIN_USER_ID, userName: 'Priyanka R', userEmail: 'priyanka@apollocare.in',
-    ipAddress: '103.21.244.12', startedAt: iso(2 * HOUR), lastActivityAt: iso(1 * 60_000), expiresAt: iso(-10 * HOUR), isSelf: true,
+    ipAddress: '103.21.244.12', city: cityFor('103.21.244.12'), startedAt: iso(2 * HOUR), lastActivityAt: iso(1 * 60_000), expiresAt: iso(-10 * HOUR), isSelf: true,
   }),
   ActiveSessionSchema.parse({
     sessionId: 's-2', userId: ADMIN_USER_ID, userName: 'Priyanka R', userEmail: 'priyanka@apollocare.in',
-    ipAddress: '49.36.44.19', startedAt: iso(3 * DAY), lastActivityAt: iso(20 * HOUR), expiresAt: iso(-2 * DAY), isSelf: false,
+    ipAddress: '49.36.44.19', city: cityFor('49.36.44.19'), startedAt: iso(3 * DAY), lastActivityAt: iso(20 * HOUR), expiresAt: iso(-2 * DAY), isSelf: false,
   }),
   ActiveSessionSchema.parse({
     sessionId: 's-3', userId: 'u-2', userName: 'Dr. Arjun Sharma', userEmail: 'arjun.sharma@apollocare.in',
-    ipAddress: '103.21.244.31', startedAt: iso(5 * HOUR), lastActivityAt: iso(3 * 60_000), expiresAt: iso(-8 * HOUR), isSelf: false,
+    ipAddress: '103.21.244.31', city: cityFor('103.21.244.31'), startedAt: iso(5 * HOUR), lastActivityAt: iso(3 * 60_000), expiresAt: iso(-8 * HOUR), isSelf: false,
   }),
   ActiveSessionSchema.parse({
     sessionId: 's-4', userId: 'u-3', userName: 'Meena R', userEmail: 'meena.r@apollocare.in',
-    ipAddress: '49.36.12.88', startedAt: iso(1 * DAY), lastActivityAt: iso(42 * 60_000), expiresAt: iso(-6 * HOUR), isSelf: false,
+    ipAddress: '49.36.12.88', city: cityFor('49.36.12.88'), startedAt: iso(1 * DAY), lastActivityAt: iso(42 * 60_000), expiresAt: iso(-6 * HOUR), isSelf: false,
   }),
 ];
 

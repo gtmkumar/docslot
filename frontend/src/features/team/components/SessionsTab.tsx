@@ -7,7 +7,9 @@
 // React 19 idiom: revokes flip the list INSTANTLY via useOptimistic inside a
 // transition; the mutation reconciles the cache on success (surgical removal, no
 // refetch flash) and the optimistic overlay reverts on error. NO PHI — session
-// users are staff identities; ip is raw only. States: skeleton, empty, error.
+// users are staff identities; the ip shows its resolved city when present ("IP ·
+// city", #94), raw IP only when the geo resolver is offline. States: skeleton,
+// empty, error.
 
 import { useOptimistic, useState, useTransition } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -209,7 +211,17 @@ function SessionRow({ session, onRevoke }: { session: ActiveSession; onRevoke: (
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="mono text-[12px] text-ink">{session.ipAddress ?? t('team.sessions.unknownIp')}</span>
+          {/* IP + resolved city (#94) — "103.21.4.2 · Mumbai"; raw IP only when the
+              geo resolver returned null (offline default). */}
+          <span className="text-[12px] text-ink">
+            <span className="mono">{session.ipAddress ?? t('team.sessions.unknownIp')}</span>
+            {session.ipAddress && session.city ? (
+              <span className="text-muted">
+                <span aria-hidden="true"> · </span>
+                {session.city}
+              </span>
+            ) : null}
+          </span>
           {session.isSelf ? (
             <span className="rounded-full bg-primary-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
               {t('team.sessions.thisDevice')}

@@ -26,9 +26,10 @@ public sealed record AuditLogRowDto(
     Guid? ResourceId,
     string Category,               // Bookings | Patients | Payments | Team | Settings | Security | Analytics | Other
     string Severity,               // Informational | Warning | Critical
-    string? IpAddress,             // raw IP only (geo-IP city resolution is out of scope — issue #94)
+    string? IpAddress,             // raw IP
     bool Success,
-    string? ErrorCode);
+    string? ErrorCode,
+    string? City = null);          // geo-IP city (issue #94) — null offline (NullGeoIpResolver); UI then shows just the IP
 
 /// <summary>A single facet bucket (category or severity) with its count over the filtered set.</summary>
 public sealed record AuditFacetCount(string Key, int Count);

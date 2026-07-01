@@ -1,7 +1,13 @@
 // One-time invitation-token reveal (#89). Shown after a successful create OR
-// resend — the plaintext token is surfaced EXACTLY ONCE, with a copy button and a
-// note that automated email/WhatsApp delivery lands in #93 (so the admin hands off
-// the link manually for now).
+// resend — the plaintext token is surfaced EXACTLY ONCE, with a copy button.
+//
+// #93 — the create/resend handler now dispatches the link to the invitee through
+// the configured IInvitationNotifier (advisory, non-blocking). The offline default
+// (StubInvitationNotifier) records the intended send but performs NO live delivery,
+// and the token result carries no delivery-status field, so this panel states
+// honestly that the send was ATTEMPTED via the configured channel and is pending
+// provider setup until a live notifier is wired — the admin copies the link to be
+// sure. No fake "sent ✓".
 //
 // SECURITY: the token arrives via the in-store panel payload (NOT the URL, NOT any
 // query cache). This panel renders it, lets the admin copy it, and on close the
@@ -54,11 +60,13 @@ export function InvitationTokenPanel({ result, email, open, onClose }: Invitatio
       <div className="flex flex-col gap-4">
         <p className="text-[13px] text-muted">{t('team.invites.token.ready', { email })}</p>
 
-        {/* #93 hand-off note — automated delivery isn't wired yet, so the admin copies
-            the link and sends it themselves for now. */}
+        {/* #93 dispatch note — the link was handed to the configured notifier
+            (advisory). The offline default performs no live delivery and the result
+            carries no delivery status, so we say the send was attempted and is pending
+            provider setup; the admin copies the link to be sure. No fake "sent ✓". */}
         <div className="flex items-start gap-2 rounded-[var(--radius-sm)] bg-warn-soft px-3 py-2.5 text-[12px] text-warn">
           <MailPlus size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-          <span>{t('team.invites.token.handoffNote')}</span>
+          <span>{t('team.invites.token.dispatchNote', { email })}</span>
         </div>
 
         <div>

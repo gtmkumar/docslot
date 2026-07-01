@@ -1,5 +1,10 @@
+using mediq.Application.Abstractions;
+using mediq.IntegrationTests.TestDoubles;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 
 namespace mediq.IntegrationTests;
@@ -33,7 +38,20 @@ public sealed class InvitationWebAppFactory : WebApplicationFactory<Program>, IA
     /// <summary>Prefix for emails invited/accepted by tests, so teardown sweeps the minted users + invites.</summary>
     public string InvitePrefix { get; } = $"inv.invited+{Guid.NewGuid():N}";
 
-    protected override void ConfigureWebHost(IWebHostBuilder builder) => builder.UseEnvironment("Development");
+    /// <summary>The offline #93 notifier double swapped in for the stub — records sends / can be armed to throw.</summary>
+    public RecordingInvitationNotifier Notifier { get; } = new();
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Development");
+        // Replace the offline StubInvitationNotifier with a recording double so tests can assert the advisory
+        // dispatch fired (and can force it to throw to prove it never fails the invite).
+        builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<IInvitationNotifier>();
+            services.AddSingleton<IInvitationNotifier>(Notifier);
+        });
+    }
 
     public async Task InitializeAsync()
     {

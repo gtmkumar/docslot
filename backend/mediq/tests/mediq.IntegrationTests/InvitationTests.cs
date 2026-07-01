@@ -229,6 +229,79 @@ public sealed class InvitationTests(InvitationWebAppFactory factory) : IClassFix
         Assert.True(await PendingInviteExistsAsync(email));
     }
 
+    // ---- #93 notifier seam (advisory invite send) ----------------------------------------------------
+
+    [Fact]
+    public async Task Create_DispatchesInviteThroughNotifier_AndStillReturnsToken()
+    {
+        factory.Notifier.Reset();
+        var client = await AuthedClientAsync(factory.AdminEmail);
+        var email = $"{factory.InvitePrefix}.notify-create@docslot.test";
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/tenants/{factory.TenantId}/invitations",
+            new CreateInvitationRequest(email));
+
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        var result = (await resp.Content.ReadFromJsonAsync<InvitationTokenResult>())!;
+        Assert.False(string.IsNullOrWhiteSpace(result.Token));
+
+        // The (offline) notifier was invoked exactly once for this invitee, carrying the one-time token.
+        Assert.Equal(1, factory.Notifier.CountFor(email));
+        var send = Assert.Single(factory.Notifier.Sends, s => s.InvitedEmail == email);
+        Assert.Equal(result.InvitationId, send.InvitationId);
+        Assert.Equal(factory.TenantId, send.TenantId);
+        Assert.Equal(result.Token, send.Token);
+        Assert.False(send.IsResend);
+    }
+
+    [Fact]
+    public async Task Resend_DispatchesRotatedInviteThroughNotifier()
+    {
+        factory.Notifier.Reset();
+        var client = await AuthedClientAsync(factory.AdminEmail);
+        var email = $"{factory.InvitePrefix}.notify-resend@docslot.test";
+        var created = (await (await client.PostAsJsonAsync(
+            $"/api/v1/tenants/{factory.TenantId}/invitations", new CreateInvitationRequest(email)))
+            .Content.ReadFromJsonAsync<InvitationTokenResult>())!;
+
+        var resp = await client.PostAsync(
+            $"/api/v1/tenants/{factory.TenantId}/invitations/{created.InvitationId}/resend", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var resent = (await resp.Content.ReadFromJsonAsync<InvitationTokenResult>())!;
+
+        // Two dispatches (create + resend); the resend carries the ROTATED token and IsResend=true.
+        Assert.Equal(2, factory.Notifier.CountFor(email));
+        var resendSend = Assert.Single(factory.Notifier.Sends, s => s.IsResend && s.InvitedEmail == email);
+        Assert.Equal(resent.Token, resendSend.Token);
+        Assert.NotEqual(created.Token, resendSend.Token);
+    }
+
+    [Fact]
+    public async Task Create_WhenNotifierThrows_StillSucceeds_AndReturnsToken()
+    {
+        factory.Notifier.Reset();
+        factory.Notifier.ThrowOnSend = true;   // simulate a broken email/WhatsApp transport
+        try
+        {
+            var client = await AuthedClientAsync(factory.AdminEmail);
+            var email = $"{factory.InvitePrefix}.notify-throws@docslot.test";
+
+            var resp = await client.PostAsJsonAsync($"/api/v1/tenants/{factory.TenantId}/invitations",
+                new CreateInvitationRequest(email));
+
+            // Advisory: the notifier blew up, but the invite was still created and the one-time token returned.
+            Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+            var result = (await resp.Content.ReadFromJsonAsync<InvitationTokenResult>())!;
+            Assert.False(string.IsNullOrWhiteSpace(result.Token));
+            Assert.Equal("pending", (string)(await InvitationWebAppFactory.InvitationScalarAsync(result.InvitationId, "status"))!);
+            Assert.Empty(factory.Notifier.Sends);   // nothing recorded — the throw path was exercised
+        }
+        finally
+        {
+            factory.Notifier.Reset();
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------------
 
     private async Task<HttpClient> AuthedClientAsync(string email)
