@@ -17,3 +17,4 @@
 - [Team Audit log + Sessions](project_team-audit-sessions.md) — #86/#87: /security endpoints surfaced in /team; CSV auth-fetch, range-independent facets, useOptimistic revoke, lastActivityAt Online dot.
 - [Invitations](project_invitations.md) — #89: token-based invites in /team Invites tab; one-time-token reveal panel, surgical-cache resend/revoke, list-has-no-inviter-name quirk, accept flow is out of scope (#93).
 - [Branch/Dept SCOPE](project_branch-scope.md) — #90: People SCOPE column + All-branches filter + N-branches stat + manage-panel scope control; display-only (never confers perms), POST /branches unwired.
+- [Security policy](project_security-policy.md) — #91: Security tab (2FA/password-session/access + IP allow-list) above #87 sessions; 3 perm planes, passthrough+Omit gotcha, N-of-M-2FA is client-derived, honesty labels, new ui/Toggle.
