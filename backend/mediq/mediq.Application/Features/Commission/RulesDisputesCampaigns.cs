@@ -27,8 +27,8 @@ public sealed class CreateRuleValidator : AbstractValidator<CreateRuleCommand>
         RuleFor(x => x.Request.MaxCommissionInr).GreaterThanOrEqualTo(0m).When(x => x.Request.MaxCommissionInr.HasValue);
         RuleFor(x => x.Request.MaxMonthlyPerBrokerInr).GreaterThanOrEqualTo(0m).When(x => x.Request.MaxMonthlyPerBrokerInr.HasValue);
         RuleFor(x => x.Request.Priority).GreaterThanOrEqualTo(0);
-        // A floor above the ceiling is contradictory (would make the calculator's Min(cap) then Max(floor) always
-        // resolve to the floor) — reject it when both are set.
+        // A floor above the ceiling is contradictory: the calculator applies the floor first (Math.Max) then the
+        // ceiling (Math.Min), so an inverted min>max would clamp every payout to the ceiling — reject it when both set.
         RuleFor(x => x.Request)
             .Must(r => !(r.MinCommissionInr.HasValue && r.MaxCommissionInr.HasValue) || r.MinCommissionInr!.Value <= r.MaxCommissionInr!.Value)
             .WithMessage("MinCommissionInr must not exceed MaxCommissionInr.");
