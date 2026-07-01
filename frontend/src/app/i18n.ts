@@ -835,6 +835,7 @@ export const en = {
       purpose: 'Purpose',
       purposePlaceholder: 'Why does this client need access?',
       requestedScopes: 'Requested scopes',
+      scopesAfterApproval: 'Scopes are granted after approval, from the client detail.',
       register: 'Register client',
     },
     manage: {
@@ -2541,6 +2542,7 @@ export const hi: typeof en = {
       purpose: 'उद्देश्य',
       purposePlaceholder: 'इस क्लाइंट को एक्सेस की आवश्यकता क्यों है?',
       requestedScopes: 'अनुरोधित स्कोप',
+      scopesAfterApproval: 'स्कोप अनुमोदन के बाद, क्लाइंट विवरण से प्रदान किए जाते हैं।',
       register: 'क्लाइंट पंजीकृत करें',
     },
     manage: {
