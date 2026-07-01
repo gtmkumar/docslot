@@ -15,6 +15,7 @@ public sealed class RefreshCommandHandler(
     ISessionStore sessions,
     IAuditTrailWriter audit,
     IBrokerIdentityResolver brokerIdentity,
+    ILoginSecurityPolicyGate policyGate,
     ICurrentUserContext requestContext,
     IClock clock,
     IOptions<JwtOptions> jwtOptions)
@@ -48,6 +49,27 @@ public sealed class RefreshCommandHandler(
         var user = await users.GetByIdAsync(session.UserId, ct);
         if (user is null || !user.CanAuthenticate)
             throw new mediq.Application.Features.Auth.InvalidRefreshTokenException();
+
+        // Tenant security policy gate (issue #91) — a renewal must NOT escape the tenant policy that a fresh
+        // login is bound by. Re-enforce the TIME/CONTEXT-sensitive checks against the session's active tenant,
+        // the CURRENT connection IP, and now: login-hours (a session must not renew outside now-permitted hours),
+        // IP allow-list (must not renew from a now-blocked network), and MFA coverage (a tier tightened after
+        // login binds existing sessions on their next rotation). The gate already performs exactly these
+        // time/context-sensitive checks and nothing that would be inappropriate on renewal, so it is reused
+        // as-is — no skip flag is needed. Same 403 outcomes as login.
+        try
+        {
+            await policyGate.EnforceAsync(user, session.ActiveTenantId, requestContext.IpAddress, now, ct);
+        }
+        catch (Exception ex) when (ex is mediq.Utilities.Exceptions.MfaEnrollmentRequiredException
+                                      or mediq.Utilities.Exceptions.ForbiddenException)
+        {
+            await audit.RecordAsync(new AuditEntry(
+                "refresh_denied", "session", session.SessionId, null, user.UserId, session.ActiveTenantId,
+                requestContext.CorrelationId, requestContext.IpAddress, requestContext.UserAgent,
+                Success: false, ChangeSummary: $"Refresh blocked by security policy ({ex.Message})"), ct);
+            throw;
+        }
 
         var brokerId = await brokerIdentity.ResolveBrokerIdAsync(user.UserId, ct);
         var access = tokenService.CreateAccessToken(user, session.ActiveTenantId, brokerId);

@@ -43,4 +43,14 @@ public sealed class UserRepository(PlatformDbContext db, IDedicatedConnectionFac
         cmd.Parameters.AddWithValue("@p4", (object?)user.LastLoginIp ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync(ct);
     }
+
+    public async Task UpdatePasswordHashAsync(Guid userId, string newPasswordHash, CancellationToken ct) =>
+        // On the request DbContext connection → enlisted in the command UnitOfWork transaction (commits with the audit row).
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE platform.users
+            SET password_hash = @p1, must_change_password = false, updated_at = NOW()
+            WHERE user_id = @p0 AND deleted_at IS NULL
+            """,
+            [new NpgsqlParameter("@p0", userId), new NpgsqlParameter("@p1", newPasswordHash)], ct);
 }

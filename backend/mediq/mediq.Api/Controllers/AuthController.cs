@@ -1,6 +1,7 @@
 using mediq.Api.Authorization;
 using mediq.Application.Abstractions;
 using mediq.Application.Cqrs;
+using mediq.Application.Features.Auth.ChangePassword;
 using mediq.Application.Features.Auth.Impersonation;
 using mediq.Application.Features.Auth.Login;
 using mediq.Application.Features.Auth.Logout;
@@ -69,6 +70,17 @@ public sealed class AuthController(ICommandDispatcher commands, ITokenService to
     public async Task<ActionResult<TokenResponse>> EndImpersonation(
         [FromBody] EndImpersonationRequest request, CancellationToken ct)
         => Ok(await commands.Send(new EndImpersonationCommand(request), ct));
+
+    /// <summary>
+    /// POST /api/v1/auth/change-password — self-service change for the authenticated caller. The new password
+    /// must satisfy the tenant security policy's <c>minPasswordLength</c> (issue #91); a shorter one is 422.
+    /// </summary>
+    [HttpPost("change-password")]
+    [Authorize]
+    [ProducesResponseType<ChangePasswordResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<ActionResult<ChangePasswordResult>> ChangePassword([FromBody] ChangePasswordRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new ChangePasswordCommand(request), ct));
 
     /// <summary>POST /api/v1/auth/logout — revoke the current session (and the refresh chain if supplied).</summary>
     [HttpPost("logout")]

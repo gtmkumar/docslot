@@ -20,6 +20,7 @@ public sealed class LoginCommandHandler(
     ILoginAttemptService loginAttempts,
     IAuditTrailWriter audit,
     IBrokerIdentityResolver brokerIdentity,
+    ILoginSecurityPolicyGate policyGate,
     ICurrentUserContext requestContext,
     IClock clock,
     IOptions<JwtOptions> jwtOptions,
@@ -62,6 +63,25 @@ public sealed class LoginCommandHandler(
 
         // Resolve the active tenant (validate membership if a specific tenant was requested).
         var activeTenantId = await ResolveActiveTenantAsync(user.UserId, req.TenantId, ct);
+
+        // Tenant security policy gate (issue #91) — REAL block AFTER credentials, BEFORE any token/session:
+        // 2FA-enrolment tier, login-hours window (IST, doctors optionally exempt), and IP allow-list. A
+        // violation withholds the session entirely; the distinct 'mfa_enrollment_required' outcome maps to 403.
+        try
+        {
+            await policyGate.EnforceAsync(user, activeTenantId, requestContext.IpAddress, now, ct);
+        }
+        catch (Exception ex) when (ex is mediq.Utilities.Exceptions.MfaEnrollmentRequiredException
+                                      or mediq.Utilities.Exceptions.ForbiddenException)
+        {
+            await loginAttempts.RecordAsync(req.Email, requestContext.IpAddress, requestContext.UserAgent, false,
+                ex is mediq.Utilities.Exceptions.MfaEnrollmentRequiredException ? "mfa_enrollment_required" : "policy_blocked", ct);
+            await audit.RecordAsync(new AuditEntry(
+                "login", "user", user.UserId, user.Email, user.UserId, activeTenantId,
+                requestContext.CorrelationId, requestContext.IpAddress, requestContext.UserAgent,
+                Success: false, ChangeSummary: $"Login blocked by security policy ({ex.Message})"), ct);
+            throw;
+        }
 
         // Resolve the caller's OWN broker identity (if any) for the IDOR-safe broker_id claim.
         var brokerId = await brokerIdentity.ResolveBrokerIdAsync(user.UserId, ct);

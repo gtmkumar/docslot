@@ -146,6 +146,12 @@ public static class InfrastructureRegistration
         services.AddScoped<IBreakGlassService, Security.BreakGlassService>();
         services.AddScoped<ISecurityReadService, Security.SecurityReadService>();
 
+        // Tenant SECURITY-POLICY subsystem (issue #91). Policy lives in tenants.settings JSONB (no new table);
+        // the IP allow-list reuses platform.ip_allowlist. The login gate enforces MFA-tier/hours/IP at sign-in.
+        services.AddScoped<ITenantSecurityPolicyService, Security.TenantSecurityPolicyService>();
+        services.AddScoped<IIpAllowlistService, Security.IpAllowlistService>();
+        services.AddScoped<ILoginSecurityPolicyGate, Security.LoginSecurityPolicyGate>();
+
         // WhatsApp inbound conversational booking (inbound only; outbound send is stubbed via the outbox).
         services.AddSingleton<IWhatsAppSignatureVerifier, Docslot.WhatsApp.WhatsAppSignatureVerifier>();
         services.AddScoped<IProcessedMessageStore, Docslot.WhatsApp.ProcessedMessageStore>();

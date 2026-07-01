@@ -22,6 +22,7 @@ public sealed class SwitchTenantCommandHandler(
     ISessionStore sessions,
     IAuditTrailWriter audit,
     IBrokerIdentityResolver brokerIdentity,
+    ILoginSecurityPolicyGate policyGate,
     ICurrentUserContext requestContext,
     IClock clock,
     IOptions<JwtOptions> jwtOptions)
@@ -52,6 +53,25 @@ public sealed class SwitchTenantCommandHandler(
                 requestContext.UserAgent, Success: false,
                 ChangeSummary: $"Denied switch to tenant {req.TenantId} (not a member)"), ct);
             throw new ForbiddenException("You are not a member of the requested tenant.");
+        }
+
+        // Tenant security policy gate (issue #91) — switching INTO a tenant must satisfy ITS policy, exactly as
+        // login does. Without this, switch-tenant would be a bypass: a session could mint a token scoped to a
+        // hardened tenant while dodging its MFA tier / login-hours window / IP allow-list. Enforce against the
+        // TARGET tenant, the current connection IP, and now. Same outcomes as login (403 mfa_enrollment_required /
+        // 403 forbidden); the violation withholds the new token and leaves the current session untouched.
+        try
+        {
+            await policyGate.EnforceAsync(user, req.TenantId, requestContext.IpAddress, now, ct);
+        }
+        catch (Exception ex) when (ex is MfaEnrollmentRequiredException or ForbiddenException)
+        {
+            await audit.RecordAsync(new AuditEntry(
+                "switch_tenant_denied", "session", session.SessionId, req.TenantId.ToString(),
+                user.UserId, req.TenantId, requestContext.CorrelationId, requestContext.IpAddress,
+                requestContext.UserAgent, Success: false,
+                ChangeSummary: $"Denied switch to tenant {req.TenantId} by security policy ({ex.Message})"), ct);
+            throw;
         }
 
         // Mint a new access token carrying the NEW tenant claim; rotate + rebind the session.

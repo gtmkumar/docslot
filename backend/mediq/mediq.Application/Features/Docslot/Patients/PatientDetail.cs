@@ -28,6 +28,8 @@ public sealed class GetPatientDetailQueryHandler(
     IPatientReadService reads,
     IPatientRepository patients,
     IPurposeOfUseWriter purposeOfUse,
+    ITenantSecurityPolicyService securityPolicy,
+    IPermissionContext permissions,
     ICurrentUserContext ctx)
     : IQueryHandler<GetPatientDetailQuery, PatientDetailDto>
 {
@@ -50,7 +52,14 @@ public sealed class GetPatientDetailQueryHandler(
             userId, q.TenantId, "patient", q.PatientId, q.DeclaredPurpose, q.PurposeNotes,
             IsBreakGlass: false, BreakGlassReason: null), ct);
 
-        return await reads.GetDetailAsync(q.TenantId, q.PatientId, ct)
+        // Issue #91 receptionist masking: mask the phone when the tenant enables it AND the caller is not
+        // clinical staff (clinical staff hold medical_history.read and see full contact details). Flipping the
+        // tenant toggle therefore actually changes what a front-desk user sees — a REAL enforcement, not cosmetic.
+        var policy = await securityPolicy.GetAsync(q.TenantId, ct);
+        var maskPhone = policy.MaskSensitiveForReceptionist
+                        && !permissions.Has(SecurityPolicyPermissions.ClinicalReadKey);
+
+        return await reads.GetDetailAsync(q.TenantId, q.PatientId, maskPhone, ct)
             ?? throw new KeyNotFoundException("Patient not found.");
     }
 }

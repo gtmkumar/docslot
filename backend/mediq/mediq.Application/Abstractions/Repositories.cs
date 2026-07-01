@@ -16,6 +16,12 @@ public interface IUserRepository
 
     /// <summary>Persists login bookkeeping (last_login, failed_login_count, locked_until) outside the request UoW so it commits even on auth failure.</summary>
     Task UpdateLoginStateAsync(User user, CancellationToken ct);
+
+    /// <summary>
+    /// Sets a new password hash and clears <c>must_change_password</c>. Runs on the request UoW connection so it
+    /// commits atomically with the audit write (issue #91 change-password path).
+    /// </summary>
+    Task UpdatePasswordHashAsync(Guid userId, string newPasswordHash, CancellationToken ct);
 }
 
 /// <summary>Tenant lookups + the tenants a user may switch into (joined through user_tenant_roles).</summary>

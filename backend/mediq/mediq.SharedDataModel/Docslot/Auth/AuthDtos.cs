@@ -22,6 +22,13 @@ public sealed record TokenResponse(
 public sealed record RefreshRequest(string RefreshToken);
 
 /// <summary>
+/// Self-service password change (<c>POST /api/v1/auth/change-password</c>). The new password must satisfy the
+/// tenant security policy's <c>minPasswordLength</c> (issue #91) — a shorter value is rejected with 422. The
+/// caller is the authenticated principal; the current password is re-verified before the change is applied.
+/// </summary>
+public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
+
+/// <summary>
 /// Switch the active tenant for a user who belongs to several. Server-side membership is validated and a
 /// NEW access token carrying the requested tenant claim is minted — the only secure way to change the
 /// tenant that scopes RLS/PHI access. <see cref="RefreshToken"/> binds the switch to the live session.

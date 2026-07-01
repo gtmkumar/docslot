@@ -142,7 +142,14 @@ public interface IBadgeReadService
 public interface IPatientReadService
 {
     Task<IReadOnlyList<PatientListItemDto>> ListAsync(Guid tenantId, int skip, int take, CancellationToken ct);
-    Task<PatientDetailDto?> GetDetailAsync(Guid tenantId, Guid patientId, CancellationToken ct);
+
+    /// <summary>
+    /// Patient booking-core detail. <paramref name="maskPhone"/> drives the receptionist sensitive-field masking
+    /// (issue #91): when true the phone is partially masked; when false the full number is returned. The caller
+    /// (the purpose-gated handler) decides based on the tenant policy + the caller's permissions — clinical staff
+    /// are exempt from masking, front-desk staff are masked when the tenant enables it.
+    /// </summary>
+    Task<PatientDetailDto?> GetDetailAsync(Guid tenantId, Guid patientId, bool maskPhone, CancellationToken ct);
 }
 
 /// <summary>Patient list row — MASKED phone only (PHI). Raw phone never serialized.</summary>

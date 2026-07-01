@@ -209,14 +209,18 @@ public sealed class PatientReadService(PlatformDbContext db) : IPatientReadServi
             p.Age, p.Gender, p.PreferredLanguage)).ToList();
     }
 
-    public async Task<PatientDetailDto?> GetDetailAsync(Guid tenantId, Guid patientId, CancellationToken ct)
+    public async Task<PatientDetailDto?> GetDetailAsync(Guid tenantId, Guid patientId, bool maskPhone, CancellationToken ct)
     {
         var p = await db.Patients.AsNoTracking()
             .FirstOrDefaultAsync(x => x.PatientId == patientId && x.DeletedAt == null, ct);
         if (p is null) return null;
 
+        // Issue #91: the phone is partially masked for front-desk staff when the tenant enables it, and shown
+        // in full to exempt (clinical) staff or when the tenant disables masking. Decision made by the handler.
+        var phone = maskPhone ? PhoneMasker.Mask(p.PhoneNumber) : (p.PhoneNumber ?? "");
+
         return new PatientDetailDto(
-            p.PatientId, p.FullName, PhoneMasker.Mask(p.PhoneNumber), p.DateOfBirth, p.Age,
+            p.PatientId, p.FullName, phone, p.DateOfBirth, p.Age,
             p.Gender, p.Email, p.PreferredLanguage, p.HasActiveConsent);
     }
 }
