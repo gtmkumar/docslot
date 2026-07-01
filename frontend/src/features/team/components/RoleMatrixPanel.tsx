@@ -6,13 +6,17 @@
 import { useTranslation } from 'react-i18next';
 import { SlideOver } from '@/components/ui/SlideOver';
 import { useUI } from '@/stores/ui';
-import { useRoleMatrix } from '../api';
+import { useRoleMatrix, useRoles } from '../api';
 import { RoleMatrixView } from './RoleMatrixView';
 
 export function RoleMatrixPanel({ roleId, open, onClose }: { roleId: string; open: boolean; onClose: () => void }) {
   const { t } = useTranslation();
   const openPanel = useUI((s) => s.openPanel);
   const { data: matrix } = useRoleMatrix(roleId);
+  // The matrix endpoint doesn't carry the member count (#84); read it from the
+  // (session-cached) roles list so the "People with this role" tile shows here too.
+  const { data: roles } = useRoles();
+  const memberCount = roles?.find((r) => r.roleId === roleId)?.memberCount;
 
   return (
     <SlideOver
@@ -22,7 +26,11 @@ export function RoleMatrixPanel({ roleId, open, onClose }: { roleId: string; ope
       title={matrix?.name ?? t('team.matrix.eyebrow')}
       description={t('team.matrix.description')}
     >
-      <RoleMatrixView roleId={roleId} onDuplicate={(id) => openPanel({ type: 'duplicateRole', roleId: id })} />
+      <RoleMatrixView
+        roleId={roleId}
+        memberCount={memberCount}
+        onDuplicate={(id) => openPanel({ type: 'duplicateRole', roleId: id })}
+      />
     </SlideOver>
   );
 }

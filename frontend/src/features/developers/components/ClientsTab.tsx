@@ -105,6 +105,13 @@ function ClientRow({
         {t('developers.clients.perMin', { count: client.rateLimitPerMinute })}
       </span>
 
+      <span
+        className="mono hidden w-20 shrink-0 text-right text-[12px] text-muted lg:block"
+        title={t('developers.clients.requests24hTitle')}
+      >
+        {t('developers.clients.requests24h', { count: client.requestsLast24h })}
+      </span>
+
       <span className="mono hidden w-32 shrink-0 text-right text-[11px] text-muted-2 lg:block">
         {client.lastUsedAt ? dateTime(client.lastUsedAt) : t('developers.clients.neverUsed')}
       </span>

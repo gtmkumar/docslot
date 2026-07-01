@@ -65,10 +65,20 @@ export function WebhooksTab({ canManage }: { canManage: boolean }) {
   );
 }
 
+/** Health tone for the 7-day delivery success rate (#88b). Text carries the value
+ *  too, so colour is never the sole signal (a11y). Terracotta/amber flags a webhook
+ *  that is silently dropping events — worth an integrator's attention. */
+function successRateTone(rate: number): string {
+  if (rate >= 0.9) return 'text-primary';
+  if (rate >= 0.5) return 'text-warn';
+  return 'text-danger';
+}
+
 function WebhookRow({ webhook, canManage }: { webhook: WebhookSubscription; canManage: boolean }) {
   const { t } = useTranslation();
   const openPanel = useUI((s) => s.openPanel);
 
+  const rate = webhook.deliverySuccessRate7d;
   const tone = webhook.autoDisabledAt ? 'failed' : webhook.isActive ? 'active' : 'inactive';
   const label = webhook.autoDisabledAt
     ? t('developers.webhooks.autoDisabled')
@@ -91,6 +101,19 @@ function WebhookRow({ webhook, canManage }: { webhook: WebhookSubscription; canM
         <p className="text-[11px] text-muted-2">
           {t('developers.webhooks.eventsCount', { count: webhook.eventTypes.length })}
         </p>
+      </div>
+
+      <div
+        className="hidden w-28 shrink-0 text-right sm:block"
+        title={t('developers.webhooks.successRate7dTitle')}
+      >
+        {rate === null ? (
+          <span className="text-[11px] text-muted-2">{t('developers.webhooks.successRateNone')}</span>
+        ) : (
+          <span className={`mono text-[12px] ${successRateTone(rate)}`}>
+            {t('developers.webhooks.successRate7d', { pct: Math.round(rate * 100) })}
+          </span>
+        )}
       </div>
 
       <div className="hidden w-24 shrink-0 sm:block">

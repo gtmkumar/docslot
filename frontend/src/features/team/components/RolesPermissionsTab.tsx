@@ -5,27 +5,32 @@
 //    (right), reusing the shared RoleMatrixView (converted from a slide-over). The
 //    catalog toolbar (+ Module / + Permission) rides above it, gated on
 //    platform.permissions.manage.
-//  - Per-user overrides: a tenant-wide overrides list has no backend yet (#85), so
-//    a design-token empty-state points at where per-user editing already lives
-//    (People → Manage access → overrides).
+//  - Per-user overrides: the tenant-wide overrides list (#85, GET /iam/overrides,
+//    gated platform.overrides.read) — target user, permission key, deny/grant,
+//    reason, expiry, active — with skeleton/empty/error/forbidden states. The
+//    sub-tab badge shows the server-computed count; each row opens the person's
+//    Manage-access panel where the per-user override EDITING already lives.
 //  - Effective access: a person picker that opens the existing, reused
 //    effective-access viewer (EffectiveAccessPanel).
 //
-// Per-role member counts (#84) are not available yet — intentionally omitted.
+// Per-role member counts (#84, RoleDto.MemberCount) surface on the left-rail rows
+// ("N people") and the matrix-header "People with this role" tile.
 
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Boxes, ChevronRight, Eye, KeyRound, Shield, ShieldCheck } from 'lucide-react';
+import { Ban, Boxes, Check, ChevronRight, Eye, KeyRound, Shield, ShieldCheck, Users } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { shortDate } from '@/lib/format';
 import { usePermissions } from '@/lib/permissions';
 import { useUI } from '@/stores/ui';
 import * as Tabs from '@radix-ui/react-tabs';
-import { useRoles, useTenantUsers } from '../api';
+import { useRoles, useTenantOverrides, useTenantUsers } from '../api';
 import { RoleMatrixView } from './RoleMatrixView';
+import type { TenantPermissionOverride } from '@/lib/mock/contracts';
 
 const subTrigger =
   'shrink-0 whitespace-nowrap px-3 py-2 text-[13px] font-medium text-muted border-b-2 border-transparent transition-colors ' +
@@ -34,6 +39,14 @@ const subTrigger =
 
 export function RolesPermissionsTab() {
   const { t } = useTranslation();
+  const { can } = usePermissions();
+  // Reading tenant-wide overrides is its own (SoD-distinct) permission. Gate the
+  // fetch on it so a viewer who lacks it never fires a 403 — the sub-tab shows a
+  // "no access" state instead, and the badge simply stays hidden.
+  const canReadOverrides = can('platform.overrides.read');
+  const { data: overridesData } = useTenantOverrides(canReadOverrides);
+  const overrideCount = overridesData?.count;
+
   return (
     <Tabs.Root defaultValue="privileges">
       <Tabs.List className="mb-4 flex gap-1 border-b border-line" aria-label={t('team.tabRolesPerms')}>
@@ -41,7 +54,14 @@ export function RolesPermissionsTab() {
           {t('team.subRolesPrivileges')}
         </Tabs.Trigger>
         <Tabs.Trigger value="overrides" className={subTrigger}>
-          {t('team.subOverrides')}
+          <span className="inline-flex items-center gap-1.5">
+            {t('team.subOverrides')}
+            {typeof overrideCount === 'number' && overrideCount > 0 ? (
+              <span className="rounded-full bg-surface-sunk px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted">
+                {overrideCount}
+              </span>
+            ) : null}
+          </span>
         </Tabs.Trigger>
         <Tabs.Trigger value="effective" className={subTrigger}>
           {t('team.subEffective')}
@@ -52,7 +72,7 @@ export function RolesPermissionsTab() {
         <RolesPrivilegesSubTab />
       </Tabs.Content>
       <Tabs.Content value="overrides" className="focus-visible:outline-none">
-        <OverridesSubTab />
+        <OverridesSubTab canRead={canReadOverrides} />
       </Tabs.Content>
       <Tabs.Content value="effective" className="focus-visible:outline-none">
         <EffectiveAccessSubTab />
@@ -170,6 +190,10 @@ function RolesPrivilegesSubTab() {
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[13px] font-medium text-ink">{role.name}</span>
                       <span className="mono block truncate text-[10px] text-muted-2">{role.roleKey}</span>
+                      <span className="mt-0.5 flex items-center gap-1 text-[10px] text-muted">
+                        <Users size={10} aria-hidden="true" />
+                        {t('team.roleMembers', { count: role.memberCount })}
+                      </span>
                     </span>
                     <span
                       className={[
@@ -189,6 +213,7 @@ function RolesPrivilegesSubTab() {
         <Card className="p-4">
           <RoleMatrixView
             roleId={effectiveSelected}
+            memberCount={roles.find((r) => r.roleId === effectiveSelected)?.memberCount}
             onDuplicate={(id) => openPanel({ type: 'duplicateRole', roleId: id })}
           />
         </Card>
@@ -197,17 +222,143 @@ function RolesPrivilegesSubTab() {
   );
 }
 
-// ── Per-user overrides: tenant-wide list awaits #85 ───────────────────────────
-function OverridesSubTab() {
+// ── Per-user overrides: the tenant-wide overrides list (#85) ──────────────────
+// Rows open the person's Manage-access panel, where the per-user override editor
+// (grant/deny with a mandatory reason) already lives — the editing path stays
+// reachable while this view stays a read-only tenant-wide roll-up.
+function OverridesSubTab({ canRead }: { canRead: boolean }) {
   const { t } = useTranslation();
+  const openPanel = useUI((s) => s.openPanel);
+  const { data, isLoading, isError, refetch } = useTenantOverrides(canRead);
+
+  if (!canRead) {
+    return (
+      <Card>
+        <EmptyState
+          icon={<KeyRound size={28} aria-hidden="true" />}
+          title={t('team.overridesList.forbiddenTitle')}
+          description={t('team.overridesList.forbiddenBody')}
+        />
+      </Card>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Card>
+        <EmptyState
+          title={t('error.genericTitle')}
+          description={t('error.genericBody')}
+          actionLabel={t('common.retry')}
+          onAction={() => void refetch()}
+        />
+      </Card>
+    );
+  }
+
+  if (isLoading || !data) {
+    return (
+      <Card>
+        <ul className="flex flex-col" role="status" aria-busy="true">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <li key={i} className="flex items-center gap-3 border-b border-line px-4 py-3 last:border-0">
+              <div className="flex flex-1 flex-col gap-2">
+                <Skeleton className="h-3 w-44" />
+                <Skeleton className="h-3 w-56" />
+              </div>
+              <Skeleton className="h-5 w-16" />
+            </li>
+          ))}
+        </ul>
+      </Card>
+    );
+  }
+
+  if (data.overrides.length === 0) {
+    return (
+      <Card>
+        <EmptyState
+          icon={<KeyRound size={28} aria-hidden="true" />}
+          title={t('team.overridesList.emptyTitle')}
+          description={t('team.overridesList.emptyBody')}
+        />
+      </Card>
+    );
+  }
+
   return (
-    <Card>
-      <EmptyState
-        icon={<KeyRound size={28} aria-hidden="true" />}
-        title={t('team.overridesTenant.title')}
-        description={t('team.overridesTenant.body')}
-      />
-    </Card>
+    <div className="flex flex-col gap-3">
+      <p className="text-[12px] text-muted-2">{t('team.overridesList.prompt')}</p>
+      <Card>
+        <ul className="flex flex-col">
+          {data.overrides.map((o) => (
+            <OverrideRow
+              key={o.overrideId}
+              override={o}
+              onManage={() => openPanel({ type: 'manageUser', userId: o.userId })}
+            />
+          ))}
+        </ul>
+      </Card>
+    </div>
+  );
+}
+
+function OverrideRow({
+  override: o,
+  onManage,
+}: {
+  override: TenantPermissionOverride;
+  onManage: () => void;
+}) {
+  const { t } = useTranslation();
+  const deny = !o.isAllowed;
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onManage}
+        aria-label={t('team.overridesList.rowLabel', { name: o.userDisplayName })}
+        className="flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left transition-colors last:border-0 hover:bg-surface-sunk focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-ink">{o.userDisplayName}</span>
+            <span className="truncate text-[11px] text-muted-2">{o.userEmail}</span>
+          </div>
+          <span className="mono block truncate text-[11px] text-muted">{o.permissionKey}</span>
+          <p className="truncate text-[11px] text-muted-2">{o.reason}</p>
+        </div>
+
+        <span
+          className={[
+            'hidden shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] sm:inline-flex',
+            deny ? 'bg-danger-soft text-danger' : 'bg-primary-soft text-primary',
+          ].join(' ')}
+        >
+          {deny ? <Ban size={12} aria-hidden="true" /> : <Check size={12} aria-hidden="true" />}
+          {deny ? t('team.overridesList.deny') : t('team.overridesList.grant')}
+        </span>
+
+        <span className="mono hidden w-32 shrink-0 text-right text-[11px] text-muted-2 md:block">
+          {o.expiresAt
+            ? t('team.overridesList.expiresOn', { date: shortDate(o.expiresAt) })
+            : t('team.overridesList.noExpiry')}
+        </span>
+
+        <span
+          className={[
+            'hidden w-16 shrink-0 text-right text-[11px] lg:block',
+            o.active ? 'text-primary' : 'text-muted-2',
+          ].join(' ')}
+        >
+          {o.active ? t('team.overridesList.active') : t('team.overridesList.inactive')}
+        </span>
+
+        <ChevronRight size={16} className="shrink-0 text-muted-2" aria-hidden="true" />
+      </button>
+    </li>
   );
 }
 

@@ -239,6 +239,8 @@ export const createRole = USE_REAL_API ? real.createRole : mock.createRole;
 export const getPermissionRegistry = USE_REAL_API ? real.getPermissionRegistry : mock.getPermissionRegistry;
 export const getRolePermissions = USE_REAL_API ? real.getRolePermissions : mock.getRolePermissions;
 export const listUserOverrides = USE_REAL_API ? real.listUserOverrides : mock.listUserOverrides;
+// #85 — tenant-wide overrides list (GET /iam/overrides, gated platform.overrides.read).
+export const listTenantOverrides = USE_REAL_API ? real.listTenantOverrides : mock.listTenantOverrides;
 export const getEffectivePermissions = USE_REAL_API ? real.getEffectivePermissions : mock.getEffectivePermissions;
 
 // ── CLINICAL PHI + ABDM + CONSENT (Phase-3 slice 4) ───────────────────────────

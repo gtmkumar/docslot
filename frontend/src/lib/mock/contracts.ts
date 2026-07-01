@@ -682,6 +682,10 @@ export const RoleSchema = z.object({
   scope: z.enum(['platform', 'tenant']),
   isSystem: z.boolean(),
   tenantId: z.string().nullable(),
+  /** #84 — distinct active users holding this role (revoked/expired assignments
+   *  excluded). Mirrors RoleDto.MemberCount; defaults to 0 for producers that
+   *  synthesise a fresh role (create/duplicate results carry no members yet). */
+  memberCount: z.number().int().nonnegative().default(0),
 });
 export type Role = z.infer<typeof RoleSchema>;
 
@@ -758,6 +762,35 @@ export const EffectivePermissionSchema = z.object({
 });
 export type EffectivePermission = z.infer<typeof EffectivePermissionSchema>;
 
+/** One row of the tenant-wide per-user override list (#85). Mirrors
+ *  TenantPermissionOverrideDto — carries the TARGET user's identity inline so the
+ *  list renders without an N+1 user lookup. `isAllowed=false` is a deny (deny-wins
+ *  over any role grant); `active` = effective right now (started, not expired, not
+ *  revoked). `effectiveFrom` is when the override starts applying. */
+export const TenantPermissionOverrideSchema = z.object({
+  overrideId: z.string(),
+  userId: z.string(),
+  userDisplayName: z.string(),
+  userEmail: z.string(),
+  permissionKey: z.string(),
+  isAllowed: z.boolean(),
+  reason: z.string(),
+  effectiveFrom: z.string(),
+  expiresAt: z.string().nullable(),
+  active: z.boolean(),
+});
+export type TenantPermissionOverride = z.infer<typeof TenantPermissionOverrideSchema>;
+
+/** `GET /api/v1/iam/overrides` result. Mirrors TenantOverridesListDto — every
+ *  per-user override in the caller's tenant plus a server-computed `count` (drives
+ *  the Roles & permissions "Per-user overrides" sub-tab badge). Gated server-side
+ *  on platform.overrides.read (distinct from the dangerous platform.overrides.grant). */
+export const TenantOverridesListSchema = z.object({
+  count: z.number().int().nonnegative(),
+  overrides: z.array(TenantPermissionOverrideSchema),
+});
+export type TenantOverridesList = z.infer<typeof TenantOverridesListSchema>;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DEVELOPER / API PLATFORM (Slice 02 platform_api) — mirrors
 // mediq.SharedDataModel/Docslot/PlatformApi/{ApiClient,OAuth,Webhook}Dtos.cs
@@ -789,6 +822,10 @@ export const ApiClientSchema = z.object({
   grantedScopes: z.array(z.string()),
   createdAt: z.string(),
   lastUsedAt: z.string().nullable(),
+  /** #88a — count of API calls (any status) attributed to this client in the last
+   *  24h. Mirrors ApiClientDto.RequestsLast24h; defaults to 0 for freshly-registered
+   *  clients (and for producers that synthesise a client without traffic). */
+  requestsLast24h: z.number().int().nonnegative().default(0),
 });
 export type ApiClient = z.infer<typeof ApiClientSchema>;
 
@@ -863,6 +900,11 @@ export const WebhookSubscriptionSchema = z.object({
   lastFailureAt: z.string().nullable(),
   autoDisabledAt: z.string().nullable(),
   createdAt: z.string(),
+  /** #88b — fraction (0..1) of deliveries that SUCCEEDED in the last 7 days, or
+   *  null when there were no deliveries in the window (server divide-by-zero guard).
+   *  Mirrors WebhookSubscriptionDto.DeliverySuccessRate7d (double?). Format at the
+   *  edge as a percentage; null renders as "no deliveries". */
+  deliverySuccessRate7d: z.number().nullable().default(null),
 });
 export type WebhookSubscription = z.infer<typeof WebhookSubscriptionSchema>;
 

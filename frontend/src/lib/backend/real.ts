@@ -121,6 +121,7 @@ import {
   ScopeSchema,
   SlotDtoSchema,
   SlotSchema,
+  TenantOverridesListSchema,
   TokenResponseSchema,
   WebhookSubscriptionSchema,
   type AssignRoleRequest,
@@ -195,6 +196,7 @@ import {
   type PermissionDef,
   type Role,
   type UserOverride,
+  type TenantOverridesList,
   type EffectivePermission,
   type RoleMatrix,
   type RolePermissionToggleResult,
@@ -1993,6 +1995,16 @@ export async function getRolePermissions(roleId: string): Promise<string[]> {
 export async function listUserOverrides(userId: string): Promise<UserOverride[]> {
   const raw = await apiFetch<unknown[]>(`/iam/users/${userId}/overrides`);
   return UserOverrideSchema.array().parse(raw);
+}
+
+/** Every per-user override in the caller's tenant (#85). GET /iam/overrides is gated
+ *  server-side on platform.overrides.read (distinct from platform.overrides.grant, SoD)
+ *  and NEVER leaks another tenant's rows. The DTO carries the target user's identity
+ *  inline + a server-computed count → straight pass-through. A 403 (caller lacks the
+ *  read perm) surfaces through TanStack Query's error state. */
+export async function listTenantOverrides(): Promise<TenantOverridesList> {
+  const raw = await apiFetch<unknown>('/iam/overrides');
+  return TenantOverridesListSchema.parse(raw);
 }
 
 /** The "why does this user have X?" explainer — the resolved set WITH source

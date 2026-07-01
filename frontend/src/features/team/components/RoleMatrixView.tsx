@@ -20,7 +20,7 @@
 
 import { useOptimistic, useState, useTransition } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, Check, Copy, Lock, ShieldAlert } from 'lucide-react';
+import { AlertCircle, Check, Copy, Lock, ShieldAlert, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -33,9 +33,14 @@ import type { RoleMatrix } from '@/lib/mock/contracts';
 
 export function RoleMatrixView({
   roleId,
+  memberCount,
   onDuplicate,
 }: {
   roleId: string;
+  /** #84 — distinct active members of this role (RoleDto.MemberCount). The matrix
+   *  endpoint doesn't carry it, so the caller threads it from the roles list; the
+   *  "People with this role" tile only renders when a number is supplied. */
+  memberCount?: number;
   onDuplicate?: (roleId: string) => void;
 }) {
   const { t } = useTranslation();
@@ -54,7 +59,7 @@ export function RoleMatrixView({
     );
   }
   if (isLoading || !matrix) return <MatrixSkeleton />;
-  return <MatrixBody matrix={matrix} canToggle={canToggle} onDuplicate={onDuplicate} />;
+  return <MatrixBody matrix={matrix} memberCount={memberCount} canToggle={canToggle} onDuplicate={onDuplicate} />;
 }
 
 function MatrixSkeleton() {
@@ -79,10 +84,12 @@ type OptimisticFlip = { permissionId: string; granted: boolean };
 
 function MatrixBody({
   matrix,
+  memberCount,
   canToggle,
   onDuplicate,
 }: {
   matrix: RoleMatrix;
+  memberCount?: number;
   canToggle: boolean;
   onDuplicate?: (roleId: string) => void;
 }) {
@@ -156,13 +163,24 @@ function MatrixBody({
 
       {matrix.description ? <p className="text-[12px] text-muted">{matrix.description}</p> : null}
 
-      {/* Scoped Effect tile + legend (#83). */}
+      {/* Scoped Effect + People-with-this-role tiles (#83 / #84), and legend. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="rounded-[var(--radius-sm)] border border-line bg-bg-2 px-3 py-1.5">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-2">
-            {t('team.scopedEffect')}
-          </span>
-          <span className="ml-2 text-[13px] text-ink">{scopeLabel}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="rounded-[var(--radius-sm)] border border-line bg-bg-2 px-3 py-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-2">
+              {t('team.scopedEffect')}
+            </span>
+            <span className="ml-2 text-[13px] text-ink">{scopeLabel}</span>
+          </div>
+          {typeof memberCount === 'number' ? (
+            <div className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-line bg-bg-2 px-3 py-1.5">
+              <Users size={13} className="text-muted-2" aria-hidden="true" />
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-2">
+                {t('team.matrix.membersLabel')}
+              </span>
+              <span className="ml-1 text-[13px] tabular-nums text-ink">{memberCount}</span>
+            </div>
+          ) : null}
         </div>
         <Legend />
       </div>

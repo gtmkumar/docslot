@@ -110,6 +110,7 @@ interface SeedClient {
   grantedScopes: string[];
   createdAt: string;
   lastUsedAt: string | null;
+  requestsLast24h: number;
 }
 
 const CLIENTS: SeedClient[] = [
@@ -118,28 +119,28 @@ const CLIENTS: SeedClient[] = [
     ownerTenantId: '00000000-0000-0000-0000-00000000ap01', ownerEmail: 'dev@apollo-hms.in', ownerOrganization: 'Apollo HMS Pvt Ltd',
     isActive: true, isVerified: true, rateLimitPerMinute: 120, rateLimitPerDay: 50000, burstLimit: 200,
     grantedScopes: ['docslot.bookings.read', 'docslot.slots.read', 'docslot.doctors.read', 'docslot.bookings.write'],
-    createdAt: '2026-03-02T10:00:00+05:30', lastUsedAt: '2026-06-14T08:55:00+05:30',
+    createdAt: '2026-03-02T10:00:00+05:30', lastUsedAt: '2026-06-14T08:55:00+05:30', requestsLast24h: 1842,
   },
   {
     clientId: 'c-star-ins', clientCode: 'star-insurance', clientName: 'Star Insurance Claims', clientType: 'partner',
     ownerTenantId: null, ownerEmail: 'api@starinsurance.in', ownerOrganization: 'Star Health Insurance',
     isActive: true, isVerified: true, rateLimitPerMinute: 60, rateLimitPerDay: 10000, burstLimit: 100,
     grantedScopes: ['docslot.bookings.read', 'docslot.reports.read'],
-    createdAt: '2026-04-18T14:30:00+05:30', lastUsedAt: '2026-06-13T21:10:00+05:30',
+    createdAt: '2026-04-18T14:30:00+05:30', lastUsedAt: '2026-06-13T21:10:00+05:30', requestsLast24h: 268,
   },
   {
     clientId: 'c-pharmeasy', clientCode: 'pharmeasy', clientName: 'PharmEasy Rx Sync', clientType: 'partner',
     ownerTenantId: null, ownerEmail: 'integrations@pharmeasy.in', ownerOrganization: 'PharmEasy',
     isActive: true, isVerified: false, rateLimitPerMinute: 60, rateLimitPerDay: 10000, burstLimit: 100,
     grantedScopes: ['docslot.prescriptions.read'],
-    createdAt: '2026-06-10T09:00:00+05:30', lastUsedAt: null,
+    createdAt: '2026-06-10T09:00:00+05:30', lastUsedAt: null, requestsLast24h: 0,
   },
   {
     clientId: 'c-legacy', clientCode: 'legacy-portal', clientName: 'Legacy Web Portal', clientType: 'first_party',
     ownerTenantId: '00000000-0000-0000-0000-00000000ap01', ownerEmail: 'it@apollocare.in', ownerOrganization: null,
     isActive: false, isVerified: true, rateLimitPerMinute: 30, rateLimitPerDay: 5000, burstLimit: 50,
     grantedScopes: ['docslot.bookings.read'],
-    createdAt: '2025-11-01T12:00:00+05:30', lastUsedAt: '2026-02-20T16:00:00+05:30',
+    createdAt: '2025-11-01T12:00:00+05:30', lastUsedAt: '2026-02-20T16:00:00+05:30', requestsLast24h: 0,
   },
 ];
 
@@ -161,6 +162,7 @@ function toClient(c: SeedClient): ApiClient {
     grantedScopes: c.grantedScopes,
     createdAt: c.createdAt,
     lastUsedAt: c.lastUsedAt,
+    requestsLast24h: c.requestsLast24h,
   });
 }
 
@@ -178,6 +180,9 @@ interface SeedWebhook {
   lastFailureAt: string | null;
   autoDisabledAt: string | null;
   createdAt: string;
+  /** Fraction 0..1 of the last 7 days' deliveries that succeeded, or null when
+   *  there were none in the window (#88b divide-by-zero guard). */
+  deliverySuccessRate7d: number | null;
 }
 
 const WEBHOOKS: SeedWebhook[] = [
@@ -186,14 +191,14 @@ const WEBHOOKS: SeedWebhook[] = [
     name: 'Booking sync', url: 'https://hooks.apollo-hms.in/docslot/bookings',
     eventTypes: ['docslot.booking.created', 'docslot.booking.approved', 'docslot.booking.cancelled'],
     isActive: true, consecutiveFailures: 0, lastSuccessAt: '2026-06-14T08:50:00+05:30', lastFailureAt: null, autoDisabledAt: null,
-    createdAt: '2026-03-05T10:00:00+05:30',
+    createdAt: '2026-03-05T10:00:00+05:30', deliverySuccessRate7d: 1,
   },
   {
     webhookId: 'wh-2', clientId: 'c-star-ins', tenantId: null,
     name: 'Claims report feed', url: 'https://api.starinsurance.in/webhooks/reports',
     eventTypes: ['docslot.report.delivered'],
     isActive: true, consecutiveFailures: 2, lastSuccessAt: '2026-06-12T18:00:00+05:30', lastFailureAt: '2026-06-13T21:10:00+05:30', autoDisabledAt: null,
-    createdAt: '2026-04-20T14:30:00+05:30',
+    createdAt: '2026-04-20T14:30:00+05:30', deliverySuccessRate7d: 0.5,
   },
 ];
 
@@ -214,6 +219,7 @@ function toWebhook(w: SeedWebhook): WebhookSubscription {
     lastFailureAt: w.lastFailureAt,
     autoDisabledAt: w.autoDisabledAt,
     createdAt: w.createdAt,
+    deliverySuccessRate7d: w.deliverySuccessRate7d,
   });
 }
 

@@ -29,6 +29,7 @@ import {
   UpdateUserProfileResultSchema,
   ResetAccessResultSchema,
   TokenResponseSchema,
+  TenantOverridesListSchema,
   UserListItemSchema,
   UserOverrideSchema,
   type AssignRoleRequest,
@@ -54,6 +55,7 @@ import {
   type RolePermissionToggleResult,
   type SetOverrideRequest,
   type SetOverrideResult,
+  type TenantOverridesList,
   type TokenResponse,
   type UserListItem,
   type UserOverride,
@@ -175,7 +177,9 @@ export const DEMO_LOGIN = { email: DEMO_EMAIL, password: DEMO_PASSWORD };
 // ROLES + PERMISSION REGISTRY (seed mirrors platform.roles / platform.permissions)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ROLES: Role[] = [
+// memberCount is a computed value (listRoles fills it), never stored on the seed.
+type SeedRole = Omit<Role, 'memberCount'>;
+const ROLES: SeedRole[] = [
   { roleId: 'r-owner', roleKey: 'tenant_owner', name: 'Tenant Owner', scope: 'tenant', isSystem: true, tenantId: null },
   { roleId: 'r-admin', roleKey: 'tenant_admin', name: 'Tenant Admin', scope: 'tenant', isSystem: true, tenantId: null },
   { roleId: 'r-staff', roleKey: 'tenant_staff', name: 'Reception Staff', scope: 'tenant', isSystem: true, tenantId: null },
@@ -271,9 +275,30 @@ const USERS: SeedUser[] = [
   },
 ];
 
-function roleById(id: string): Role | undefined {
+function roleById(id: string): SeedRole | undefined {
   return ROLES.find((r) => r.roleId === id);
 }
+
+/** #84 — distinct ACTIVE members holding a role: the user must be active AND the
+ *  assignment must not be expired (mirrors the server's revoked/expired exclusion).
+ *  Revoked assignments aren't modelled in the seed, so active + unexpired is enough. */
+function activeMemberCount(roleId: string): number {
+  const now = Date.now();
+  return USERS.filter(
+    (u) =>
+      u.isActive &&
+      u.roleIds.some(
+        (a) => a.roleId === roleId && (a.expiresAt === null || new Date(a.expiresAt).getTime() > now),
+      ),
+  ).length;
+}
+
+/** #85 — effectiveFrom per seeded override (the UserOverride seed shape carries no
+ *  start date; the tenant-wide list DTO does). Keyed by overrideId. */
+const OVERRIDE_EFFECTIVE_FROM: Record<string, string> = {
+  'ov-1': '2026-05-20T00:00:00+05:30',
+  'ov-2': '2026-06-25T00:00:00+05:30',
+};
 
 function toUserListItem(u: SeedUser): UserListItem {
   return UserListItemSchema.parse({
@@ -305,7 +330,7 @@ export function listTenantUsers(): Promise<UserListItem[]> {
 }
 
 export function listRoles(): Promise<Role[]> {
-  return delay(ROLES.map((r) => RoleSchema.parse(r)));
+  return delay(ROLES.map((r) => RoleSchema.parse({ ...r, memberCount: activeMemberCount(r.roleId) })));
 }
 
 export function getPermissionRegistry(): Promise<PermissionDef[]> {
@@ -319,6 +344,29 @@ export function getRolePermissions(roleId: string): Promise<string[]> {
 export function listUserOverrides(userId: string): Promise<UserOverride[]> {
   const u = USERS.find((x) => x.userId === userId);
   return delay((u?.overrides ?? []).map((o) => UserOverrideSchema.parse(o)));
+}
+
+/** #85 — GET /iam/overrides: every per-user override across the tenant, with the
+ *  target user's identity inlined (so the list needs no per-row user lookup) and a
+ *  server-style `count`. Deny-wins overrides (isAllowed=false) and grants both show;
+ *  `active` reflects whether the override applies right now (started, not expired). */
+export function listTenantOverrides(): Promise<TenantOverridesList> {
+  const now = Date.now();
+  const overrides = USERS.flatMap((u) =>
+    u.overrides.map((o) => ({
+      overrideId: o.overrideId,
+      userId: u.userId,
+      userDisplayName: u.fullName,
+      userEmail: u.email,
+      permissionKey: o.permissionKey,
+      isAllowed: o.isAllowed,
+      reason: o.reason,
+      effectiveFrom: OVERRIDE_EFFECTIVE_FROM[o.overrideId] ?? '2026-06-01T00:00:00+05:30',
+      expiresAt: o.expiresAt,
+      active: o.expiresAt === null || new Date(o.expiresAt).getTime() > now,
+    })),
+  );
+  return delay(TenantOverridesListSchema.parse({ count: overrides.length, overrides }));
 }
 
 /** "Why does user X have permission Y" — effective set with its source.

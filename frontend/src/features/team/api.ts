@@ -28,6 +28,7 @@ import {
   listIamPermissions,
   listModules,
   listRoles,
+  listTenantOverrides,
   listTenantUsers,
   listUserOverrides,
   resetUserAccess,
@@ -52,6 +53,7 @@ import type {
 
 export const usersQueryKey = ['team', 'users'] as const;
 export const rolesQueryKey = ['team', 'roles'] as const;
+export const tenantOverridesQueryKey = ['team', 'tenantOverrides'] as const;
 export const permissionRegistryQueryKey = ['team', 'permissions'] as const;
 export const modulesQueryKey = ['team', 'modules'] as const;
 export const roleMatrixQueryKey = (roleId: string | undefined) => ['team', 'roleMatrix', roleId] as const;
@@ -107,6 +109,13 @@ export function useUserOverrides(userId: string | undefined) {
     queryFn: () => listUserOverrides(userId ?? ''),
     enabled: Boolean(userId),
   });
+}
+
+/** Tenant-wide per-user overrides (#85) — feeds the Roles & permissions "Per-user
+ *  overrides" sub-tab list AND its badge count. Gated on platform.overrides.read;
+ *  pass `enabled=false` when the caller lacks it so we never fire a 403. */
+export function useTenantOverrides(enabled = true) {
+  return useQuery({ queryKey: tenantOverridesQueryKey, queryFn: listTenantOverrides, enabled });
 }
 
 export function useEffectivePermissions(userId: string | undefined) {
