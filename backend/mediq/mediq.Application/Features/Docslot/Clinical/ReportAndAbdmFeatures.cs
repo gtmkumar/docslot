@@ -39,6 +39,14 @@ public sealed class UploadLabReportCommandHandler(
     public async Task<UploadLabReportResult> Handle(UploadLabReportCommand command, CancellationToken ct)
     {
         var req = command.Request;
+
+        // Tenant-ownership guard: test_id is an OPTIONAL, tenant-blind FK and docslot.test_catalog has no RLS,
+        // so when supplied it must belong to the caller's tenant — otherwise a lab report in THIS tenant could
+        // reference ANOTHER tenant's test_id (#71).
+        if (req.TestId is { } testId && !await clinical.TestBelongsToTenantAsync(testId, command.TenantId, ct))
+            throw new mediq.Utilities.Exceptions.ValidationException(
+                new Dictionary<string, string[]> { ["testId"] = ["The referenced test was not found for this tenant."] });
+
         var encCtx = new EncryptionContext(ctx.UserId, command.TenantId, "lab_report", req.PatientId, ctx.IpAddress);
         var resultsEnc = string.IsNullOrEmpty(req.StructuredResultsJson)
             ? null

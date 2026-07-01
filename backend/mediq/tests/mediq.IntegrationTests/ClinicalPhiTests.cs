@@ -56,6 +56,32 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
     }
 
     [Fact]
+    public async Task Issue_Prescription_With_Cross_Tenant_DoctorId_Is_Rejected()
+    {
+        // #71: doctor_id is a tenant-blind FK and docslot.doctors has no RLS. A TenantA caller must NOT be able
+        // to issue a prescription referencing a doctor that belongs to TenantB — the write-side guard rejects it
+        // (422) so no cross-tenant / dangling FK is ever persisted.
+        var tenantBDoctor = Guid.NewGuid();
+        await ExecAsync("INSERT INTO docslot.doctors (doctor_id, tenant_id, full_name, is_active, is_accepting_new_patients, created_at, updated_at) VALUES (@id, @t, 'Dr TenantB', true, true, NOW(), NOW())",
+            ("id", tenantBDoctor), ("t", factory.TenantB));
+        try
+        {
+            var client = await AuthedClientAsync();   // authenticates to TenantA
+            var resp = await client.PostAsJsonAsync("/api/v1/prescriptions", new IssuePrescriptionRequest(
+                factory.BookingId, factory.PatientId, tenantBDoctor, null, null, "dx", "[]", null, null));
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
+
+            // Nothing was persisted referencing the cross-tenant doctor.
+            var count = await ScalarIntAsync("SELECT COUNT(*)::int FROM docslot.prescriptions WHERE doctor_id=@d", ("d", tenantBDoctor));
+            Assert.Equal(0, count);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.doctors WHERE doctor_id=@id", ("id", tenantBDoctor));
+        }
+    }
+
+    [Fact]
     public async Task Amend_Prescription_Supersedes_Original_Encrypts_New_Content_And_Guards_State()
     {
         var client = await AuthedClientAsync();   // tenant A; tenant_owner → create/read/amend
