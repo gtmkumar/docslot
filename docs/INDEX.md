@@ -22,7 +22,9 @@
 ├── API_GUIDELINES.md           REST conventions, idempotency, webhooks
 ├── CHANGELOG.md                Versioned history
 ├── COMMISSION_SYSTEM.md        Broker referral economy: legal positioning, attribution, payouts
-├── RBAC_NAVIGATION.md          Backend-driven menus, overrides, permission resolver
+├── RBAC_Navigation_PaaS_PostgreSQL.md  (repo root) Backend-driven menus, overrides, permission resolver — the shipped narrative
+├── docs/RBAC.md                RBAC canonical model: tables, permission inventory, roles, decision semantics, R1–R6 hardening
+├── docs/RBAC_FLOW.md           How one live request is authorized through the .NET pipeline (companion to RBAC.md)
 ├── .agents/                    Project memory (commit this to git)
 │   ├── memory/                 7 memory files (decisions, API contracts, etc.)
 │   ├── checkpoints/            Session checkpoints (auto-generated)

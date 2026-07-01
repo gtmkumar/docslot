@@ -1,0 +1,14 @@
+---
+name: doc-rbac-md-v2-audit
+description: docs/RBAC.md v2.0 canonical-RBAC doc audit (issue #78) — PASS-WITH-REQUIRED-CHANGES; the one required fix I issued so I can verify it later
+metadata:
+  type: project
+---
+
+`docs/RBAC.md` v2.0 (2026-07-01, issue #78 re-anchor) is the canonical RBAC model+decision-semantics doc; companion `docs/RBAC_FLOW.md` owns the request path. I audited it for security-control fidelity against `database/11_rbac_hardening.sql`, `05_security_hardening.sql`, `ImpersonationCommands.cs`, `SecurityController.cs`. Verdict: PASS WITH REQUIRED CHANGES.
+
+Verified-accurate (so I don't re-derive next time): permission counts core=102 / +AI=120 / full=134 reconcile exactly against the `platform.permissions` seeds (01 platform16+tenant10, 03 docslot34, 05 platform10+docslot2, 07 commission22, 06 ai18, 08 platform6+docslot2, 04 6/4/4). `tenant.roles.assign` is the real key (01:239); `platform.roles.assign` does NOT exist. File 02 `docslot.abdm.records.{fetch,push}` are OAuth `platform_api.api_scopes`, NOT RBAC perms — correctly excluded. broker=exactly 4 self keys (07:957-960); platform_billing seeded (01:282) with ZERO grants. R6 impersonation "audited-by-construction" framing is correct (GUC inert without live session; sessions only via begin_impersonation which audits same-tx; append-only + super-only RLS). Break-glass §12 correct (ABDM CHECK-excluded, TTL server-set, tenant-RLS, open=docslot.medical_access.break_glass / revoke=platform.anomalies.review).
+
+**The one REQUIRED fix I issued (verify it was applied):** §1 principle 8 (doc line 27) says R3 is "Enforced by SECURITY DEFINER functions with direct table writes revoked (11:648)." Two problems: (a) citation 11:648 is the grant function, not a REVOKE; the REVOKE is 11:1731-1733 and covers ONLY the catalog tables (permissions/resource_types/action_types). (b) The RBAC *assignment* tables (role_permissions/user_tenant_roles/roles/user_permission_overrides) are NOT revoked — they're RLS-gated via rls_can_write_tenant (11:1211-1216), which permits own-tenant AND super_admin-context direct writes that do NOT enforce the R3 escalation guard (the SQL's own "audit Finding 4", 11:1206-1210). Net-safe today only because the app routes all mutation through the definer API. §5 (line 248) and §10 (line 369) state this correctly; only principle 8 over-generalizes.
+
+INFO-level (not required): §11 line 392 "critical alert onto the security review queue" — break-glass impersonation writes `platform.alerts` (code impersonation.break_glass), NOT the `v_security_review_queue` view (which unions anomaly_events + purpose_of_use_log + consent_event_log only). §11 line 390 "clamps TtlMinutes 1-480" actually REJECTS out-of-range (validator, 400), doesn't clamp. §2 table lists 15 rows but prose says "12 base + 2" (tenant_product_subscriptions unaccounted).
