@@ -18,7 +18,24 @@ public sealed record UserRoleDto(
 public sealed record UserListItemDto(
     Guid UserId, string Email, string FullName, string? MaskedPhone, bool IsActive, bool MfaEnabled,
     DateTime? LastLoginAt, DateTime? LockedUntil, bool MustChangePassword,
-    IReadOnlyList<UserRoleDto> Roles, DateTime? LastActivityAt = null);
+    IReadOnlyList<UserRoleDto> Roles, DateTime? LastActivityAt = null,
+    Guid? BranchId = null, string? BranchName = null, string? Department = null);
+
+/// <summary>A tenant's physical branch/location (maps to <c>platform.branches</c>). An organizational display
+/// attribute only — it heads the People "All branches" filter and never confers permissions.</summary>
+public sealed record BranchDto(Guid BranchId, string Name, string? Code, bool IsActive);
+
+/// <summary>Create a branch under the caller's tenant. Gated on <c>tenant.settings.update</c>.</summary>
+public sealed record CreateBranchRequest(string Name, string? Code);
+
+public sealed record CreateBranchResult(Guid BranchId);
+
+/// <summary>Set a member's organizational scope — DISPLAY ONLY. NULL <c>BranchId</c> = "All branches",
+/// NULL/blank <c>Department</c> = "All departments". Routed through <c>platform.set_membership_scope</c>,
+/// which writes ONLY branch_id/department (never role_id) so it can never change effective access.</summary>
+public sealed record SetMemberScopeRequest(Guid? BranchId, string? Department);
+
+public sealed record SetMemberScopeResult(Guid UserTenantRoleId, Guid? BranchId, string? Department);
 
 /// <summary>Create-user request. A password is deliberately NOT accepted from the admin (impersonation
 /// hazard) — the invite seeds a server-generated temp credential + must-change-password.</summary>

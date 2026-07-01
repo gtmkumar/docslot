@@ -72,6 +72,33 @@ public sealed class UserDirectory(PlatformDbContext db) : IUserDirectory
                     .Select(x => new UserRoleDto(x.UserTenantRoleId, x.RoleId, x.RoleKey, x.Name, x.IsPrimary, x.ExpiresAt))
                     .ToList());
 
+        // 2b) Each user's org SCOPE (issue #90) from their scope-bearing active membership — the SAME row the
+        //     setter writes: primary DESC, then earliest granted, then id. Display-only; never gates access.
+        var scopeRows = await (
+            from utr in db.UserTenantRoles.AsNoTracking()
+            where utr.TenantId == tenantId
+                  && utr.RevokedAt == null
+                  && (utr.ExpiresAt == null || utr.ExpiresAt > now)
+                  && userIds.Contains(utr.UserId)
+            select new { utr.UserId, utr.UserTenantRoleId, utr.BranchId, utr.Department, utr.IsPrimary, utr.GrantedAt })
+            .ToListAsync(ct);
+
+        var scopeByUser = scopeRows
+            .GroupBy(x => x.UserId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(x => x.IsPrimary).ThenBy(x => x.GrantedAt).ThenBy(x => x.UserTenantRoleId).First());
+
+        var branchIds = scopeByUser.Values
+            .Where(v => v.BranchId != null).Select(v => v.BranchId!.Value).Distinct().ToList();
+        var branchNames = branchIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await db.Branches.AsNoTracking()
+                // Explicit tenant predicate alongside RLS (defense-in-depth, audit INFO): branchIds already
+                // derive only from this tenant's memberships, but match the pattern used elsewhere here.
+                .Where(b => b.TenantId == tenantId && branchIds.Contains(b.BranchId))
+                .ToDictionaryAsync(b => b.BranchId, b => b.Name, ct);
+
         // 3) Most-recent ACTIVE-session activity per user (issue #87) → the People tab "Online" dot. A session is
         //    live when not revoked and not expired; sessions are cross-tenant identity, so no tenant predicate here.
         var lastActivity = await (
@@ -85,13 +112,17 @@ public sealed class UserDirectory(PlatformDbContext db) : IUserDirectory
             .Select(x =>
             {
                 var hasActiveRole = rolesByUser.TryGetValue(x.UserId, out var rs);
+                scopeByUser.TryGetValue(x.UserId, out var sc);
+                var branchId = sc?.BranchId;
+                var branchName = branchId is { } bid && branchNames.TryGetValue(bid, out var bn) ? bn : null;
                 return new UserListItemDto(
                     x.UserId, x.Email, x.FullName,
                     PhoneMasker.Mask(x.Phone),
                     x.IsActive && hasActiveRole,        // active IN THIS TENANT
                     x.MfaEnabled, x.LastLoginAt, x.LockedUntil, x.MustChangePassword,
                     hasActiveRole ? rs! : [],
-                    lastActivity.GetValueOrDefault(x.UserId));
+                    lastActivity.GetValueOrDefault(x.UserId),
+                    branchId, branchName, sc?.Department);
             })
             .ToList();
     }

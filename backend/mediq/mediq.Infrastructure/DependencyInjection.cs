@@ -49,6 +49,11 @@ public static class InfrastructureRegistration
         services.AddScoped<IUserProvisioning, UserProvisioning>();
         services.AddScoped<IUserLifecycle, Persistence.Repositories.UserLifecycle>();
 
+        // Branch / department membership scope (org display attribute — issue #90).
+        services.AddScoped<IBranchDirectory, Persistence.Repositories.BranchDirectory>();
+        services.AddScoped<IBranchRepository, Persistence.Repositories.BranchRepository>();
+        services.AddScoped<IMembershipScopeWriter, Persistence.Repositories.MembershipScopeWriter>();
+
         // Security.
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
         services.AddSingleton<IInvitationTokenFactory, Security.InvitationTokenFactory>();

@@ -9632,6 +9632,116 @@ GRANT EXECUTE ON FUNCTION
 TO docslot_app;
 
 -- ============================================================================
+-- BRANCH / DEPARTMENT MEMBERSHIP SCOPE — an ORGANIZATIONAL DISPLAY ATTRIBUTE,
+-- NOT an access-enforcement boundary (epic #80, Phase C — issue #90)
+-- ============================================================================
+-- A tenant's physical branches (Andheri W, Bandra, …) plus a per-membership scope
+-- (branch_id + department) on user_tenant_roles. This lets the People UI show and
+-- filter staff by e.g. "Cardiology · Andheri W" and power the "N branches" stat.
+--
+-- ⚠ DISPLAY GATE, NOT a security boundary — mirrors MODULE LICENSING above.
+-- Permission resolution (resolve_user_permissions / user_has_permission /
+-- get_user_menus / v_user_permissions) NEVER consults branch_id or department. A
+-- user scoped to "Cardiology · Andheri W" has EXACTLY the same effective permissions
+-- as one with no scope; the scope only narrows what the People list displays/filters.
+-- (If per-branch data access is ever wanted, it belongs at the feature entry point,
+-- explicitly — never silently inside permission resolution.)
+
+-- ---- platform.branches -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS platform.branches (
+    branch_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id   UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    name        VARCHAR(200) NOT NULL,
+    code        VARCHAR(50),
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at  TIMESTAMPTZ
+);
+-- Live branches per tenant (the People "All branches" filter + the "N branches" stat).
+CREATE INDEX IF NOT EXISTS idx_branches_tenant
+    ON platform.branches(tenant_id) WHERE deleted_at IS NULL;
+
+DROP TRIGGER IF EXISTS trg_branches_updated_at ON platform.branches;
+CREATE TRIGGER trg_branches_updated_at BEFORE UPDATE ON platform.branches
+    FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+-- RLS: tenant-scoped, same predicates as the other platform tables.
+ALTER TABLE platform.branches ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS branches_read  ON platform.branches;
+DROP POLICY IF EXISTS branches_write ON platform.branches;
+CREATE POLICY branches_read  ON platform.branches FOR SELECT
+    USING (platform.rls_can_see_tenant(tenant_id));
+CREATE POLICY branches_write ON platform.branches FOR ALL
+    USING (platform.rls_can_write_tenant(tenant_id))
+    WITH CHECK (platform.rls_can_write_tenant(tenant_id));
+
+-- Branches confer NO permissions (no R3 escalation surface), so a DIRECT own-tenant
+-- write by docslot_app under RLS is safe — no SECURITY DEFINER indirection needed.
+GRANT SELECT, INSERT, UPDATE ON platform.branches TO docslot_app;
+
+-- ---- membership scope columns on user_tenant_roles -------------------------
+-- Additive, nullable: NULL branch_id = "All branches", NULL department = "All departments".
+-- These are ORG-ATTRIBUTE columns only; nothing in permission resolution reads them.
+ALTER TABLE platform.user_tenant_roles
+    ADD COLUMN IF NOT EXISTS branch_id  UUID REFERENCES platform.branches(branch_id),
+    ADD COLUMN IF NOT EXISTS department VARCHAR(120);
+
+-- Setter (definer): set a MEMBERSHIP's org scope. user_tenant_roles is an RBAC table,
+-- so this MUST only ever touch branch_id/department — NEVER role_id (no escalation path).
+-- Re-checks the actor holds tenant.users.update in the row's tenant (or is super_admin);
+-- a supplied branch must be an active branch of that same tenant.
+CREATE OR REPLACE FUNCTION platform.set_membership_scope(
+    p_actor_user_id       UUID,
+    p_user_tenant_role_id UUID,
+    p_branch_id           UUID,
+    p_department          VARCHAR
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_tenant_id UUID;
+BEGIN
+    SELECT tenant_id INTO v_tenant_id
+    FROM platform.user_tenant_roles
+    WHERE user_tenant_role_id = p_user_tenant_role_id;
+
+    IF v_tenant_id IS NULL THEN
+        -- Unknown membership OR a platform-level (tenant-less) assignment — out of scope.
+        RAISE EXCEPTION 'membership % not found in a tenant scope', p_user_tenant_role_id
+            USING ERRCODE = 'no_data_found';
+    END IF;
+
+    IF NOT (platform.is_super_admin(p_actor_user_id)
+         OR platform.user_has_permission(p_actor_user_id, 'tenant.users.update', v_tenant_id)) THEN
+        RAISE EXCEPTION 'actor % may not set membership scope in tenant %', p_actor_user_id, v_tenant_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    IF p_branch_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM platform.branches b
+                       WHERE b.branch_id = p_branch_id AND b.tenant_id = v_tenant_id
+                         AND b.deleted_at IS NULL) THEN
+        RAISE EXCEPTION 'branch % is not an active branch of tenant %', p_branch_id, v_tenant_id
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+
+    -- The ONLY columns this function may write. role_id is never referenced here → no escalation.
+    UPDATE platform.user_tenant_roles
+        SET branch_id = p_branch_id, department = p_department
+        WHERE user_tenant_role_id = p_user_tenant_role_id;
+
+    RETURN p_user_tenant_role_id;
+END;
+$$;
+COMMENT ON FUNCTION platform.set_membership_scope IS
+    'Set a membership''s org scope (branch_id/department) — DISPLAY ONLY. Gated on tenant.users.update (or super_admin). NEVER writes role_id; not consulted by permission resolution.';
+
+GRANT EXECUTE ON FUNCTION platform.set_membership_scope(UUID, UUID, UUID, VARCHAR) TO docslot_app;
+
+-- ============================================================================
 -- POST-CONDITIONS (fail loud if the hardening did not take)
 -- ============================================================================
 DO $verify$
@@ -9654,13 +9764,14 @@ END $verify$;
 -- ============================================================================
 -- END OF RBAC HARDENING
 -- ============================================================================
--- New tables: impersonation_sessions, role_incompatibility (2)
--- New columns: role_permissions.is_grantable
+-- New tables: impersonation_sessions, role_incompatibility, tenant_module_entitlements, branches (4)
+-- New columns: role_permissions.is_grantable, user_tenant_roles.branch_id + .department (org scope, display-only)
 -- New/redefined functions: tenant_is_serviceable, resolve_user_permissions*,
 --   user_has_permission*, get_user_menus*, current_impersonated_tenant,
 --   begin_impersonation, end_impersonation, list_impersonation_sessions,
 --   is_super_admin, grant_permission_to_role,
---   assign_role_to_user, enforce_role_sod, rls_can_see/write_tenant
+--   assign_role_to_user, enforce_role_sod, rls_can_see/write_tenant,
+--   module_is_licensed, set_module_license, set_membership_scope
 --   (* = redefined to be tenant-gated + SECURITY DEFINER)
 -- RLS enabled: roles, role_permissions, user_tenant_roles,
 --   user_permission_overrides, tenant_product_subscriptions, navigation_menus,

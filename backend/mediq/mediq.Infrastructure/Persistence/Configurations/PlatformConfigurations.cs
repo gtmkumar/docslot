@@ -117,6 +117,26 @@ public sealed class UserTenantRoleConfiguration : IEntityTypeConfiguration<UserT
         b.Property(x => x.RevokedAt).HasColumnName("revoked_at");
         b.Property(x => x.RevokedBy).HasColumnName("revoked_by");
         b.Property(x => x.RevokedReason).HasColumnName("revoked_reason");
+        b.Property(x => x.BranchId).HasColumnName("branch_id");
+        b.Property(x => x.Department).HasColumnName("department");
+    }
+}
+
+/// <summary>Maps <c>platform.branches</c> — a tenant's physical locations (org display attribute).</summary>
+public sealed class BranchConfiguration : IEntityTypeConfiguration<Branch>
+{
+    public void Configure(EntityTypeBuilder<Branch> b)
+    {
+        b.ToTable("branches", "platform");
+        b.HasKey(x => x.BranchId);
+        b.Property(x => x.BranchId).HasColumnName("branch_id");
+        b.Property(x => x.TenantId).HasColumnName("tenant_id");
+        b.Property(x => x.Name).HasColumnName("name");
+        b.Property(x => x.Code).HasColumnName("code");
+        b.Property(x => x.IsActive).HasColumnName("is_active");
+        b.Property(x => x.CreatedAt).HasColumnName("created_at");
+        b.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+        b.Property(x => x.DeletedAt).HasColumnName("deleted_at");
     }
 }
 

@@ -78,6 +78,39 @@ public sealed class AdminController(ICommandDispatcher commands, IQueryDispatche
         Guid tenantId, Guid userId, [FromBody] ResetAccessRequest request, CancellationToken ct)
         => Ok(await commands.Send(new ResetAccessCommand(tenantId, userId, request), ct));
 
+    // ---- Branches + membership scope (org display attribute — issue #90) -----------------------
+
+    /// <summary>Lists a tenant's active branches — powers the People "All branches" filter + the "N branches"
+    /// stat. Branches are an organizational display attribute; they never confer permissions.</summary>
+    [HttpGet("tenants/{tenantId:guid}/branches")]
+    [RequirePermission("tenant.users.read")]
+    [ProducesResponseType<IReadOnlyList<BranchDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<BranchDto>>> ListBranches(Guid tenantId, CancellationToken ct)
+        => Ok(await queries.Query(new ListTenantBranchesQuery(tenantId), ct));
+
+    /// <summary>Create a branch under the tenant. A tenant-configuration act, gated on
+    /// <c>tenant.settings.update</c>. Direct own-tenant write under RLS (no permission surface).</summary>
+    [HttpPost("tenants/{tenantId:guid}/branches")]
+    [RequirePermission("tenant.settings.update")]
+    [ProducesResponseType<CreateBranchResult>(StatusCodes.Status201Created)]
+    public async Task<ActionResult<CreateBranchResult>> CreateBranch(
+        Guid tenantId, [FromBody] CreateBranchRequest request, CancellationToken ct)
+    {
+        var result = await commands.Send(new CreateBranchCommand(tenantId, request), ct);
+        return CreatedAtAction(nameof(ListBranches), new { tenantId }, result);
+    }
+
+    /// <summary>Set a member's organizational scope (branch + department) — DISPLAY ONLY. Gated on
+    /// <c>tenant.users.update</c> and routed through <c>platform.set_membership_scope</c>, which writes only
+    /// branch_id/department (never role_id) — so it can never change the user's effective access.</summary>
+    [HttpPut("tenants/{tenantId:guid}/users/{userId:guid}/scope")]
+    [RequirePermission("tenant.users.update")]
+    [ProducesResponseType<SetMemberScopeResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<SetMemberScopeResult>> SetMemberScope(
+        Guid tenantId, Guid userId, [FromBody] SetMemberScopeRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new SetMemberScopeCommand(tenantId, userId, request), ct));
+
     // ---- Roles ---------------------------------------------------------------------------------
 
     [HttpGet("roles")]

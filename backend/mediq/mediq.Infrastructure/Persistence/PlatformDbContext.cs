@@ -22,6 +22,7 @@ public sealed class PlatformDbContext(DbContextOptions<PlatformDbContext> option
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<Role> Roles => Set<Role>();
     public DbSet<UserTenantRole> UserTenantRoles => Set<UserTenantRole>();
+    public DbSet<Branch> Branches => Set<Branch>();
     public DbSet<UserPermissionOverride> UserPermissionOverrides => Set<UserPermissionOverride>();
     public DbSet<Permission> Permissions => Set<Permission>();
     public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
