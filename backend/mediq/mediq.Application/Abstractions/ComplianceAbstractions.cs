@@ -100,4 +100,19 @@ public interface ISecurityReadService
     Task<IReadOnlyList<SharedDataModel.Docslot.Security.DeletionCertificateDto>> ListDeletionCertificatesAsync(int take, CancellationToken ct);
     Task<IReadOnlyList<SharedDataModel.Docslot.Security.ImpersonationSessionDto>> ListImpersonationSessionsAsync(int take, CancellationToken ct);
     Task<DateTimeOffset?> GetLastAnchorAtAsync(CancellationToken ct);
+
+    /// <summary>
+    /// Reads the WRITE-only <c>platform.audit_log</c> for the Audit tab (issue #86), STRICTLY scoped to
+    /// <paramref name="tenantId"/> via an explicit predicate (audit_log has no RLS). A null tenant yields an
+    /// empty page (never a cross-tenant disclosure). Returns the page + faceted category/severity counts.
+    /// </summary>
+    Task<SharedDataModel.Docslot.Security.AuditLogPageDto> ReadAuditLogAsync(
+        Guid? tenantId, SharedDataModel.Docslot.Security.AuditLogFilter filter, CancellationToken ct);
+
+    /// <summary>
+    /// The filtered audit rows for CSV export (same predicate as <see cref="ReadAuditLogAsync"/>, no
+    /// pagination, capped at <paramref name="cap"/> most-recent rows).
+    /// </summary>
+    Task<IReadOnlyList<SharedDataModel.Docslot.Security.AuditLogRowDto>> ReadAuditLogRowsForExportAsync(
+        Guid? tenantId, SharedDataModel.Docslot.Security.AuditLogFilter filter, int cap, CancellationToken ct);
 }

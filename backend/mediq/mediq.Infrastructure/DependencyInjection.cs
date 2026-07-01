@@ -52,6 +52,7 @@ public static class InfrastructureRegistration
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
         services.AddScoped<ITokenService, JwtTokenService>();
         services.AddScoped<ISessionStore, SessionStore>();
+        services.AddScoped<ISessionAdminService, Security.SessionAdminService>();
         services.AddScoped<ILoginAttemptService, LoginAttemptService>();
 
         // RBAC + audit + DURABLE idempotency (slice 03 — table-backed, survives restart/scale-out).

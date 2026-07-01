@@ -32,6 +32,60 @@ public sealed class SecurityController(
     public async Task<ActionResult<AuditAnchorResult>> AnchorAuditChain([FromBody] AnchorRequest body, CancellationToken ct)
         => Ok(await commands.Send(new AnchorAuditChainCommand(body.AnchorType, body.AnchorReference), ct));
 
+    // ---- Audit tab: READ side of platform.audit_log (issue #86) ----------------------------------
+
+    /// <summary>
+    /// Paginated, faceted read of THIS tenant's audit trail (tenant bound from the JWT, never a param).
+    /// Filters: date range (default last 30 days), category, severity, and a free-text search over
+    /// actor/action/target. Returns per-category and per-severity facet counts for the filter rails.
+    /// </summary>
+    [HttpGet("audit/logs")]
+    [RequirePermission("tenant.audit.read")]
+    [ProducesResponseType<AuditLogPageDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<AuditLogPageDto>> ListAuditLogs(
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 50,
+        [FromQuery] DateTimeOffset? from = null, [FromQuery] DateTimeOffset? to = null,
+        [FromQuery] string? category = null, [FromQuery] string? severity = null,
+        [FromQuery] string? search = null, CancellationToken ct = default)
+        => Ok(await queries.Query(new ListAuditLogQuery(page, pageSize, from, to, category, severity, search), ct));
+
+    /// <summary>CSV export of the filtered audit trail (same tenant scoping + filters as the list).</summary>
+    [HttpGet("audit/logs/export")]
+    [RequirePermission("tenant.audit.read")]
+    [Produces("text/csv")]
+    public async Task<IActionResult> ExportAuditLogs(
+        [FromQuery] DateTimeOffset? from = null, [FromQuery] DateTimeOffset? to = null,
+        [FromQuery] string? category = null, [FromQuery] string? severity = null,
+        [FromQuery] string? search = null, CancellationToken ct = default)
+    {
+        var csv = await queries.Query(new ExportAuditLogQuery(from, to, category, severity, search), ct);
+        return File(System.Text.Encoding.UTF8.GetBytes(csv.Content), "text/csv", csv.FileName);
+    }
+
+    // ---- Active-session oversight + admin revoke (issue #87) -------------------------------------
+
+    /// <summary>Active sessions of THIS tenant's members (People "Online" presence). No token material.</summary>
+    [HttpGet("sessions")]
+    [RequirePermission("tenant.users.update")]
+    [ProducesResponseType<IReadOnlyList<ActiveSessionDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<ActiveSessionDto>>> ListActiveSessions(
+        [FromQuery] int take = 200, CancellationToken ct = default)
+        => Ok(await queries.Query(new ListActiveSessionsQuery(take), ct));
+
+    /// <summary>Revoke a single session (404 unless the owner is a member of this tenant).</summary>
+    [HttpPost("sessions/{sessionId:guid}/revoke")]
+    [RequirePermission("tenant.users.update")]
+    [ProducesResponseType<bool>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<bool>> RevokeSession(Guid sessionId, CancellationToken ct)
+        => Ok(await commands.Send(new RevokeSessionCommand(sessionId), ct));
+
+    /// <summary>Sign out ALL active sessions for a user (403 unless the target is a member of this tenant).</summary>
+    [HttpPost("sessions/users/{userId:guid}/revoke-all")]
+    [RequirePermission("tenant.users.update")]
+    [ProducesResponseType<RevokeAllSessionsResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<RevokeAllSessionsResult>> RevokeAllUserSessions(Guid userId, CancellationToken ct)
+        => Ok(await commands.Send(new RevokeAllUserSessionsCommand(userId), ct));
+
     // ---- Read tabs (Security & Compliance console) -----------------------------------------------
 
     /// <summary>Audit-chain anchor history (most recent first).</summary>

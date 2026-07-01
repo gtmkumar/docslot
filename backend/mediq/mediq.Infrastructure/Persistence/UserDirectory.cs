@@ -72,6 +72,15 @@ public sealed class UserDirectory(PlatformDbContext db) : IUserDirectory
                     .Select(x => new UserRoleDto(x.UserTenantRoleId, x.RoleId, x.RoleKey, x.Name, x.IsPrimary, x.ExpiresAt))
                     .ToList());
 
+        // 3) Most-recent ACTIVE-session activity per user (issue #87) → the People tab "Online" dot. A session is
+        //    live when not revoked and not expired; sessions are cross-tenant identity, so no tenant predicate here.
+        var lastActivity = await (
+            from s in db.UserSessions.AsNoTracking()
+            where userIds.Contains(s.UserId) && s.RevokedAt == null && s.ExpiresAt > now
+            group s by s.UserId into g
+            select new { UserId = g.Key, LastActivityAt = g.Max(x => (DateTime?)x.LastActivityAt) })
+            .ToDictionaryAsync(x => x.UserId, x => x.LastActivityAt, ct);
+
         return users
             .Select(x =>
             {
@@ -81,7 +90,8 @@ public sealed class UserDirectory(PlatformDbContext db) : IUserDirectory
                     PhoneMasker.Mask(x.Phone),
                     x.IsActive && hasActiveRole,        // active IN THIS TENANT
                     x.MfaEnabled, x.LastLoginAt, x.LockedUntil, x.MustChangePassword,
-                    hasActiveRole ? rs! : []);
+                    hasActiveRole ? rs! : [],
+                    lastActivity.GetValueOrDefault(x.UserId));
             })
             .ToList();
     }

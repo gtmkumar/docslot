@@ -13,11 +13,12 @@ public sealed record UserRoleDto(
 /// <summary>User summary within a tenant. <c>IsActive</c> reflects TENANT activity (the user has at least one
 /// active membership here), not the global <c>platform.users.is_active</c> flag. PHI: the phone is MASKED
 /// server-side (raw phone never crosses the wire in an aggregate). <c>LockedUntil</c>/<c>MustChangePassword</c>
-/// surface the account's security posture in the manage panel.</summary>
+/// surface the account's security posture in the manage panel. <c>LastActivityAt</c> is the most-recent active
+/// session's last_activity_at (issue #87) — drives the People tab "Online" dot; null when no live session.</summary>
 public sealed record UserListItemDto(
     Guid UserId, string Email, string FullName, string? MaskedPhone, bool IsActive, bool MfaEnabled,
     DateTime? LastLoginAt, DateTime? LockedUntil, bool MustChangePassword,
-    IReadOnlyList<UserRoleDto> Roles);
+    IReadOnlyList<UserRoleDto> Roles, DateTime? LastActivityAt = null);
 
 /// <summary>Create-user request. A password is deliberately NOT accepted from the admin (impersonation
 /// hazard) — the invite seeds a server-generated temp credential + must-change-password.</summary>

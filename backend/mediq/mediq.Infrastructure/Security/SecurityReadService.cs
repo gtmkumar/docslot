@@ -159,6 +159,186 @@ public sealed class SecurityReadService(PlatformDbContext db) : ISecurityReadSer
             r.EndedAt is null ? null : Utc(r.EndedAt.Value), r.Status)).ToList();
     }
 
+    // ---- Audit tab: READ side of the WRITE-only platform.audit_log (issue #86) --------------------
+    // SECURITY NOTE (audit sign-off): platform.audit_log has NO RLS policy — only a tenant_id column +
+    // idx_audit_tenant. The explicit `al.tenant_id = @tenant` predicate below (bound from the server-signed
+    // ICurrentUserContext.TenantId, never a query param) is therefore the SOLE tenant-isolation guard, so ANY
+    // future audit read/aggregation MUST carry it. The projection deliberately stops at resource_label — that
+    // is the accepted PHI boundary for this surface; before_data/after_data/change_summary/error_message and
+    // the hash-chain columns are never selected.
+
+    public async Task<AuditLogPageDto> ReadAuditLogAsync(Guid? tenantId, AuditLogFilter filter, CancellationToken ct)
+    {
+        var page = Math.Max(1, filter.Page);
+        var size = Math.Clamp(filter.PageSize, 1, 200);
+
+        // A null tenant can never match a row (audit_log.tenant_id is never NULL for tenant activity) → empty.
+        if (tenantId is null)
+            return new AuditLogPageDto(page, size, 0, [], [], [], filter.From, filter.To);
+
+        // The base predicate (tenant + window + free-text) is shared by the page, the total, and the facets.
+        // The category/severity SELECTION is layered on ONLY for the page + total, so the facet rails stay
+        // independent of what's currently selected.
+        var baseSpecs = new List<(string Name, object Value)>
+        {
+            ("@tenant", tenantId.Value),
+            ("@from", filter.From),
+            ("@to", filter.To),
+            ("@dangerous", AuditTaxonomy.DangerousActions.ToArray()),
+        };
+        var baseWhere = "al.tenant_id = @tenant AND al.occurred_at >= @from AND al.occurred_at < @to";
+
+        if (!string.IsNullOrWhiteSpace(filter.Search))
+        {
+            baseSpecs.Add(("@search", "%" + filter.Search.Trim() + "%"));
+            baseWhere += " AND (al.action ILIKE @search OR al.resource_type ILIKE @search "
+                       + "OR al.resource_label ILIKE @search OR u.full_name ILIKE @search OR u.email ILIKE @search)";
+        }
+
+        // The selection layer (category + severity) — appended for the page/total only.
+        var selSpecs = new List<(string Name, object Value)>(baseSpecs);
+        var fullWhere = baseWhere;
+        AppendCategoryFilter(filter.Category, ref fullWhere, selSpecs);
+        AppendSeverityFilter(filter.Severity, ref fullWhere, selSpecs);
+
+        // Total (full selection).
+        var totalRows = await db.Database.SqlQueryRaw<CountRow>(
+            $"SELECT count(*)::int AS \"Value\" FROM platform.audit_log al "
+            + "LEFT JOIN platform.users u ON u.user_id = al.user_id "
+            + $"WHERE {fullWhere}", Fresh(selSpecs)).ToListAsync(ct);
+        var total = totalRows.FirstOrDefault()?.Value ?? 0;
+
+        // The page itself (full selection), newest first.
+        var pageSpecs = new List<(string Name, object Value)>(selSpecs)
+        {
+            ("@limit", size), ("@offset", (page - 1) * size),
+        };
+        var rows = await db.Database.SqlQueryRaw<AuditPageRow>(
+            $"""
+             SELECT al.audit_id AS "AuditId", al.occurred_at AS "OccurredAt", al.user_id AS "ActorUserId",
+                    u.full_name AS "ActorName", u.email AS "ActorEmail",
+                    al.impersonator_user_id AS "ImpersonatorUserId", imp.full_name AS "ImpersonatorName",
+                    al.action AS "RawAction", al.resource_type AS "ResourceType", al.resource_label AS "ResourceLabel",
+                    al.resource_id AS "ResourceId", al.ip_address::text AS "IpAddress",
+                    al.success AS "Success", al.error_code AS "ErrorCode"
+             FROM platform.audit_log al
+             LEFT JOIN platform.users u ON u.user_id = al.user_id
+             LEFT JOIN platform.users imp ON imp.user_id = al.impersonator_user_id
+             WHERE {fullWhere}
+             ORDER BY al.occurred_at DESC
+             LIMIT @limit OFFSET @offset
+             """, Fresh(pageSpecs)).ToListAsync(ct);
+
+        // Facets over the BASE set (no category/severity selection).
+        var catFacetRows = await db.Database.SqlQueryRaw<CategoryFacetRow>(
+            $"SELECT al.resource_type AS \"ResourceType\", count(*)::int AS \"Count\" "
+            + "FROM platform.audit_log al LEFT JOIN platform.users u ON u.user_id = al.user_id "
+            + $"WHERE {baseWhere} GROUP BY al.resource_type", Fresh(baseSpecs)).ToListAsync(ct);
+
+        var sevFacetRows = await db.Database.SqlQueryRaw<SeverityFacetRow>(
+            $"SELECT al.success AS \"Success\", (al.action = ANY(@dangerous)) AS \"Dangerous\", count(*)::int AS \"Count\" "
+            + "FROM platform.audit_log al LEFT JOIN platform.users u ON u.user_id = al.user_id "
+            + $"WHERE {baseWhere} GROUP BY al.success, (al.action = ANY(@dangerous))", Fresh(baseSpecs)).ToListAsync(ct);
+
+        var categoryFacets = catFacetRows
+            .GroupBy(r => AuditTaxonomy.MapCategory(r.ResourceType))
+            .Select(g => new AuditFacetCount(g.Key, g.Sum(x => x.Count)))
+            .OrderBy(f => AuditTaxonomy.Categories.ToList().IndexOf(f.Key))
+            .ToList();
+
+        var severityFacets = sevFacetRows
+            .GroupBy(r => AuditTaxonomy.ClassifyByFlags(r.Success, r.Dangerous))
+            .Select(g => new AuditFacetCount(g.Key, g.Sum(x => x.Count)))
+            .OrderBy(f => AuditTaxonomy.Severities.ToList().IndexOf(f.Key))
+            .ToList();
+
+        return new AuditLogPageDto(page, size, total, rows.Select(MapRow).ToList(),
+            categoryFacets, severityFacets, filter.From, filter.To);
+    }
+
+    public async Task<IReadOnlyList<AuditLogRowDto>> ReadAuditLogRowsForExportAsync(
+        Guid? tenantId, AuditLogFilter filter, int cap, CancellationToken ct)
+    {
+        if (tenantId is null) return [];
+
+        var specs = new List<(string Name, object Value)>
+        {
+            ("@tenant", tenantId.Value),
+            ("@from", filter.From),
+            ("@to", filter.To),
+            ("@dangerous", AuditTaxonomy.DangerousActions.ToArray()),
+        };
+        var where = "al.tenant_id = @tenant AND al.occurred_at >= @from AND al.occurred_at < @to";
+        if (!string.IsNullOrWhiteSpace(filter.Search))
+        {
+            specs.Add(("@search", "%" + filter.Search.Trim() + "%"));
+            where += " AND (al.action ILIKE @search OR al.resource_type ILIKE @search "
+                   + "OR al.resource_label ILIKE @search OR u.full_name ILIKE @search OR u.email ILIKE @search)";
+        }
+        AppendCategoryFilter(filter.Category, ref where, specs);
+        AppendSeverityFilter(filter.Severity, ref where, specs);
+        specs.Add(("@cap", Math.Clamp(cap, 1, 50_000)));
+
+        var rows = await db.Database.SqlQueryRaw<AuditPageRow>(
+            $"""
+             SELECT al.audit_id AS "AuditId", al.occurred_at AS "OccurredAt", al.user_id AS "ActorUserId",
+                    u.full_name AS "ActorName", u.email AS "ActorEmail",
+                    al.impersonator_user_id AS "ImpersonatorUserId", imp.full_name AS "ImpersonatorName",
+                    al.action AS "RawAction", al.resource_type AS "ResourceType", al.resource_label AS "ResourceLabel",
+                    al.resource_id AS "ResourceId", al.ip_address::text AS "IpAddress",
+                    al.success AS "Success", al.error_code AS "ErrorCode"
+             FROM platform.audit_log al
+             LEFT JOIN platform.users u ON u.user_id = al.user_id
+             LEFT JOIN platform.users imp ON imp.user_id = al.impersonator_user_id
+             WHERE {where}
+             ORDER BY al.occurred_at DESC
+             LIMIT @cap
+             """, Fresh(specs)).ToListAsync(ct);
+
+        return rows.Select(MapRow).ToList();
+    }
+
+    private static AuditLogRowDto MapRow(AuditPageRow r) => new(
+        r.AuditId, Utc(r.OccurredAt), r.ActorUserId, r.ActorName, r.ActorEmail,
+        r.ImpersonatorUserId, r.ImpersonatorName,
+        AuditTaxonomy.Humanize(r.RawAction), r.RawAction, r.ResourceType, r.ResourceLabel, r.ResourceId,
+        AuditTaxonomy.MapCategory(r.ResourceType), AuditTaxonomy.Classify(r.Success, r.RawAction),
+        r.IpAddress, r.Success, r.ErrorCode);
+
+    /// <summary>Push a category selection down to SQL as a resource_type membership predicate (or its inverse for Other).</summary>
+    private static void AppendCategoryFilter(string? category, ref string where, List<(string Name, object Value)> specs)
+    {
+        if (string.IsNullOrWhiteSpace(category) || !AuditTaxonomy.IsKnownCategory(category)) return;
+        if (category.Equals(AuditTaxonomy.Other, StringComparison.OrdinalIgnoreCase))
+        {
+            specs.Add(("@mappedTypes", AuditTaxonomy.MappedResourceTypes.ToArray()));
+            where += " AND NOT (al.resource_type = ANY(@mappedTypes))";
+        }
+        else
+        {
+            specs.Add(("@catTypes", AuditTaxonomy.ResourceTypesForCategory(category)));
+            where += " AND al.resource_type = ANY(@catTypes)";
+        }
+    }
+
+    /// <summary>Push a severity selection down to SQL using the same success + dangerous-action heuristic as the row DTO.</summary>
+    private static void AppendSeverityFilter(string? severity, ref string where, List<(string Name, object Value)> specs)
+    {
+        if (string.IsNullOrWhiteSpace(severity)) return;
+        // @dangerous is always present in specs (added by the caller).
+        if (severity.Equals(AuditTaxonomy.Critical, StringComparison.OrdinalIgnoreCase))
+            where += " AND al.success = false AND (al.action = ANY(@dangerous))";
+        else if (severity.Equals(AuditTaxonomy.Warning, StringComparison.OrdinalIgnoreCase))
+            where += " AND ((al.success = false AND NOT (al.action = ANY(@dangerous))) "
+                   + "OR (al.success = true AND (al.action = ANY(@dangerous))))";
+        else if (severity.Equals(AuditTaxonomy.Informational, StringComparison.OrdinalIgnoreCase))
+            where += " AND al.success = true AND NOT (al.action = ANY(@dangerous))";
+    }
+
+    /// <summary>Materialize a fresh NpgsqlParameter[] per command (parameter instances can't be shared across commands).</summary>
+    private static object[] Fresh(IEnumerable<(string Name, object Value)> specs) =>
+        specs.Select(s => (object)new NpgsqlParameter(s.Name, s.Value)).ToArray();
+
     // ---- helpers ---------------------------------------------------------------------------------
 
     private static DateTimeOffset Utc(DateTime dt) => new(DateTime.SpecifyKind(dt, DateTimeKind.Utc));
@@ -181,4 +361,12 @@ public sealed class SecurityReadService(PlatformDbContext db) : ISecurityReadSer
     private sealed record ReviewRow(string Source, Guid ItemId, string Severity, DateTime OccurredAt, string Description, string? ActorName);
     private sealed record KeyRow(Guid KeyId, string? TenantName, string DataClass, DateTime ActivatedAt, DateTime? NextRotationDueAt, string RotationStatus, int? DaysUntilRotation, long UsageCount);
     private sealed record ImpersonationRow(Guid ImpersonationId, string? ActorName, Guid TargetTenantId, string? TargetTenantName, Guid? TargetUserId, string Reason, bool IsBreakGlass, DateTime StartedAt, DateTime ExpiresAt, DateTime? EndedAt, string Status);
+
+    private sealed record CountRow(int Value);
+    private sealed record CategoryFacetRow(string ResourceType, int Count);
+    private sealed record SeverityFacetRow(bool Success, bool Dangerous, int Count);
+    private sealed record AuditPageRow(
+        Guid AuditId, DateTime OccurredAt, Guid? ActorUserId, string? ActorName, string? ActorEmail,
+        Guid? ImpersonatorUserId, string? ImpersonatorName, string RawAction, string ResourceType,
+        string? ResourceLabel, Guid? ResourceId, string? IpAddress, bool Success, string? ErrorCode);
 }

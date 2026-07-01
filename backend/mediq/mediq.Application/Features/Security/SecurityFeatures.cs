@@ -97,6 +97,87 @@ public sealed class ListImpersonationSessionsQueryHandler(ISecurityReadService r
         => reads.ListImpersonationSessionsAsync(Math.Clamp(q.Take, 1, 500), ct);
 }
 
+// ---- Audit tab: read platform.audit_log (issue #86) ----------------------------------------------
+
+/// <summary>
+/// Reads the WRITE-only <c>platform.audit_log</c> for the Audit tab. STRICTLY tenant-scoped: the tenant is
+/// bound from the server-signed context (<see cref="ICurrentUserContext.TenantId"/>), never a client param,
+/// so a caller can only ever see their own tenant's trail. The window defaults to the last 30 days.
+/// Gated by <c>tenant.audit.read</c>.
+/// </summary>
+public sealed record ListAuditLogQuery(
+    int Page = 1, int PageSize = 50, DateTimeOffset? From = null, DateTimeOffset? To = null,
+    string? Category = null, string? Severity = null, string? Search = null) : IQuery<AuditLogPageDto>;
+
+public sealed class ListAuditLogQueryHandler(ISecurityReadService reads, ICurrentUserContext ctx)
+    : IQueryHandler<ListAuditLogQuery, AuditLogPageDto>
+{
+    public Task<AuditLogPageDto> Handle(ListAuditLogQuery q, CancellationToken ct)
+        => reads.ReadAuditLogAsync(ctx.TenantId, ResolveFilter(q), ct);
+
+    internal static AuditLogFilter ResolveFilter(ListAuditLogQuery q)
+    {
+        var to = q.To ?? DateTimeOffset.UtcNow;
+        var from = q.From ?? to.AddDays(-30);
+        return new AuditLogFilter(
+            Math.Max(1, q.Page), Math.Clamp(q.PageSize, 1, 200), from, to, q.Category, q.Severity, q.Search);
+    }
+}
+
+/// <summary>CSV export of the filtered audit trail (same tenant scoping + filters as the list). Capped at 10k rows.</summary>
+public sealed record ExportAuditLogQuery(
+    DateTimeOffset? From = null, DateTimeOffset? To = null,
+    string? Category = null, string? Severity = null, string? Search = null) : IQuery<AuditCsvResult>;
+
+public sealed class ExportAuditLogQueryHandler(ISecurityReadService reads, ICurrentUserContext ctx)
+    : IQueryHandler<ExportAuditLogQuery, AuditCsvResult>
+{
+    private const int Cap = 10_000;
+
+    public async Task<AuditCsvResult> Handle(ExportAuditLogQuery q, CancellationToken ct)
+    {
+        var filter = ListAuditLogQueryHandler.ResolveFilter(
+            new ListAuditLogQuery(1, 1, q.From, q.To, q.Category, q.Severity, q.Search));
+        var rows = await reads.ReadAuditLogRowsForExportAsync(ctx.TenantId, filter, Cap, ct);
+        var fileName = $"audit-log-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv";
+        return new AuditCsvResult(fileName, AuditCsv.Build(rows));
+    }
+}
+
+/// <summary>Assembles the audit CSV. Deliberately omits hash-chain internals and any PHI beyond resource_label.</summary>
+public static class AuditCsv
+{
+    private static readonly string[] Header =
+        ["occurred_at", "category", "severity", "action", "actor_name", "actor_email",
+         "impersonator", "resource_type", "resource_label", "resource_id", "ip_address", "success", "error_code"];
+
+    public static string Build(IReadOnlyList<AuditLogRowDto> rows)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(string.Join(',', Header));
+        foreach (var r in rows)
+            sb.AppendLine(string.Join(',', new[]
+            {
+                r.OccurredAt.UtcDateTime.ToString("o"),
+                Csv(r.Category), Csv(r.Severity), Csv(r.Action), Csv(r.ActorName), Csv(r.ActorEmail),
+                Csv(r.ImpersonatorName), Csv(r.ResourceType), Csv(r.ResourceLabel), Csv(r.ResourceId?.ToString()),
+                Csv(r.IpAddress), r.Success ? "true" : "false", Csv(r.ErrorCode),
+            }));
+        return sb.ToString();
+    }
+
+    /// <summary>RFC-4180 field quoting; also neutralises leading =,+,-,@ to defuse CSV/formula injection.</summary>
+    private static string Csv(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        var v = value;
+        if (v.Length > 0 && (v[0] is '=' or '+' or '-' or '@')) v = "'" + v;
+        if (v.Contains('"') || v.Contains(',') || v.Contains('\n') || v.Contains('\r'))
+            v = "\"" + v.Replace("\"", "\"\"") + "\"";
+        return v;
+    }
+}
+
 public sealed record AnchorAuditChainCommand(string AnchorType, string AnchorReference) : ICommand<AuditAnchorResult>;
 
 public sealed class AnchorAuditChainValidator : AbstractValidator<AnchorAuditChainCommand>
@@ -282,5 +363,82 @@ public sealed class RevokeBreakGlassCommandHandler(
                 ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
                 ChangeSummary: "Break-glass grant revoked by reviewer", Purpose: "audit"), ct);
         return revoked;
+    }
+}
+
+// ---- Active-session oversight + admin revoke (issue #87) ------------------------------------------
+
+/// <summary>
+/// Lists ACTIVE sessions of the caller-tenant's members (People "Online" presence). Tenant is bound from the
+/// server-signed context; the current user id sets the per-row self flag. Gated by <c>tenant.users.update</c>.
+/// </summary>
+public sealed record ListActiveSessionsQuery(int Take = 200) : IQuery<IReadOnlyList<ActiveSessionDto>>;
+
+public sealed class ListActiveSessionsQueryHandler(ISessionAdminService sessions, ICurrentUserContext ctx)
+    : IQueryHandler<ListActiveSessionsQuery, IReadOnlyList<ActiveSessionDto>>
+{
+    public async Task<IReadOnlyList<ActiveSessionDto>> Handle(ListActiveSessionsQuery q, CancellationToken ct)
+    {
+        // No tenant on the token (e.g. a platform actor without an active tenant) → nothing to present here.
+        if (ctx.TenantId is not { } tenantId) return [];
+        return await sessions.ListActiveForTenantAsync(tenantId, ctx.UserId, Math.Clamp(q.Take, 1, 500), ct);
+    }
+}
+
+/// <summary>Revokes a single session — refused (404) unless its owner is a member of the caller's tenant.</summary>
+public sealed record RevokeSessionCommand(Guid SessionId) : ICommand<bool>;
+
+public sealed class RevokeSessionValidator : AbstractValidator<RevokeSessionCommand>
+{
+    public RevokeSessionValidator() => RuleFor(x => x.SessionId).NotEmpty();
+}
+
+public sealed class RevokeSessionCommandHandler(
+    ISessionAdminService sessions, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<RevokeSessionCommand, bool>
+{
+    public async Task<bool> Handle(RevokeSessionCommand command, CancellationToken ct)
+    {
+        var tenantId = ctx.TenantId
+            ?? throw new mediq.Utilities.Exceptions.ForbiddenException("No active tenant for this session.");
+
+        var revoked = await sessions.RevokeMemberSessionAsync(command.SessionId, tenantId, "revoked_by_admin", ct);
+        if (!revoked)
+            // Absent, already-revoked, or owned by a non-member → refuse without leaking existence.
+            throw new KeyNotFoundException("Session not found for a member of this tenant.");
+
+        await audit.RecordAsync(new AuditEntry(
+            "revoke", "user_session", command.SessionId, null, ctx.UserId, tenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: "Admin revoked a user session", Purpose: "security"), ct);
+        return true;
+    }
+}
+
+/// <summary>Signs out ALL active sessions for one user — refused (403) unless the target is a tenant member.</summary>
+public sealed record RevokeAllUserSessionsCommand(Guid TargetUserId) : ICommand<RevokeAllSessionsResult>;
+
+public sealed class RevokeAllUserSessionsValidator : AbstractValidator<RevokeAllUserSessionsCommand>
+{
+    public RevokeAllUserSessionsValidator() => RuleFor(x => x.TargetUserId).NotEmpty();
+}
+
+public sealed class RevokeAllUserSessionsCommandHandler(
+    ISessionAdminService sessions, IAuditTrailWriter audit, ICurrentUserContext ctx)
+    : ICommandHandler<RevokeAllUserSessionsCommand, RevokeAllSessionsResult>
+{
+    public async Task<RevokeAllSessionsResult> Handle(RevokeAllUserSessionsCommand command, CancellationToken ct)
+    {
+        var tenantId = ctx.TenantId
+            ?? throw new mediq.Utilities.Exceptions.ForbiddenException("No active tenant for this session.");
+
+        // Throws ForbiddenException (→ 403) if the target is not a member of this tenant (cross-tenant guard).
+        var count = await sessions.RevokeAllForMemberAsync(command.TargetUserId, tenantId, "revoked_all_by_admin", ct);
+
+        await audit.RecordAsync(new AuditEntry(
+            "revoke", "user_session", command.TargetUserId, null, ctx.UserId, tenantId,
+            ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
+            ChangeSummary: $"Admin signed out all sessions for user {command.TargetUserId} ({count})", Purpose: "security"), ct);
+        return new RevokeAllSessionsResult(command.TargetUserId, count);
     }
 }
