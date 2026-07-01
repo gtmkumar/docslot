@@ -78,6 +78,32 @@ public sealed class AdminController(ICommandDispatcher commands, IQueryDispatche
         Guid tenantId, Guid userId, [FromBody] ResetAccessRequest request, CancellationToken ct)
         => Ok(await commands.Send(new ResetAccessCommand(tenantId, userId, request), ct));
 
+    // ---- People export + bulk import (issue #95, Phase D of epic #80) --------------------------
+
+    /// <summary>Export the tenant's members as CSV (full name, email, roles, branch, department, status, 2FA,
+    /// last active). Staff PII (not PHI) — fine for <c>tenant.users.read</c> holders. Tenant-scoped from the
+    /// signed context; the file is CSV-injection-safe (RFC-4180 quoting + leading =,+,-,@ neutralisation).</summary>
+    [HttpGet("tenants/{tenantId:guid}/users/export")]
+    [RequirePermission("tenant.users.read")]
+    [Produces("text/csv")]
+    public async Task<IActionResult> ExportUsers(Guid tenantId, CancellationToken ct)
+    {
+        var csv = await queries.Query(new ExportTenantUsersQuery(tenantId), ct);
+        return File(System.Text.Encoding.UTF8.GetBytes(csv.Content), "text/csv", csv.FileName);
+    }
+
+    /// <summary>Bulk-import members from a parsed row list (the SPA parses the CSV client-side and posts JSON).
+    /// Each row is provisioned through the same escalation-safe single-user path and is individually atomic;
+    /// a role is conferred subject to the R3 no-escalation guard. Returns a per-row result — one bad row never
+    /// aborts the batch. Batch size is capped (oversize → 422).</summary>
+    [HttpPost("tenants/{tenantId:guid}/users/bulk-import")]
+    [RequirePermission("tenant.users.create")]
+    [ProducesResponseType<BulkImportResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<ActionResult<BulkImportResult>> BulkImportUsers(
+        Guid tenantId, [FromBody] BulkImportUsersRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new BulkImportUsersCommand(tenantId, request), ct));
+
     // ---- Branches + membership scope (org display attribute — issue #90) -----------------------
 
     /// <summary>Lists a tenant's active branches — powers the People "All branches" filter + the "N branches"
