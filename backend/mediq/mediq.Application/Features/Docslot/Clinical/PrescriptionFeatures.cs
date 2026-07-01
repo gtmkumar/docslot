@@ -47,6 +47,13 @@ public sealed class IssuePrescriptionCommandHandler(
     public async Task<IssuePrescriptionResult> Handle(IssuePrescriptionCommand command, CancellationToken ct)
     {
         var req = command.Request;
+
+        // Tenant-ownership guard: doctor_id is a tenant-blind FK and docslot.doctors has no RLS, so without this
+        // a caller could persist a prescription in THIS tenant referencing ANOTHER tenant's doctor_id (#71).
+        if (!await clinical.DoctorBelongsToTenantAsync(req.DoctorId, command.TenantId, ct))
+            throw new mediq.Utilities.Exceptions.ValidationException(
+                new Dictionary<string, string[]> { ["doctorId"] = ["The referenced doctor was not found for this tenant."] });
+
         var encCtx = new EncryptionContext(ctx.UserId, command.TenantId, "prescription", req.PatientId, ctx.IpAddress);
 
         // Encrypt every registered clinical field at rest (ciphertext envelopes persisted).

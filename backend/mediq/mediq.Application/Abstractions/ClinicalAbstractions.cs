@@ -10,6 +10,15 @@ namespace mediq.Application.Abstractions;
 /// </summary>
 public interface IClinicalRepository
 {
+    /// <summary>True iff the doctor exists AND belongs to <paramref name="tenantId"/>. docslot.doctors is
+    /// tenant-scoped but NOT RLS-protected and doctor_id is a tenant-blind FK, so the write path must reject a
+    /// cross-tenant doctor_id explicitly (a caller could otherwise persist a prescription in their tenant that
+    /// references another tenant's doctor).</summary>
+    Task<bool> DoctorBelongsToTenantAsync(Guid doctorId, Guid tenantId, CancellationToken ct);
+    /// <summary>True iff the test exists AND belongs to <paramref name="tenantId"/> (docslot.test_catalog is
+    /// tenant-scoped, no RLS, tenant-blind FK — same cross-tenant write guard as doctors).</summary>
+    Task<bool> TestBelongsToTenantAsync(Guid testId, Guid tenantId, CancellationToken ct);
+
     Task<string?> AddPrescriptionAsync(Prescription prescription, CancellationToken ct);   // returns prescription_number
     /// <summary>Detail read: the entity PLUS the joined doctor name (plaintext directory data, NOT PHI).
     /// Callers that only need the entity (amend, drug-alerts) unwrap <c>.Prescription</c>.</summary>

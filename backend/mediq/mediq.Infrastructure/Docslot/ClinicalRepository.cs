@@ -15,6 +15,29 @@ namespace mediq.Infrastructure.Docslot;
 /// </summary>
 public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalRepository
 {
+    // ---- Write-side tenant-ownership guards ------------------------------------------------------
+    // docslot.doctors / docslot.test_catalog are tenant-scoped but have NO RLS, and prescriptions.doctor_id /
+    // lab_reports.test_id are tenant-blind FKs — so the tenant predicate must be explicit here to reject a
+    // cross-tenant reference at write (belt-and-suspenders behind the read-side JOIN predicates). No RLS on
+    // these tables means app.tenant_id is irrelevant; the WHERE tenant_id does the scoping.
+
+    public async Task<bool> DoctorBelongsToTenantAsync(Guid doctorId, Guid tenantId, CancellationToken ct)
+        => await ExistsAsync("SELECT EXISTS(SELECT 1 FROM docslot.doctors WHERE doctor_id = @p0 AND tenant_id = @p1)", doctorId, tenantId, ct);
+
+    public async Task<bool> TestBelongsToTenantAsync(Guid testId, Guid tenantId, CancellationToken ct)
+        => await ExistsAsync("SELECT EXISTS(SELECT 1 FROM docslot.test_catalog WHERE test_id = @p0 AND tenant_id = @p1)", testId, tenantId, ct);
+
+    private async Task<bool> ExistsAsync(string sql, Guid id, Guid tenantId, CancellationToken ct)
+    {
+        var conn = (NpgsqlConnection)db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
+        cmd.Parameters.AddWithValue("@p0", id);
+        cmd.Parameters.AddWithValue("@p1", tenantId);
+        return (bool)(await cmd.ExecuteScalarAsync(ct))!;
+    }
+
     // ---- Prescriptions ---------------------------------------------------------------------------
 
     public async Task<string?> AddPrescriptionAsync(Prescription p, CancellationToken ct)
