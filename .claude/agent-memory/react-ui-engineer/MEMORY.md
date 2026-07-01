@@ -16,3 +16,4 @@
 - [AI document surfaces](project_ai-document-surfaces.md) — Slice 15: OCR extract + RAG ask (PHI mutations, purpose-of-use, out-of-cache) on patient view + /ai-ops non-PHI ops screen; nav gap flagged.
 - [Team Audit log + Sessions](project_team-audit-sessions.md) — #86/#87: /security endpoints surfaced in /team; CSV auth-fetch, range-independent facets, useOptimistic revoke, lastActivityAt Online dot.
 - [Invitations](project_invitations.md) — #89: token-based invites in /team Invites tab; one-time-token reveal panel, surgical-cache resend/revoke, list-has-no-inviter-name quirk, accept flow is out of scope (#93).
+- [Branch/Dept SCOPE](project_branch-scope.md) — #90: People SCOPE column + All-branches filter + N-branches stat + manage-panel scope control; display-only (never confers perms), POST /branches unwired.
