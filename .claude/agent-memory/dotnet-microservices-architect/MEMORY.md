@@ -1,5 +1,7 @@
 # dotnet-microservices-architect — Memory Index
 
+- [Slice 95 people import/export](project_slice95_people_import_export.md) — People CSV export (reuse AuditCsv neutralization) + bulk import; per-row SAVEPOINT inside command UoW un-aborts R3-escalation-42501 rows so batch continues; tenant from JWT.
+
 - [Slice 89 invitations](project_slice89_invitations.md) — token-based invitations (SHA-256 hash, unauth accept via definer fn). GOTCHAs: text→citext overload fails (declare TEXT params); OUT-name/ON CONFLICT column collision (42702, out_-prefix); audit of uncommitted new user needs NULL actor (dedicated-conn FK).
 
 - [Dashboard API Contracts (Wave 2)](project_dashboard_contracts.md) — DocSlot dashboard DTO/enum contracts in mediq.SharedDataModel, what they mirror in canonical SQL, envelope/timezone/PHI/idempotency conventions.

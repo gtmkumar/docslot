@@ -18,3 +18,4 @@
 - [Invitations](project_invitations.md) — #89: token-based invites in /team Invites tab; one-time-token reveal panel, surgical-cache resend/revoke, list-has-no-inviter-name quirk, accept flow is out of scope (#93).
 - [Branch/Dept SCOPE](project_branch-scope.md) — #90: People SCOPE column + All-branches filter + N-branches stat + manage-panel scope control; display-only (never confers perms), POST /branches unwired.
 - [Security policy](project_security-policy.md) — #91: Security tab (2FA/password-session/access + IP allow-list) above #87 sessions; 3 perm planes, passthrough+Omit gotcha, N-of-M-2FA is client-derived, honesty labels, new ui/Toggle.
+- [Export + Bulk import](project_export-bulk-import.md) — #95: People-tab Export (authed CSV blob, new lib/download util) + Bulk-import slide-over (client-side RFC-4180 parse → per-row provision); new panel type needs router z.enum too.
