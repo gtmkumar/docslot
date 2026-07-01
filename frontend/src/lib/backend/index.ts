@@ -186,6 +186,18 @@ export const listBreaches = USE_REAL_API ? real.listBreaches : mock.listBreaches
 export const listReviewQueue = USE_REAL_API ? real.listReviewQueue : mock.listReviewQueue;
 export const listKeyStatus = USE_REAL_API ? real.listKeyStatus : mock.listKeyStatus;
 
+// ── AUDIT LOG (#86) + ACTIVE SESSIONS (#87) — Team console surfaces ────────────
+// Live: GET /security/audit/logs (+ /export → text/csv), GET /security/sessions,
+// POST /security/sessions/{id}/revoke + /users/{id}/revoke-all. Audit gated
+// tenant.audit.read; sessions gated tenant.users.update. NO PHI (staff identities;
+// raw ip only). The CSV export returns {fileName, content} for the caller to
+// trigger a download — never cached. Revokes carry an Idempotency-Key.
+export const listAuditLog = USE_REAL_API ? real.listAuditLog : mock.listAuditLog;
+export const exportAuditLog = USE_REAL_API ? real.exportAuditLog : mock.exportAuditLog;
+export const listActiveSessions = USE_REAL_API ? real.listActiveSessions : mock.listActiveSessions;
+export const revokeSession = USE_REAL_API ? real.revokeSession : mock.revokeSession;
+export const revokeAllSessions = USE_REAL_API ? real.revokeAllSessions : mock.revokeAllSessions;
+
 // ── IAM / ROLES & PERMISSIONS (Slice 2) ───────────────────────────────────────
 // Privilege-matrix grid + duplicate + effective-access viewer. READS pass through
 // (zod mirrors the IAM DTOs 1:1); WRITES (cell toggle, duplicate) carry an

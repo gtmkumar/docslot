@@ -573,6 +573,10 @@ export const UserListItemSchema = z.object({
   isActive: z.boolean(),
   mfaEnabled: z.boolean(),
   lastLoginAt: z.string().nullable(),
+  // Presence (#87 bonus): most-recent active session last_activity_at. Drives the
+  // People "Online" dot (recent → green) vs a "last seen" line. Nullable/defaulted
+  // (a user with no active session has no activity timestamp).
+  lastActivityAt: z.string().nullable().default(null),
   // Account security posture for the manage panel: when the account is locked, and whether a
   // password change is pending (after an admin reset). Both nullable/defaulted for resilience.
   lockedUntil: z.string().nullable().default(null),
@@ -608,6 +612,10 @@ export const UserListItemDtoSchema = z
     isActive: z.boolean(),
     mfaEnabled: z.boolean(),
     lastLoginAt: z.string().nullable().optional(),
+    // #87 bonus — appended nullable/optional so the existing shape is preserved
+    // when the server omits it (older builds) → the People "Online" dot degrades
+    // gracefully to a last-login line.
+    lastActivityAt: z.string().nullable().optional(),
     lockedUntil: z.string().nullable().optional(),
     mustChangePassword: z.boolean().optional().default(false),
     roles: z
@@ -1129,6 +1137,124 @@ export type KeyStatus = z.infer<typeof KeyStatusSchema>;
 /** Generic created-id result for breach/break-glass POSTs. */
 export const SecurityCreatedSchema = z.object({ id: z.string() });
 export type SecurityCreated = z.infer<typeof SecurityCreatedSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUDIT LOG (#86) — mirrors mediq.SharedDataModel/Docslot/Security/AuditReadDtos.cs
+// (camelCase wire). Surfaced in the Team console "Audit log" tab, gated on
+// tenant.audit.read. NO PHI: actor is a staff identity (same directory as People);
+// resourceLabel is a server-humanized label; ipAddress is raw only (geo-IP is #94).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Derived category bucket. The server humanizes raw verbs into these. */
+export const AuditCategorySchema = z.enum([
+  'Bookings',
+  'Patients',
+  'Payments',
+  'Team',
+  'Settings',
+  'Security',
+  'Analytics',
+  'Other',
+]);
+export type AuditCategory = z.infer<typeof AuditCategorySchema>;
+
+/** Derived severity. */
+export const AuditSeveritySchema = z.enum(['Informational', 'Warning', 'Critical']);
+export type AuditSeverity = z.infer<typeof AuditSeveritySchema>;
+
+/** One faceted count (category or severity → rows in the current range/search). */
+export const AuditFacetCountSchema = z.object({
+  key: z.string(),
+  count: z.number(),
+});
+export type AuditFacetCount = z.infer<typeof AuditFacetCountSchema>;
+
+/** A single audit-timeline row. Mirrors AuditLogRowDto. `action` is humanized,
+ *  `rawAction` is the original verb (shown as a mono sub-label). */
+export const AuditLogRowSchema = z.object({
+  auditId: z.string(),
+  occurredAt: z.string(),
+  actorUserId: z.string().nullable(),
+  actorName: z.string().nullable(),
+  actorEmail: z.string().nullable(),
+  impersonatorUserId: z.string().nullable(),
+  impersonatorName: z.string().nullable(),
+  action: z.string(),
+  rawAction: z.string(),
+  resourceType: z.string(),
+  resourceLabel: z.string().nullable(),
+  resourceId: z.string().nullable(),
+  category: z.string(),
+  severity: z.string(),
+  ipAddress: z.string().nullable(),
+  success: z.boolean(),
+  errorCode: z.string().nullable(),
+});
+export type AuditLogRow = z.infer<typeof AuditLogRowSchema>;
+
+/** A page of audit rows + the category/severity facets + the resolved window.
+ *  Mirrors AuditLogPageDto. Tolerant (passthrough) so additive server fields don't
+ *  break parsing. */
+export const AuditLogPageSchema = z
+  .object({
+    page: z.number(),
+    pageSize: z.number(),
+    total: z.number(),
+    items: z.array(AuditLogRowSchema),
+    categoryFacets: z.array(AuditFacetCountSchema).default([]),
+    severityFacets: z.array(AuditFacetCountSchema).default([]),
+    from: z.string(),
+    to: z.string(),
+  })
+  .passthrough();
+export type AuditLogPage = z.infer<typeof AuditLogPageSchema>;
+
+/** Client-side filter for the audit list + CSV export. `from`/`to` are ISO strings
+ *  (the UI defaults to the last 30 days). Not a wire schema — request input only. */
+export interface AuditLogFilter {
+  page: number;
+  pageSize: number;
+  from: string;
+  to: string;
+  category?: string | null;
+  severity?: string | null;
+  search?: string | null;
+}
+
+/** The CSV export result the seam hands to the component to trigger a download.
+ *  Constructed client-side (the real endpoint streams text/csv with a filename in
+ *  Content-Disposition); never cached in a query key. */
+export interface AuditCsvResult {
+  fileName: string;
+  content: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIVE SESSIONS (#87) — mirrors mediq.SharedDataModel/Docslot/Security/
+// SessionAdminDtos.cs (camelCase wire). Surfaced in the Team console "Security"
+// tab, gated on tenant.users.update. NO PHI (staff identities only).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const ActiveSessionSchema = z.object({
+  sessionId: z.string(),
+  userId: z.string(),
+  userName: z.string(),
+  userEmail: z.string().nullable(),
+  ipAddress: z.string().nullable(),
+  startedAt: z.string(),
+  lastActivityAt: z.string(),
+  expiresAt: z.string(),
+  /** True for the caller's own current session (revoking it signs the caller out). */
+  isSelf: z.boolean(),
+});
+export type ActiveSession = z.infer<typeof ActiveSessionSchema>;
+
+/** Result of signing out all of a user's sessions. Mirrors RevokeAllSessionsResult. */
+export const RevokeAllSessionsResultSchema = z.object({
+  userId: z.string(),
+  revokedCount: z.number(),
+});
+export type RevokeAllSessionsResult = z.infer<typeof RevokeAllSessionsResultSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLINICAL PHI (Slice 03b) — mirrors mediq.SharedDataModel/Docslot/Clinical

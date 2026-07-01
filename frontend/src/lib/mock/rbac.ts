@@ -240,20 +240,26 @@ interface SeedUser {
   isActive: boolean;
   mfaEnabled: boolean;
   lastLoginAt: string | null;
+  /** #87 — most-recent active session activity; drives the People "Online" dot.
+   *  Relative to import time so the mock shows a couple of "online" teammates. */
+  lastActivityAt: string | null;
   roleIds: { userTenantRoleId: string; roleId: string; isPrimary: boolean; expiresAt: string | null }[];
   overrides: UserOverride[];
 }
 
+/** Minutes-ago ISO for relative presence seeds (evaluated once at import). */
+const minsAgoIso = (m: number): string => new Date(Date.now() - m * 60_000).toISOString();
+
 const USERS: SeedUser[] = [
   {
     userId: ADMIN_USER_ID, email: DEMO_EMAIL, fullName: 'Priyanka R', phone: '+91 98200 11223',
-    isActive: true, mfaEnabled: false, lastLoginAt: '2026-06-14T09:12:00+05:30',
+    isActive: true, mfaEnabled: false, lastLoginAt: '2026-06-14T09:12:00+05:30', lastActivityAt: minsAgoIso(1),
     roleIds: [{ userTenantRoleId: 'utr-1', roleId: 'r-admin', isPrimary: true, expiresAt: null }],
     overrides: [],
   },
   {
     userId: 'u-2', email: 'arjun.sharma@apollocare.in', fullName: 'Dr. Arjun Sharma', phone: '+91 99203 44556',
-    isActive: true, mfaEnabled: true, lastLoginAt: '2026-06-13T18:40:00+05:30',
+    isActive: true, mfaEnabled: true, lastLoginAt: '2026-06-13T18:40:00+05:30', lastActivityAt: minsAgoIso(3),
     roleIds: [{ userTenantRoleId: 'utr-2', roleId: 'r-staff', isPrimary: true, expiresAt: null }],
     overrides: [
       { overrideId: 'ov-1', permissionKey: 'docslot.booking.cancel', isAllowed: false, reason: 'Under review after a wrong-cancel incident (2026-05)', expiresAt: '2026-09-01T00:00:00+05:30' },
@@ -261,13 +267,13 @@ const USERS: SeedUser[] = [
   },
   {
     userId: 'u-3', email: 'meena.r@apollocare.in', fullName: 'Meena R', phone: '+91 98765 77889',
-    isActive: true, mfaEnabled: false, lastLoginAt: '2026-06-14T08:02:00+05:30',
+    isActive: true, mfaEnabled: false, lastLoginAt: '2026-06-14T08:02:00+05:30', lastActivityAt: minsAgoIso(42),
     roleIds: [{ userTenantRoleId: 'utr-3', roleId: 'r-viewer', isPrimary: true, expiresAt: '2026-12-31T00:00:00+05:30' }],
     overrides: [],
   },
   {
     userId: 'u-4', email: 'rohit.billing@apollocare.in', fullName: 'Rohit Billing', phone: null,
-    isActive: false, mfaEnabled: false, lastLoginAt: null,
+    isActive: false, mfaEnabled: false, lastLoginAt: null, lastActivityAt: null,
     roleIds: [{ userTenantRoleId: 'utr-4', roleId: 'r-billing', isPrimary: true, expiresAt: null }],
     overrides: [
       { overrideId: 'ov-2', permissionKey: 'docslot.analytics.read', isAllowed: true, reason: 'Temporary access for the Q2 revenue report', expiresAt: '2026-07-15T00:00:00+05:30' },
@@ -309,6 +315,7 @@ function toUserListItem(u: SeedUser): UserListItem {
     isActive: u.isActive,
     mfaEnabled: u.mfaEnabled,
     lastLoginAt: u.lastLoginAt,
+    lastActivityAt: u.lastActivityAt,
     roles: u.roleIds.map((a) => {
       const role = roleById(a.roleId);
       return {

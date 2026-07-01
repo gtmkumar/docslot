@@ -15,7 +15,7 @@
 import type { ReactNode } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { useTranslation } from 'react-i18next';
-import { Download, FileClock, MailPlus, ShieldAlert, Upload, UserPlus } from 'lucide-react';
+import { Download, MailPlus, Upload, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -24,6 +24,8 @@ import { useUI } from '@/stores/ui';
 import { UsersTab } from './components/UsersTab';
 import { RolesPermissionsTab } from './components/RolesPermissionsTab';
 import { ApiIntegrationsTab } from './components/ApiIntegrationsTab';
+import { AuditLogTab } from './components/AuditLogTab';
+import { SessionsTab } from './components/SessionsTab';
 import { useRoles, useTenantUsers } from './api';
 
 const tabTrigger =
@@ -163,21 +165,13 @@ export function TeamScreen() {
 
           {canReadAudit ? (
             <Tabs.Content value="audit" className={contentClass}>
-              <TabEmpty
-                icon={<FileClock size={28} aria-hidden="true" />}
-                title={t('team.auditEmpty.title')}
-                body={t('team.auditEmpty.body')}
-              />
+              <AuditLogTab />
             </Tabs.Content>
           ) : null}
 
           {canReadSettings ? (
             <Tabs.Content value="security" className={contentClass}>
-              <TabEmpty
-                icon={<ShieldAlert size={28} aria-hidden="true" />}
-                title={t('team.securityEmpty.title')}
-                body={t('team.securityEmpty.body')}
-              />
+              <SessionsTab />
             </Tabs.Content>
           ) : null}
 

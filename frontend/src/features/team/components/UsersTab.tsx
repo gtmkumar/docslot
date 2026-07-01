@@ -24,7 +24,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { KebabMenu, type KebabItem } from '@/components/ui/KebabMenu';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Select, TextInput } from '@/components/ui/Field';
-import { dateTime } from '@/lib/format';
+import { dateTime, relativeTime } from '@/lib/format';
 import { usePermissions } from '@/lib/permissions';
 import { useSession } from '@/stores/session';
 import { useUI, type Panel } from '@/stores/ui';
@@ -36,6 +36,15 @@ type StatusFilter = 'all' | 'active' | 'inactive';
 /** A user is "locked" when lockedUntil is set AND still in the future. */
 function isLocked(user: UserListItem): boolean {
   return Boolean(user.lockedUntil) && new Date(user.lockedUntil as string).getTime() > Date.now();
+}
+
+/** #87 — "Online" when the user is active and their most-recent session activity is
+ *  within the presence window; otherwise the row shows a "last seen" line. */
+const ONLINE_WINDOW_MS = 5 * 60_000;
+function isOnline(user: UserListItem): boolean {
+  if (!user.isActive || !user.lastActivityAt) return false;
+  const t = new Date(user.lastActivityAt).getTime();
+  return !Number.isNaN(t) && Date.now() - t < ONLINE_WINDOW_MS;
 }
 
 // Deterministic, token-only colour per role key (no hex, no status colours reused
@@ -318,6 +327,7 @@ function UserRow({
 }) {
   const { t } = useTranslation();
   const locked = isLocked(user);
+  const online = isOnline(user);
 
   // The kebab wraps the existing manage actions. Managers get Manage access
   // (deactivate / reset / assign-role live inside that panel) + Edit profile +
@@ -352,7 +362,17 @@ function UserRow({
 
   return (
     <li className={`flex items-center gap-3 border-b border-line px-4 py-3 last:border-0 ${dim}`}>
-      <Avatar name={user.fullName} size="md" />
+      <span className="relative shrink-0">
+        <Avatar name={user.fullName} size="md" />
+        {online ? (
+          <span
+            role="img"
+            aria-label={t('team.onlineNow')}
+            title={t('team.onlineNow')}
+            className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-surface"
+          />
+        ) : null}
+      </span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium text-ink">{user.fullName}</span>
@@ -406,7 +426,13 @@ function UserRow({
           {user.isActive ? t('team.statusActive') : t('team.statusInactive')}
         </span>
         <p className="mono mt-0.5 text-[11px] text-muted-2">
-          {user.lastLoginAt ? dateTime(user.lastLoginAt) : t('team.neverLoggedIn')}
+          {online
+            ? t('team.onlineNow')
+            : user.lastActivityAt
+              ? t('team.lastSeen', { time: relativeTime(user.lastActivityAt) })
+              : user.lastLoginAt
+                ? dateTime(user.lastLoginAt)
+                : t('team.neverLoggedIn')}
         </p>
       </div>
 

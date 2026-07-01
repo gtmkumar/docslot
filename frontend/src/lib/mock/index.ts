@@ -11,6 +11,8 @@ export * from './rbac';
 export * from './developers';
 // Security & Compliance console (Slice 05) lives in ./security.
 export * from './security';
+// Team console Audit log (#86) + Active sessions (#87) live in ./team-audit-sessions.
+export * from './team-audit-sessions';
 // Clinical records (Slice 03b) live in ./clinical.
 export * from './clinical';
 // Commission / Care Partners (Slice 07) live in ./commission.

@@ -11,10 +11,15 @@
 // listUserOverrides, getEffectivePermissions). Only the CreateRoleRequest TYPE is
 // imported from '@/lib/mock' (the shared contract shape, no runtime).
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   assignRole,
   createModule,
+  exportAuditLog,
+  listActiveSessions,
+  listAuditLog,
+  revokeAllSessions,
+  revokeSession,
   createPermission,
   createRole,
   createUser,
@@ -40,7 +45,9 @@ import {
 } from '@/lib/backend';
 import { type CreateRoleRequest } from '@/lib/mock';
 import type {
+  ActiveSession,
   AssignRoleRequest,
+  AuditLogFilter,
   CreateModuleRequest,
   CreatePermissionRequest,
   CreateUserRequest,
@@ -317,6 +324,70 @@ export function useDuplicateRole() {
   return useMutation({
     mutationFn: ({ idempotencyKey, ...req }: DuplicateRoleInput) => duplicateRole(req, idempotencyKey),
     onSuccess: () => void qc.invalidateQueries({ queryKey: rolesQueryKey }),
+  });
+}
+
+// ── AUDIT LOG (#86) ──────────────────────────────────────────────────────────
+// The timeline is a paged, faceted read. keepPreviousData keeps the current page
+// on-screen while the next page / a changed filter loads (no skeleton flash on
+// paginate). The CSV export is a MUTATION (a side-effecting fetch that returns
+// {fileName, content}); the caller triggers the download and discards the payload
+// — it is never written into any query cache.
+
+export const sessionsQueryKey = ['team', 'sessions'] as const;
+export const auditQueryKey = (filter: AuditLogFilter) => ['team', 'audit', filter] as const;
+
+export function useAuditLog(filter: AuditLogFilter) {
+  return useQuery({
+    queryKey: auditQueryKey(filter),
+    queryFn: () => listAuditLog(filter),
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Export the current filter to CSV. Returns {fileName, content}; the caller
+ *  triggers the browser download. Page/pageSize are ignored server-side (export is
+ *  the whole filtered set). */
+export function useExportAuditLog() {
+  return useMutation({ mutationFn: (filter: AuditLogFilter) => exportAuditLog(filter) });
+}
+
+// ── ACTIVE SESSIONS (#87) ────────────────────────────────────────────────────
+export function useActiveSessions() {
+  return useQuery({ queryKey: sessionsQueryKey, queryFn: () => listActiveSessions() });
+}
+
+/** Revoke a single session. The panel shows an INSTANT drop via useOptimistic; on
+ *  success we surgically remove the row from the cache (no invalidate → no refetch
+ *  flash, so the optimistic overlay and the base state agree). On error the
+ *  optimistic revert restores the row and the caller toasts. */
+export function useRevokeSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { sessionId: string; idempotencyKey: string }) =>
+      revokeSession(vars.sessionId, vars.idempotencyKey),
+    onSuccess: (_r, vars) => {
+      qc.setQueryData<ActiveSession[]>(sessionsQueryKey, (old) =>
+        old ? old.filter((s) => s.sessionId !== vars.sessionId) : old,
+      );
+    },
+  });
+}
+
+/** Sign a user out of every active session. Surgically drops that user's rows from
+ *  the sessions cache and invalidates the users list (the People "Online" dot reads
+ *  the same activity signal). */
+export function useRevokeAllSessions() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { userId: string; idempotencyKey: string }) =>
+      revokeAllSessions(vars.userId, vars.idempotencyKey),
+    onSuccess: (_r, vars) => {
+      qc.setQueryData<ActiveSession[]>(sessionsQueryKey, (old) =>
+        old ? old.filter((s) => s.userId !== vars.userId) : old,
+      );
+      void qc.invalidateQueries({ queryKey: usersQueryKey });
+    },
   });
 }
 

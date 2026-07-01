@@ -45,6 +45,14 @@ import {
   AttributionSchema,
   AuditAnchorSchema,
   AuditChainVerifySchema,
+  AuditLogPageSchema,
+  ActiveSessionSchema,
+  RevokeAllSessionsResultSchema,
+  type ActiveSession,
+  type AuditCsvResult,
+  type AuditLogFilter,
+  type AuditLogPage,
+  type RevokeAllSessionsResult,
   BadgesResponseSchema,
   AbdmRecordDetailSchema,
   AbdmRecordListItemSchema,
@@ -1769,6 +1777,85 @@ export async function listReviewQueue(): Promise<ReviewQueueItem[]> {
 export async function listKeyStatus(): Promise<KeyStatus[]> {
   const raw = await apiFetch<unknown[]>('/security/keys');
   return KeyStatusSchema.array().parse(raw);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AUDIT LOG (#86) + ACTIVE SESSIONS (#87) — Team console surfaces under /security.
+// Audit is gated tenant.audit.read; sessions are gated tenant.users.update. NO PHI:
+// actors + session users are STAFF identities (the same directory as People);
+// resourceLabel is a server-humanized label; ipAddress is raw only (geo-IP is #94).
+// The CSV export streams text/csv WITH auth headers (a bare link wouldn't
+// authenticate), so we fetch the blob and hand {fileName, content} back for the
+// caller to trigger the download — the CSV is NEVER cached in a query key.
+// ═════════════════════════════════════════════════════════════════════════════
+
+function auditParams(filter: Omit<AuditLogFilter, 'page' | 'pageSize'>): URLSearchParams {
+  const p = new URLSearchParams();
+  p.set('from', filter.from);
+  p.set('to', filter.to);
+  if (filter.category) p.set('category', filter.category);
+  if (filter.severity) p.set('severity', filter.severity);
+  if (filter.search && filter.search.trim()) p.set('search', filter.search.trim());
+  return p;
+}
+
+/** GET /security/audit/logs?page=&pageSize=&from=&to=&category=&severity=&search=
+ *  → AuditLogPageDto (items + category/severity facets + resolved window). */
+export async function listAuditLog(filter: AuditLogFilter): Promise<AuditLogPage> {
+  const p = auditParams(filter);
+  p.set('page', String(filter.page));
+  p.set('pageSize', String(filter.pageSize));
+  const raw = await apiFetch<unknown>(`/security/audit/logs?${p.toString()}`);
+  return AuditLogPageSchema.parse(raw);
+}
+
+/** GET /security/audit/logs/export?... → text/csv file download. Fetched WITH auth
+ *  headers into a transient blob; returns {fileName, content} for the caller to
+ *  download. NOT paginated (exports the whole filtered set). */
+export async function exportAuditLog(filter: AuditLogFilter): Promise<AuditCsvResult> {
+  const { accessToken, tenantId } = getSessionSnapshot();
+  const headers: Record<string, string> = { Accept: 'text/csv' };
+  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+  if (tenantId) headers['X-Tenant-Id'] = tenantId;
+
+  const res = await fetch(`/api/v1/security/audit/logs/export?${auditParams(filter).toString()}`, { headers });
+  if (!res.ok) throw new ApiError(res.status, `Audit CSV export failed: ${res.status}`);
+  const content = await res.text();
+
+  // Prefer the server's Content-Disposition filename; fall back to a dated default.
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  const fileName = match?.[1] ?? `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+  return { fileName, content };
+}
+
+/** GET /security/sessions?take= → ActiveSessionDto[] (gated tenant.users.update). */
+export async function listActiveSessions(take = 100): Promise<ActiveSession[]> {
+  const raw = await apiFetch<unknown[]>(`/security/sessions?take=${take}`);
+  return ActiveSessionSchema.array().parse(raw);
+}
+
+/** POST /security/sessions/{sessionId}/revoke → bool (404 if the session's owner is
+ *  not a tenant member). Idempotency-Key on the POST. */
+export async function revokeSession(sessionId: string, idempotencyKey: string): Promise<boolean> {
+  const raw = await apiFetch<unknown>(`/security/sessions/${sessionId}/revoke`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+  });
+  return raw === true;
+}
+
+/** POST /security/sessions/users/{userId}/revoke-all → RevokeAllSessionsResult
+ *  (403 if the target is not a tenant member). Idempotency-Key on the POST. */
+export async function revokeAllSessions(
+  userId: string,
+  idempotencyKey: string,
+): Promise<RevokeAllSessionsResult> {
+  const raw = await apiFetch<unknown>(`/security/sessions/users/${userId}/revoke-all`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+  });
+  return RevokeAllSessionsResultSchema.parse(raw);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
