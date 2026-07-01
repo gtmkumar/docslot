@@ -1,23 +1,33 @@
-// Users list (Team & Roles). Toolbar (debounced search + status filter) above a
-// list with four data states: loading skeleton, error, tenant-has-no-users empty,
-// and a DISTINCT filtered-empty state. Each row opens the manage-user slide-over.
+// People list (Team & Roles console). Toolbar (debounced search + status filter +
+// an All-roles dropdown) above a list with four data states: loading skeleton,
+// error, tenant-has-no-users empty, and a DISTINCT filtered-empty state. A muted
+// "showing X of Y" count sits above the list.
 //
-// PHI: no raw phone — the list DTO carries maskedPhone only (we don't render it
-// here; email + roles + status + security chips suffice). Filtering is client-side
-// over the loaded list (case-insensitive name/email match); the React Compiler
-// memoizes the derived list, so we do NOT hand-write useMemo.
+// People-tab reskin (#82), UI-only over the live UserListItemDto (no backend
+// change): the current user gets a YOU badge (self id from useSession); each role
+// renders a colour-coded, token-based badge (deterministic hue per role key — no
+// hex); 2FA shows an explicit On/Off pill; and each row's actions live behind a
+// `…` kebab (Manage access / Edit profile / View effective access) instead of a
+// whole-row button. SCOPE (branch/department) column + All-branches filter are #90
+// (no data yet) — intentionally omitted.
+//
+// PHI: no raw phone — the list DTO carries maskedPhone only (not rendered here).
+// Filtering is client-side over the loaded list; the React Compiler memoizes the
+// derived list, so we do NOT hand-write useMemo.
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Search } from 'lucide-react';
+import { Eye, Pencil, Search, UserCog } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { KebabMenu, type KebabItem } from '@/components/ui/KebabMenu';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { TextInput } from '@/components/ui/Field';
+import { Select, TextInput } from '@/components/ui/Field';
 import { dateTime } from '@/lib/format';
 import { usePermissions } from '@/lib/permissions';
-import { useUI } from '@/stores/ui';
+import { useSession } from '@/stores/session';
+import { useUI, type Panel } from '@/stores/ui';
 import { useTenantUsers } from '../api';
 import type { UserListItem } from '@/lib/mock/contracts';
 
@@ -28,24 +38,47 @@ function isLocked(user: UserListItem): boolean {
   return Boolean(user.lockedUntil) && new Date(user.lockedUntil as string).getTime() > Date.now();
 }
 
+// Deterministic, token-only colour per role key (no hex, no status colours reused
+// for meaning). Same key → same hue across renders; distinct keys spread across the
+// palette so roles are visually separable at a glance.
+const ROLE_COLORS = [
+  'bg-primary-soft text-primary',
+  'bg-info-soft text-info',
+  'bg-warn-soft text-warn',
+  'bg-accent-soft text-accent',
+  'bg-danger-soft text-danger',
+  'bg-surface-sunk text-muted',
+] as const;
+
+function roleColorClass(roleKey: string): string {
+  let h = 0;
+  for (let i = 0; i < roleKey.length; i++) h = (h * 31 + roleKey.charCodeAt(i)) >>> 0;
+  return ROLE_COLORS[h % ROLE_COLORS.length];
+}
+
+interface RoleOption {
+  roleKey: string;
+  name: string;
+}
+
 export function UsersTab() {
   const { t } = useTranslation();
   const { can } = usePermissions();
   const { data, isLoading, isError, refetch } = useTenantUsers();
   const openPanel = useUI((s) => s.openPanel);
+  const selfId = useSession((s) => s.user?.userId);
 
   // Toolbar state. `search` is the live input; `debounced` lags it by 200ms so
-  // filtering doesn't run on every keystroke. The React Compiler memoizes the
-  // derived `filtered` list below — no manual useMemo.
+  // filtering doesn't run on every keystroke. `roleFilter` is a role key or 'all'.
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
+  const [roleFilter, setRoleFilter] = useState<string>('all');
   const debounced = useDebounced(search, 200);
 
-  // Managers open the manage-access panel; read-only viewers open the
-  // effective-access viewer. Either way the row is interactive.
+  // Managers act via the kebab (manage access / edit profile); read-only viewers
+  // still reach the effective-access viewer.
   const canManage = can('tenant.roles.assign') || can('platform.overrides.grant');
   const canViewAccess = can('tenant.users.read');
-  const interactive = canManage || canViewAccess;
 
   if (isError) {
     return (
@@ -68,6 +101,9 @@ export function UsersTab() {
           onSearch={setSearch}
           status={status}
           onStatus={setStatus}
+          roleFilter={roleFilter}
+          onRoleFilter={setRoleFilter}
+          roleOptions={[]}
           disabled
         />
         <Card>
@@ -97,6 +133,15 @@ export function UsersTab() {
     );
   }
 
+  // Distinct roles present across the loaded users → the All-roles dropdown options.
+  const roleOptions: RoleOption[] = (() => {
+    const map = new Map<string, string>();
+    for (const u of data) for (const r of u.roles) if (!map.has(r.roleKey)) map.set(r.roleKey, r.name);
+    return [...map.entries()]
+      .map(([roleKey, name]) => ({ roleKey, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  })();
+
   const query = debounced.trim().toLowerCase();
   const filtered = data.filter((u) => {
     const matchesStatus = status === 'all' || (status === 'active' ? u.isActive : !u.isActive);
@@ -104,17 +149,31 @@ export function UsersTab() {
       query.length === 0 ||
       u.fullName.toLowerCase().includes(query) ||
       u.email.toLowerCase().includes(query);
-    return matchesStatus && matchesQuery;
+    const matchesRole = roleFilter === 'all' || u.roles.some((r) => r.roleKey === roleFilter);
+    return matchesStatus && matchesQuery && matchesRole;
   });
 
   const clearFilters = () => {
     setSearch('');
     setStatus('all');
+    setRoleFilter('all');
   };
 
   return (
     <div className="flex flex-col gap-3">
-      <Toolbar search={search} onSearch={setSearch} status={status} onStatus={setStatus} />
+      <Toolbar
+        search={search}
+        onSearch={setSearch}
+        status={status}
+        onStatus={setStatus}
+        roleFilter={roleFilter}
+        onRoleFilter={setRoleFilter}
+        roleOptions={roleOptions}
+      />
+
+      <p className="text-[12px] text-muted-2" aria-live="polite">
+        {t('team.resultCount', { shown: filtered.length, total: data.length })}
+      </p>
 
       {filtered.length === 0 ? (
         <Card>
@@ -132,14 +191,10 @@ export function UsersTab() {
               <UserRow
                 key={u.userId}
                 user={u}
-                interactive={interactive}
-                onOpen={() =>
-                  openPanel(
-                    canManage
-                      ? { type: 'manageUser', userId: u.userId }
-                      : { type: 'effectiveAccess', userId: u.userId },
-                  )
-                }
+                isSelf={u.userId === selfId}
+                canManage={canManage}
+                canViewAccess={canViewAccess}
+                openPanel={openPanel}
               />
             ))}
           </ul>
@@ -149,18 +204,24 @@ export function UsersTab() {
   );
 }
 
-// ── Toolbar: debounced search + 3-segment status filter ──────────────────────
+// ── Toolbar: debounced search + All-roles dropdown + 3-segment status filter ────
 function Toolbar({
   search,
   onSearch,
   status,
   onStatus,
+  roleFilter,
+  onRoleFilter,
+  roleOptions,
   disabled,
 }: {
   search: string;
   onSearch: (v: string) => void;
   status: StatusFilter;
   onStatus: (v: StatusFilter) => void;
+  roleFilter: string;
+  onRoleFilter: (v: string) => void;
+  roleOptions: RoleOption[];
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
@@ -183,10 +244,31 @@ function Toolbar({
         />
       </div>
 
-      <div role="radiogroup" aria-label={t('team.colStatus')} className="flex gap-1.5">
-        <StatusToggle active={status === 'all'} onClick={() => onStatus('all')} label={t('team.filterAll')} disabled={disabled} />
-        <StatusToggle active={status === 'active'} onClick={() => onStatus('active')} label={t('team.filterActive')} disabled={disabled} />
-        <StatusToggle active={status === 'inactive'} onClick={() => onStatus('inactive')} label={t('team.filterInactive')} disabled={disabled} />
+      <div className="flex flex-wrap items-center gap-1.5">
+        {/* Fixed-width wrapper: Field's Select is w-full, so bound it here rather
+            than fight the utility source order with w-auto. */}
+        <div className="w-40 shrink-0">
+          <Select
+            value={roleFilter}
+            disabled={disabled}
+            onChange={(e) => onRoleFilter(e.target.value)}
+            aria-label={t('team.allRoles')}
+            className="py-1.5 text-[12px]"
+          >
+            <option value="all">{t('team.allRoles')}</option>
+            {roleOptions.map((r) => (
+              <option key={r.roleKey} value={r.roleKey}>
+                {r.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <div role="radiogroup" aria-label={t('team.colStatus')} className="flex gap-1.5">
+          <StatusToggle active={status === 'all'} onClick={() => onStatus('all')} label={t('team.filterAll')} disabled={disabled} />
+          <StatusToggle active={status === 'active'} onClick={() => onStatus('active')} label={t('team.filterActive')} disabled={disabled} />
+          <StatusToggle active={status === 'inactive'} onClick={() => onStatus('inactive')} label={t('team.filterInactive')} disabled={disabled} />
+        </div>
       </div>
     </div>
   );
@@ -223,26 +305,70 @@ function StatusToggle({
 
 function UserRow({
   user,
-  interactive,
-  onOpen,
+  isSelf,
+  canManage,
+  canViewAccess,
+  openPanel,
 }: {
   user: UserListItem;
-  interactive: boolean;
-  onOpen: () => void;
+  isSelf: boolean;
+  canManage: boolean;
+  canViewAccess: boolean;
+  openPanel: (panel: Panel) => void;
 }) {
   const { t } = useTranslation();
   const locked = isLocked(user);
-  const inner = (
-    <>
+
+  // The kebab wraps the existing manage actions. Managers get Manage access
+  // (deactivate / reset / assign-role live inside that panel) + Edit profile +
+  // View effective access; read-only viewers get just the effective-access viewer.
+  const items: KebabItem[] = [];
+  if (canManage) {
+    items.push({
+      key: 'manage',
+      label: t('team.manageAccess'),
+      icon: <UserCog size={15} />,
+      onSelect: () => openPanel({ type: 'manageUser', userId: user.userId }),
+    });
+    items.push({
+      key: 'edit',
+      label: t('team.editProfile'),
+      icon: <Pencil size={15} />,
+      onSelect: () => openPanel({ type: 'editUser', userId: user.userId }),
+    });
+  }
+  if (canViewAccess) {
+    items.push({
+      key: 'effective',
+      label: t('team.viewAccess'),
+      icon: <Eye size={15} />,
+      onSelect: () => openPanel({ type: 'effectiveAccess', userId: user.userId }),
+    });
+  }
+
+  // Inactive rows are dimmed (opacity utility — the established dimming convention,
+  // not a hex literal) so the eye lands on active teammates first.
+  const dim = user.isActive ? '' : 'opacity-60';
+
+  return (
+    <li className={`flex items-center gap-3 border-b border-line px-4 py-3 last:border-0 ${dim}`}>
       <Avatar name={user.fullName} size="md" />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium text-ink">{user.fullName}</span>
-          {user.mfaEnabled ? (
-            <span className="rounded-full bg-info-soft px-1.5 py-0.5 text-[10px] font-medium text-info">
-              {t('team.mfaOn')}
+          {isSelf ? (
+            <span className="rounded-full bg-primary-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+              {t('team.youBadge')}
             </span>
           ) : null}
+          <span
+            className={[
+              'rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+              user.mfaEnabled ? 'bg-info-soft text-info' : 'bg-surface-sunk text-muted-2',
+            ].join(' ')}
+          >
+            {user.mfaEnabled ? t('team.twoFaOn') : t('team.twoFaOff')}
+          </span>
           {locked ? (
             <span className="rounded-full bg-warn-soft px-1.5 py-0.5 text-[10px] font-medium text-warn">
               {t('team.lockedChip')}
@@ -261,10 +387,10 @@ function UserRow({
         {user.roles.map((r) => (
           <span
             key={r.userTenantRoleId}
-            className="inline-flex items-center gap-1 rounded-full bg-surface-sunk px-2 py-0.5 text-[11px] text-ink"
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${roleColorClass(r.roleKey)}`}
           >
             {r.name}
-            {r.isPrimary ? <span className="text-[9px] uppercase text-muted-2">{t('team.primary')}</span> : null}
+            {r.isPrimary ? <span className="text-[9px] uppercase opacity-70">{t('team.primary')}</span> : null}
           </span>
         ))}
       </div>
@@ -284,27 +410,7 @@ function UserRow({
         </p>
       </div>
 
-      {interactive ? <ChevronRight size={16} className="shrink-0 text-muted-2" aria-hidden="true" /> : null}
-    </>
-  );
-
-  // Inactive rows are dimmed (opacity utility — the established dimming convention,
-  // not a hex literal) so the eye lands on active teammates first.
-  const dim = user.isActive ? '' : 'opacity-60';
-  const rowClass = `flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left last:border-0 ${dim}`;
-  return (
-    <li>
-      {interactive ? (
-        <button
-          type="button"
-          onClick={onOpen}
-          className={`${rowClass} transition-colors hover:bg-surface-sunk focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}
-        >
-          {inner}
-        </button>
-      ) : (
-        <div className={rowClass}>{inner}</div>
-      )}
+      {items.length > 0 ? <KebabMenu label={t('team.rowActions', { name: user.fullName })} items={items} /> : null}
     </li>
   );
 }
