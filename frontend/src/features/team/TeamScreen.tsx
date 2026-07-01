@@ -22,7 +22,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { usePermissions } from '@/lib/permissions';
 import { useUI } from '@/stores/ui';
 import { UsersTab } from './components/UsersTab';
-import { RolesTab } from './components/RolesTab';
+import { RolesPermissionsTab } from './components/RolesPermissionsTab';
 import { ApiIntegrationsTab } from './components/ApiIntegrationsTab';
 import { useRoles, useTenantUsers } from './api';
 
@@ -149,7 +149,7 @@ export function TeamScreen() {
                 <UsersTab />
               </Tabs.Content>
               <Tabs.Content value="roles" className={contentClass}>
-                <RolesTab />
+                <RolesPermissionsTab />
               </Tabs.Content>
               <Tabs.Content value="invites" className={contentClass}>
                 <TabEmpty

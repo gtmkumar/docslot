@@ -561,6 +561,28 @@ export const en = {
     customRole: 'Custom',
     viewPermissions: 'View permissions',
     permissionsIn: '{{count}} permissions',
+    // Roles & permissions master-detail + 3 sub-tabs (#83).
+    subRolesPrivileges: 'Roles & privileges',
+    subOverrides: 'Per-user overrides',
+    subEffective: 'Effective access',
+    rolesListLabel: 'Roles',
+    selectRolePrompt: 'Select a role to view its permissions',
+    scopedEffect: 'Scoped effect',
+    scope: {
+      platform: 'Platform-wide',
+      tenant: 'This tenant',
+      self: 'Own records',
+    },
+    legend: {
+      granted: 'Granted',
+      notGranted: 'Not granted',
+      notLicensed: 'Module not licensed',
+    },
+    overridesTenant: {
+      title: 'Tenant-wide overrides are coming soon',
+      body: 'A list of every per-user override in this workspace will appear here. For now, manage a person’s overrides from their profile in the People tab.',
+    },
+    effectivePrompt: 'Select a person to view their effective access.',
     invite: {
       eyebrow: 'Team',
       title: 'Invite user',
@@ -2301,6 +2323,27 @@ export const hi: typeof en = {
     customRole: 'कस्टम',
     viewPermissions: 'अनुमतियाँ देखें',
     permissionsIn: '{{count}} अनुमतियाँ',
+    subRolesPrivileges: 'भूमिकाएँ और विशेषाधिकार',
+    subOverrides: 'प्रति-उपयोगकर्ता ओवरराइड',
+    subEffective: 'प्रभावी पहुँच',
+    rolesListLabel: 'भूमिकाएँ',
+    selectRolePrompt: 'इसकी अनुमतियाँ देखने के लिए एक भूमिका चुनें',
+    scopedEffect: 'दायरा प्रभाव',
+    scope: {
+      platform: 'पूरे प्लेटफ़ॉर्म पर',
+      tenant: 'इस टेनेंट में',
+      self: 'स्वयं के रिकॉर्ड',
+    },
+    legend: {
+      granted: 'प्रदान किया गया',
+      notGranted: 'प्रदान नहीं किया गया',
+      notLicensed: 'मॉड्यूल लाइसेंस-प्राप्त नहीं',
+    },
+    overridesTenant: {
+      title: 'टेनेंट-व्यापी ओवरराइड जल्द आ रहे हैं',
+      body: 'इस वर्कस्पेस में प्रत्येक प्रति-उपयोगकर्ता ओवरराइड की सूची यहाँ दिखाई देगी। फ़िलहाल, किसी व्यक्ति के ओवरराइड को लोग टैब में उनकी प्रोफ़ाइल से प्रबंधित करें।',
+    },
+    effectivePrompt: 'किसी व्यक्ति की प्रभावी पहुँच देखने के लिए उसे चुनें।',
     invite: {
       eyebrow: 'टीम',
       title: 'उपयोगकर्ता आमंत्रित करें',
