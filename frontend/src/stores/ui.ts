@@ -9,6 +9,7 @@ import type {
   BreakGlassResourceType,
   CreateWebhookResult,
   ErasureResult,
+  InvitationTokenResult,
   MedicalHistory,
   PurposeOfUse,
 } from '@/lib/mock/contracts';
@@ -35,6 +36,12 @@ export type Panel =
   // Team & roles (Slice 01). manageUser/roleView carry an id (userId / roleId),
   // so they are URL-restorable via ?panel=&id=.
   | { type: 'inviteUser' }
+  // Token-based invitations (#89, epic #80 Phase C). `newInvitation` is payloadless
+  // + URL-addressable (the form is safe to restore). `invitationToken` carries the
+  // ONE-TIME plaintext token result and is DELIBERATELY NOT URL-restorable — like
+  // `clientSecret`, the token must not survive a refresh (re-mint via resend).
+  | { type: 'newInvitation' }
+  | { type: 'invitationToken'; result: InvitationTokenResult; email: string }
   | { type: 'manageUser'; userId: string }
   // editUser carries a userId, so it is URL-restorable via ?panel=&id=.
   | { type: 'editUser'; userId: string }

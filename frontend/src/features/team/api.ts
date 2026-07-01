@@ -14,11 +14,15 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   assignRole,
+  createInvitation,
   createModule,
   exportAuditLog,
   listActiveSessions,
   listAuditLog,
+  listInvitations,
+  resendInvitation,
   revokeAllSessions,
+  revokeInvitation,
   revokeSession,
   createPermission,
   createRole,
@@ -48,10 +52,12 @@ import type {
   ActiveSession,
   AssignRoleRequest,
   AuditLogFilter,
+  CreateInvitationRequest,
   CreateModuleRequest,
   CreatePermissionRequest,
   CreateUserRequest,
   DuplicateRoleRequest,
+  InvitationList,
   RoleMatrix,
   SetOverrideRequest,
   SetUserStatusRequest,
@@ -387,6 +393,84 @@ export function useRevokeAllSessions() {
         old ? old.filter((s) => s.userId !== vars.userId) : old,
       );
       void qc.invalidateQueries({ queryKey: usersQueryKey });
+    },
+  });
+}
+
+// ── INVITATIONS (#89) ────────────────────────────────────────────────────────
+// Token-based tenant onboarding, ALONGSIDE the direct-add invite. The list is
+// gated on tenant.users.read; create/resend/revoke on tenant.users.create (the
+// tab/panel do the in-memory can() gate). create/resend return a ONE-TIME token
+// the caller reveals — it is NEVER written into any query cache. revoke/resend
+// surgically patch the pending list (no refetch flash: the optimistic overlay in
+// the tab and the base cache agree).
+
+export const invitationsQueryKey = (status?: string) =>
+  ['team', 'invitations', status ?? 'all'] as const;
+
+/** Pending invitations for the Invites tab + its badge count. Pass `enabled=false`
+ *  when the caller lacks tenant.users.read so we never fire a 403. */
+export function useInvitations(status = 'pending', enabled = true) {
+  return useQuery({
+    queryKey: invitationsQueryKey(status),
+    queryFn: () => listInvitations(status),
+    enabled,
+  });
+}
+
+export interface CreateInvitationInput extends CreateInvitationRequest {
+  idempotencyKey: string;
+}
+/** Mint an invitation. Returns the one-time token to the caller (revealed in the
+ *  panel, never cached). Invalidates the invitations list so the new pending row
+ *  appears with its real server fields. */
+export function useCreateInvitation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ idempotencyKey, ...req }: CreateInvitationInput) =>
+      createInvitation({ email: req.email, roleId: req.roleId ?? null }, idempotencyKey),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['team', 'invitations'] }),
+  });
+}
+
+/** Resend — rotate the token + extend expiry, bumping resend_count. Returns a NEW
+ *  one-time token (revealed by the caller). Surgically patches the pending row so
+ *  its expiry/resend count refresh without a refetch flash. */
+export function useResendInvitation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { invitationId: string; idempotencyKey: string }) =>
+      resendInvitation(vars.invitationId, vars.idempotencyKey),
+    onSuccess: (res) => {
+      qc.setQueryData<InvitationList>(invitationsQueryKey('pending'), (old) =>
+        old
+          ? {
+              ...old,
+              items: old.items.map((i) =>
+                i.invitationId === res.invitationId
+                  ? { ...i, resendCount: res.resendCount, expiresAt: res.expiresAt }
+                  : i,
+              ),
+            }
+          : old,
+      );
+    },
+  });
+}
+
+/** Revoke a pending invitation. Surgically drops the now-non-pending row from the
+ *  pending list + decrements the count (no refetch → optimistic overlay + base agree). */
+export function useRevokeInvitation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { invitationId: string; idempotencyKey: string }) =>
+      revokeInvitation(vars.invitationId, vars.idempotencyKey),
+    onSuccess: (res) => {
+      qc.setQueryData<InvitationList>(invitationsQueryKey('pending'), (old) => {
+        if (!old) return old;
+        const items = old.items.filter((i) => i.invitationId !== res.invitationId);
+        return { items, count: items.length };
+      });
     },
   });
 }

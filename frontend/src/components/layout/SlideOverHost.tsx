@@ -31,6 +31,8 @@ const BookTimePanel = lazy(() => import('@/features/bookings/components/BookTime
 const AddDoctorPanel = lazy(() => import('@/features/doctors/components/AddDoctorPanel').then((m) => ({ default: m.AddDoctorPanel })));
 const AddPatientPanel = lazy(() => import('@/features/patients/components/AddPatientPanel').then((m) => ({ default: m.AddPatientPanel })));
 const InviteUserPanel = lazy(() => import('@/features/team/components/InviteUserPanel').then((m) => ({ default: m.InviteUserPanel })));
+const NewInvitationPanel = lazy(() => import('@/features/team/components/NewInvitationPanel').then((m) => ({ default: m.NewInvitationPanel })));
+const InvitationTokenPanel = lazy(() => import('@/features/team/components/InvitationTokenPanel').then((m) => ({ default: m.InvitationTokenPanel })));
 const ManageUserPanel = lazy(() => import('@/features/team/components/ManageUserPanel').then((m) => ({ default: m.ManageUserPanel })));
 const EditUserPanel = lazy(() => import('@/features/team/components/EditUserPanel').then((m) => ({ default: m.EditUserPanel })));
 const RoleViewPanel = lazy(() => import('@/features/team/components/RoleViewPanel').then((m) => ({ default: m.RoleViewPanel })));
@@ -80,6 +82,7 @@ type PanelType = Panel['type'];
  *    (re-entry must pass through the purpose gate again). */
 type TransientPanelType =
   | 'clientSecret'
+  | 'invitationToken'
   | 'deletionCertificate'
   | 'prescriptionDetail'
   | 'issuePrescription'
@@ -94,7 +97,7 @@ type TransientPanelType =
 /** URL-addressable panel types. */
 type UrlPanelType = Exclude<PanelType, TransientPanelType>;
 const TRANSIENT_SET = new Set<PanelType>([
-  'clientSecret', 'deletionCertificate',
+  'clientSecret', 'invitationToken', 'deletionCertificate',
   'prescriptionDetail', 'issuePrescription', 'labReportDetail', 'uploadReport', 'abdmDetail',
   // Medical-history create/edit + the clinical break-glass carry PHI and/or a
   // declared purpose-of-use — never URL-encoded or restored from a refresh.
@@ -109,7 +112,7 @@ function isUrlPanel(type: PanelType): type is UrlPanelType {
 }
 
 const PAYLOADLESS: PanelType[] = [
-  'newBooking', 'addDoctor', 'addPatient', 'bookTime', 'inviteUser', 'createRole',
+  'newBooking', 'addDoctor', 'addPatient', 'bookTime', 'inviteUser', 'newInvitation', 'createRole',
   'createModule', 'createPermission',
   'registerClient', 'createWebhook',
   'exportData', 'reportBreach', 'breakGlass',
@@ -254,6 +257,10 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <AddPatientPanel open onClose={closePanel} />;
     case 'inviteUser':
       return <InviteUserPanel open onClose={closePanel} />;
+    case 'newInvitation':
+      return <NewInvitationPanel open onClose={closePanel} />;
+    case 'invitationToken':
+      return <InvitationTokenPanel result={panel.result} email={panel.email} open onClose={closePanel} />;
     case 'manageUser':
       return <ManageUserPanel userId={panel.userId} open onClose={closePanel} />;
     case 'editUser':

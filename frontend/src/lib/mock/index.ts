@@ -13,6 +13,8 @@ export * from './developers';
 export * from './security';
 // Team console Audit log (#86) + Active sessions (#87) live in ./team-audit-sessions.
 export * from './team-audit-sessions';
+// Team console token-based Invitations (#89) live in ./invitations.
+export * from './invitations';
 // Clinical records (Slice 03b) live in ./clinical.
 export * from './clinical';
 // Commission / Care Partners (Slice 07) live in ./commission.

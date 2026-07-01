@@ -63,15 +63,15 @@ const AiOpsScreen = lazy(() =>
 );
 
 // Shared slide-over search params (root-level so all routes carry them).
-// `clientSecret` and `deletionCertificate` are intentionally NOT here — each
-// carries one-time plaintext (secret / erasure certificate) that must never be
-// URL-encoded or survive a refresh. Clinical panels are excluded too (PHI +
-// purpose-of-use must never be URL-encoded).
+// `clientSecret`, `invitationToken`, and `deletionCertificate` are intentionally
+// NOT here — each carries one-time plaintext (a secret / an invitation token / an
+// erasure certificate) that must never be URL-encoded or survive a refresh.
+// Clinical panels are excluded too (PHI + purpose-of-use must never be URL-encoded).
 const panelSearchSchema = z.object({
   panel: z
     .enum([
       'conversation', 'manage', 'approve', 'reschedule', 'newBooking', 'bookTime', 'addDoctor', 'addPatient',
-      'inviteUser', 'manageUser', 'editUser', 'roleView', 'createRole',
+      'inviteUser', 'newInvitation', 'manageUser', 'editUser', 'roleView', 'createRole',
       'roleMatrix', 'duplicateRole', 'effectiveAccess', 'createModule', 'createPermission',
       'registerClient', 'manageClient', 'createWebhook', 'webhookForm', 'webhookDeliveries',
       'exportData', 'eraseData', 'reportBreach', 'breakGlass',

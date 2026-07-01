@@ -48,6 +48,13 @@ import {
   AuditLogPageSchema,
   ActiveSessionSchema,
   RevokeAllSessionsResultSchema,
+  InvitationListSchema,
+  InvitationTokenResultSchema,
+  RevokeInvitationResultSchema,
+  type CreateInvitationRequest,
+  type InvitationList,
+  type InvitationTokenResult,
+  type RevokeInvitationResult,
   type ActiveSession,
   type AuditCsvResult,
   type AuditLogFilter,
@@ -1856,6 +1863,69 @@ export async function revokeAllSessions(
     idempotency: idempotencyKey,
   });
   return RevokeAllSessionsResultSchema.parse(raw);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// INVITATIONS (#89, epic #80 Phase C) — token-based tenant onboarding, ALONGSIDE
+// the direct-add invite (createUser). The management endpoints are tenant-scoped
+// (`/tenants/{tenantId}/invitations`, tenant bound from the JWT server-side) and
+// gate on tenant.users.read (list) / tenant.users.create (create/resend/revoke).
+// The plaintext token is returned EXACTLY ONCE by create/resend (never cached,
+// never re-fetchable) — the caller hands it to the reveal UI. NO PHI — staff
+// identities + a role name only.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** GET /tenants/{tenantId}/invitations?status= → InvitationListDto. Never returns
+ *  the token/hash. The tenant comes from the session; RLS re-scopes server-side. */
+export async function listInvitations(status?: string): Promise<InvitationList> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/invitations${qs}`);
+  return InvitationListSchema.parse(raw);
+}
+
+/** POST /tenants/{tenantId}/invitations → 201 InvitationTokenResult (the ONE-TIME
+ *  plaintext token). Idempotency-Key on the POST; 403 (no-escalation on the role)
+ *  / 409 (a live pending invite already exists for the email) surface via toUserError. */
+export async function createInvitation(
+  req: CreateInvitationRequest,
+  idempotencyKey: string,
+): Promise<InvitationTokenResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/invitations`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: { email: req.email, roleId: req.roleId ?? null },
+  });
+  return InvitationTokenResultSchema.parse(raw);
+}
+
+/** POST /tenants/{tenantId}/invitations/{id}/resend → InvitationTokenResult (a NEW
+ *  one-time token; the prior one is invalidated). Pending-only (422 otherwise). */
+export async function resendInvitation(
+  invitationId: string,
+  idempotencyKey: string,
+): Promise<InvitationTokenResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/invitations/${invitationId}/resend`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+  });
+  return InvitationTokenResultSchema.parse(raw);
+}
+
+/** POST /tenants/{tenantId}/invitations/{id}/revoke → RevokeInvitationResult.
+ *  Idempotent (`alreadyInactive`=true when it was not pending). */
+export async function revokeInvitation(
+  invitationId: string,
+  idempotencyKey: string,
+): Promise<RevokeInvitationResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/invitations/${invitationId}/revoke`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+  });
+  return RevokeInvitationResultSchema.parse(raw);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

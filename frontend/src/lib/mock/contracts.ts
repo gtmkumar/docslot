@@ -1257,6 +1257,68 @@ export const RevokeAllSessionsResultSchema = z.object({
 export type RevokeAllSessionsResult = z.infer<typeof RevokeAllSessionsResultSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// INVITATIONS (issue #89, epic #80 Phase C) — token-based tenant onboarding.
+// Mirrors mediq.SharedDataModel/Docslot/Admin/InvitationDtos.cs (camelCase wire).
+// The plaintext token is returned EXACTLY ONCE (create/resend); the list/read
+// shapes NEVER carry the token or its hash. NO PHI — invited staff identities only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One invitation row for the console list. Mirrors InvitationDto. Never carries
+ *  the token/hash. `roleName` is the LEFT-JOINed display name (null when no role
+ *  was pre-attached). Status is DB-CHECK-constrained to the four values below. */
+export const InvitationSchema = z.object({
+  invitationId: z.string(),
+  invitedEmail: z.string(),
+  roleId: z.string().nullable(),
+  roleName: z.string().nullable(),
+  status: z.enum(['pending', 'accepted', 'revoked', 'expired']),
+  expiresAt: z.string(),
+  resendCount: z.number().int().nonnegative(),
+  invitedByUserId: z.string().nullable(),
+  acceptedUserId: z.string().nullable(),
+  acceptedAt: z.string().nullable(),
+  revokedAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type Invitation = z.infer<typeof InvitationSchema>;
+export type InvitationStatus = Invitation['status'];
+
+/** The invitation list + a count for the tab badge. Mirrors InvitationListDto. */
+export const InvitationListSchema = z.object({
+  items: InvitationSchema.array(),
+  count: z.number().int().nonnegative(),
+});
+export type InvitationList = z.infer<typeof InvitationListSchema>;
+
+/** `POST /tenants/{id}/invitations` (+ `/resend`) result. Mirrors InvitationTokenResult.
+ *  `token` is the ONE-TIME plaintext — surfaced once for hand-off (send lands in #93),
+ *  never persisted or re-fetchable. This response is never idempotency-cached server-side. */
+export const InvitationTokenResultSchema = z.object({
+  invitationId: z.string(),
+  token: z.string(),
+  expiresAt: z.string(),
+  resendCount: z.number().int().nonnegative(),
+});
+export type InvitationTokenResult = z.infer<typeof InvitationTokenResultSchema>;
+
+/** `POST /tenants/{id}/invitations/{id}/revoke` result. `alreadyInactive`=true when
+ *  it was not pending (idempotent). Mirrors RevokeInvitationResult. */
+export const RevokeInvitationResultSchema = z.object({
+  invitationId: z.string(),
+  alreadyInactive: z.boolean(),
+});
+export type RevokeInvitationResult = z.infer<typeof RevokeInvitationResultSchema>;
+
+/** `POST /tenants/{id}/invitations` body. Mirrors CreateInvitationRequest. The role
+ *  is OPTIONAL (the invitee gets no tenant role until accept if omitted); the actor
+ *  may only pre-attach a role they may confer (R3 no-escalation, enforced at the DB). */
+export const CreateInvitationRequestSchema = z.object({
+  email: z.string(),
+  roleId: z.string().nullable().optional(),
+});
+export type CreateInvitationRequest = z.infer<typeof CreateInvitationRequestSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CLINICAL PHI (Slice 03b) — mirrors mediq.SharedDataModel/Docslot/Clinical
 // (camelCase wire). THE MOST PHI-SENSITIVE SURFACE.
 //  - Decrypted detail shapes are returned ONLY to authorized callers; the UI

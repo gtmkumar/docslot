@@ -198,6 +198,12 @@ export const listActiveSessions = USE_REAL_API ? real.listActiveSessions : mock.
 export const revokeSession = USE_REAL_API ? real.revokeSession : mock.revokeSession;
 export const revokeAllSessions = USE_REAL_API ? real.revokeAllSessions : mock.revokeAllSessions;
 
+// TEAM — token-based Invitations (#89)
+export const listInvitations = USE_REAL_API ? real.listInvitations : mock.listInvitations;
+export const createInvitation = USE_REAL_API ? real.createInvitation : mock.createInvitation;
+export const resendInvitation = USE_REAL_API ? real.resendInvitation : mock.resendInvitation;
+export const revokeInvitation = USE_REAL_API ? real.revokeInvitation : mock.revokeInvitation;
+
 // ── IAM / ROLES & PERMISSIONS (Slice 2) ───────────────────────────────────────
 // Privilege-matrix grid + duplicate + effective-access viewer. READS pass through
 // (zod mirrors the IAM DTOs 1:1); WRITES (cell toggle, duplicate) carry an

@@ -6,13 +6,12 @@
 // create role → platform.roles.manage. Backend-driven nav is untouched; this screen
 // never branches on role names.
 //
-// Phase A honesty: People/Roles/API render live surfaces (existing tab bodies +
-// the reused Developer portal). Invites/Audit/Security show design-token empty
-// states — their real backends land in later issues (#89/#86/#91), so we render a
-// proper "coming soon" state rather than fake data. Export + Bulk import are D4
-// (#95): rendered for visual parity but disabled (non-functional) stubs.
+// People/Roles/Invites/Audit/Security/API all render LIVE surfaces now. Invites
+// (#89) lists pending token-based invitations with per-row resend/revoke and a tab
+// badge for the pending count; Security (#91) still surfaces active sessions (#87).
+// Export + Bulk import are D4 (#95): rendered for visual parity but disabled
+// (non-functional) stubs.
 
-import type { ReactNode } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { useTranslation } from 'react-i18next';
 import { Download, MailPlus, Upload, UserPlus } from 'lucide-react';
@@ -26,7 +25,8 @@ import { RolesPermissionsTab } from './components/RolesPermissionsTab';
 import { ApiIntegrationsTab } from './components/ApiIntegrationsTab';
 import { AuditLogTab } from './components/AuditLogTab';
 import { SessionsTab } from './components/SessionsTab';
-import { useRoles, useTenantUsers } from './api';
+import { InvitesTab } from './components/InvitesTab';
+import { useInvitations, useRoles, useTenantUsers } from './api';
 
 const tabTrigger =
   'shrink-0 whitespace-nowrap px-3 py-2 text-[13px] font-medium text-muted border-b-2 border-transparent transition-colors ' +
@@ -54,23 +54,29 @@ export function TeamScreen() {
   // invites (#89) and branches (#90) have no data yet — omitted, not fabricated.
   const { data: users } = useTenantUsers();
   const { data: roles } = useRoles();
+  // Pending-invitation count (#89) — feeds the Invites tab badge. Gated on
+  // tenant.users.read so we never fire a 403 when the tab itself is hidden.
+  const { data: invites } = useInvitations('pending', canReadUsers);
   const activeCount = users?.filter((u) => u.isActive).length;
   const roleCount = roles?.length;
   const customCount = roles?.filter((r) => !r.isSystem).length;
+  const pendingInvites = invites?.count;
   const hasStats = activeCount !== undefined || roleCount !== undefined;
 
   // Visible tabs, in mockup order. Each carries its own permission gate; the first
-  // visible tab becomes the default so the screen never opens on a hidden tab.
+  // visible tab becomes the default so the screen never opens on a hidden tab. An
+  // optional `badge` renders a count pill on the trigger (Invites → pending count).
+  type TabDef = { value: string; label: string; badge?: number };
   const tabs = (
     [
       canReadUsers ? { value: 'people', label: t('team.tabPeople') } : null,
       canReadUsers ? { value: 'roles', label: t('team.tabRolesPerms') } : null,
-      canReadUsers ? { value: 'invites', label: t('team.tabInvites') } : null,
+      canReadUsers ? { value: 'invites', label: t('team.tabInvites'), badge: pendingInvites } : null,
       canReadAudit ? { value: 'audit', label: t('team.tabAudit') } : null,
       canReadSettings ? { value: 'security', label: t('team.tabSecurity') } : null,
       canApi ? { value: 'api', label: t('team.tabApi') } : null,
-    ] as ({ value: string; label: string } | null)[]
-  ).filter((x): x is { value: string; label: string } => x !== null);
+    ] as (TabDef | null)[]
+  ).filter((x): x is TabDef => x !== null);
 
   const defaultTab = tabs[0]?.value;
 
@@ -126,21 +132,39 @@ export function TeamScreen() {
               {tabs.map((tab) => (
                 <Tabs.Trigger key={tab.value} value={tab.value} className={tabTrigger}>
                   {tab.label}
+                  {tab.badge ? (
+                    <span className="ml-1.5 inline-flex min-w-[18px] items-center justify-center rounded-full bg-primary-soft px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                      {tab.badge}
+                    </span>
+                  ) : null}
                 </Tabs.Trigger>
               ))}
             </Tabs.List>
 
-            {/* Per-tab primary action: Create role lives with the Roles tab so the
-                right permission gates its action (existing pattern). */}
-            {canReadUsers && canManageRoles ? (
+            {/* Per-tab primary action: each create action lives with its tab so the
+                right permission gates it (existing pattern). Create role → Roles;
+                New invitation → Invites (#89). */}
+            {canReadUsers && (canManageRoles || canCreateUsers) ? (
               <div className="flex items-center gap-2 pb-2">
-                <Tabs.Content value="roles" forceMount asChild>
-                  <span className="data-[state=inactive]:hidden">
-                    <Button variant="primary" size="sm" onClick={() => openPanel({ type: 'createRole' })}>
-                      {t('team.createRole')}
-                    </Button>
-                  </span>
-                </Tabs.Content>
+                {canManageRoles ? (
+                  <Tabs.Content value="roles" forceMount asChild>
+                    <span className="data-[state=inactive]:hidden">
+                      <Button variant="primary" size="sm" onClick={() => openPanel({ type: 'createRole' })}>
+                        {t('team.createRole')}
+                      </Button>
+                    </span>
+                  </Tabs.Content>
+                ) : null}
+                {canCreateUsers ? (
+                  <Tabs.Content value="invites" forceMount asChild>
+                    <span className="data-[state=inactive]:hidden">
+                      <Button variant="primary" size="sm" onClick={() => openPanel({ type: 'newInvitation' })}>
+                        <MailPlus size={15} aria-hidden="true" />
+                        {t('team.invites.newInvitation')}
+                      </Button>
+                    </span>
+                  </Tabs.Content>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -154,11 +178,7 @@ export function TeamScreen() {
                 <RolesPermissionsTab />
               </Tabs.Content>
               <Tabs.Content value="invites" className={contentClass}>
-                <TabEmpty
-                  icon={<MailPlus size={28} aria-hidden="true" />}
-                  title={t('team.invitesEmpty.title')}
-                  body={t('team.invitesEmpty.body')}
-                />
+                <InvitesTab />
               </Tabs.Content>
             </>
           ) : null}
@@ -187,13 +207,5 @@ export function TeamScreen() {
         </Card>
       )}
     </section>
-  );
-}
-
-function TabEmpty({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
-  return (
-    <Card>
-      <EmptyState icon={icon} title={title} description={body} />
-    </Card>
   );
 }
