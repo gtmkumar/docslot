@@ -7,7 +7,7 @@ metadata:
 
 # IAM — Roles & permissions (feature `team`, Slice 2)
 
-The IAM surface lives in `frontend/src/features/team/` (NOT a separate `iam` folder). `TeamScreen.tsx` has two Radix tabs (Users / Roles); `RolesTab.tsx` lists roles and opens the **privilege matrix** slide-over (`RoleMatrixPanel.tsx`, the heart of the screen — grouped module sections, optimistic cell toggle via `useOptimistic`, dangerous-cell inline confirm, duplicate CTA for read-only/built-in roles).
+The IAM surface lives in `frontend/src/features/team/` (NOT a separate `iam` folder). As of epic #80 Phase A (2026-07-01) `TeamScreen.tsx` is a **six-tab unified console** — see the "Unified console" section below (it superseded the old two-tab Users/Roles layout). The **privilege matrix** body is now `RoleMatrixView.tsx` (the heart of the screen — grouped module sections, optimistic cell toggle via `useOptimistic`, dangerous-cell inline confirm, and — added in #83 — a legend, a scoped-effect tile from `matrix.scope`, and the full `permissionKey` per cell; plus the duplicate CTA for read-only/built-in roles). `RoleMatrixPanel.tsx` is now a thin SlideOver wrapper around `RoleMatrixView` (kept only for the `?panel=roleMatrix&id=` deep link). **`RolesTab.tsx` was REMOVED** — the role list + catalog toolbar now live inside `RolesPermissionsTab.tsx`.
 
 ## Two governance planes (DO NOT conflate the gates)
 - **Assignment plane** (tenant-governed): grant/revoke an *existing* permission to a role; duplicate a role. Gated `tenant.roles.assign`. A tenant owner (priyanka) holds this.
@@ -36,5 +36,26 @@ The final mock-only `team` IAM fns are wired behind `VITE_USE_REAL_API` in `lib/
 
 ## i18n
 Namespace `team.catalog.*` (en + hi both present, ~line 472 / ~1750 in `app/i18n.ts`): `toolbarLabel/addModule/addPermission/optional`, `module.*`, `permission.*` (incl. `scopeOption.{platform,tenant,self}`, `inertNote`, `keyHint`), `validation.*`.
+
+## Unified Team & roles console (epic #80 Phase A — #81/#82/#83, 2026-07-01)
+
+`TeamScreen.tsx` → six top-level Radix tabs, each gated on a real permission via in-memory `can()` (first *visible* tab is the default so we never open a hidden tab):
+- **People** (`tenant.users.read`) → `UsersTab.tsx`. **Roles & permissions** (`tenant.users.read`) → `RolesPermissionsTab.tsx`. **Invites** (`tenant.users.read`) → empty-state. **Audit log** (`tenant.audit.read`) → empty-state. **Security** (`tenant.settings.read`) → empty-state. **API & integrations** (`platform.api_clients.manage`) → `ApiIntegrationsTab.tsx`.
+- Invites/Audit/Security are **design-token empty-states** (icon + en/hi copy), NOT fake data — real backends land in #89 (invitations) / #86 (audit read-API) / #91 (security policies).
+- Header stat line shows only what's derivable NOW: `{{count}} active` (loaded users list) + `{{count}} roles ({{custom}} custom)` (`useRoles`, custom = `!isSystem`). Pending-invites (#89) and branches (#90) counts are OMITTED, not fabricated.
+- Toolbar (top-right): **Invite people** → `inviteUser` panel, gated `tenant.users.create`. **Export** + **Bulk import** are D4 (#95) — rendered `disabled` with a `title` "Coming soon" (visual parity, deliberately non-functional; never fake an export). Create-role stays a per-tab action (`platform.roles.manage`) using the `Tabs.Content forceMount asChild` header pattern.
+
+**API & integrations tab (`ApiIntegrationsTab.tsx`)** COMPOSES the existing developer-portal sub-tab bodies (`ClientsTab`/`ScopesTab`/`WebhooksTab`/`LogsTab`) from `@/features/developers/components/*` inside a nested Radix Tabs — a deliberate **cross-feature import** (the epic folds the dev portal into the console; reuse, don't duplicate). `/developers` and `/security` screens + routes are UNCHANGED. Management actions still gate on `platform.api_clients.manage`.
+
+**People reskin (#82, `UsersTab.tsx`)** — UI-only over the live `UserListItemDto` (no backend change): YOU badge on the current user (`useSession((s)=>s.user?.userId)`); colour-coded role badges via a deterministic hash of `roleKey` → token-only `ROLE_COLORS` (primary/info/warn/accent/danger/neutral soft pairs — zero hex); an All-roles client-side filter (`Select` over distinct `roles[].roleKey`, wrapped in a fixed `w-40` div because Field's Select is `w-full`); a "showing X of Y" count; explicit 2FA On/Off pill; and a per-row `…` **kebab** replacing the whole-row button. Kebab items: Manage access → `manageUser` (holds deactivate/reset/assign-role), Edit profile → `editUser`, View effective access → `effectiveAccess` (viewers get only the last). SCOPE column + All-branches filter deferred to #90.
+
+**Roles & permissions master-detail (#83, `RolesPermissionsTab.tsx`)** — nested Radix Tabs, 3 sub-tabs:
+- **Roles & privileges**: role list (left, `aria-current` selection, default-selects `roles[0]` WITHOUT an effect via `selectedId ?? roles[0].roleId`) + always-on `RoleMatrixView` pane (right); catalog toolbar (+Module/+Permission, `platform.permissions.manage`) rides above.
+- **Per-user overrides**: empty-state — tenant-wide overrides list awaits **#85**; per-user editing stays reachable via People → Manage access → overrides in `ManageUserPanel`.
+- **Effective access**: person picker (users list) opening the reused `effectiveAccess` slide-over. Per-role member counts (#84) omitted.
+
+**New reusable primitive:** `components/ui/KebabMenu.tsx` — accessible overflow menu (trigger `aria-haspopup=menu` + role=menu/menuitem, focus-first-item on open, Arrow up/down cycle, Esc returns focus, outside-click/Tab close). Built WITHOUT a Radix dropdown-menu dep — the repo ships only `@radix-ui/react-{dialog,hover-card,tabs}`; for menus/popovers follow this or the `AppearanceMenu` pattern, do NOT add a new Radix package.
+
+No new routes, no new endpoints, no contract gaps — all Phase-A gaps are backend-not-yet-built (#84/#85/#86/#89/#90/#91/#95), surfaced as honest empty-states/stubs. `npm run typecheck && npm run build` green after each of the 3 commits (520c9d4 #81, then #82/#83 replayed to ad0bd24 / 3844fc6 to fold a select-width fix).
 
 See also [[live-api-seam]] (the IAM READ/WRITE wiring + base path /iam) and [[platform-admin-login]] (super_admin vs tenant_owner perm/nav differences).
