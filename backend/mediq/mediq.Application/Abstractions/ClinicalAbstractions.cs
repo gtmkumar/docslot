@@ -10,13 +10,13 @@ namespace mediq.Application.Abstractions;
 /// </summary>
 public interface IClinicalRepository
 {
-    /// <summary>True iff the doctor exists AND belongs to <paramref name="tenantId"/>. docslot.doctors is
-    /// tenant-scoped but NOT RLS-protected and doctor_id is a tenant-blind FK, so the write path must reject a
-    /// cross-tenant doctor_id explicitly (a caller could otherwise persist a prescription in their tenant that
-    /// references another tenant's doctor).</summary>
+    /// <summary>True iff the doctor exists, is active, not soft-deleted, AND belongs to <paramref name="tenantId"/>.
+    /// docslot.doctors is tenant-scoped but NOT RLS-protected and doctor_id is a tenant-blind FK, so the write path
+    /// must reject a cross-tenant doctor_id explicitly (a caller could otherwise persist a prescription in their
+    /// tenant that references another tenant's doctor); it also refuses a soft-deleted/deactivated doctor.</summary>
     Task<bool> DoctorBelongsToTenantAsync(Guid doctorId, Guid tenantId, CancellationToken ct);
-    /// <summary>True iff the test exists AND belongs to <paramref name="tenantId"/> (docslot.test_catalog is
-    /// tenant-scoped, no RLS, tenant-blind FK — same cross-tenant write guard as doctors).</summary>
+    /// <summary>True iff the test exists, is active, AND belongs to <paramref name="tenantId"/> (docslot.test_catalog
+    /// is tenant-scoped, no RLS, tenant-blind FK — same cross-tenant write guard as doctors; no deleted_at column).</summary>
     Task<bool> TestBelongsToTenantAsync(Guid testId, Guid tenantId, CancellationToken ct);
 
     Task<string?> AddPrescriptionAsync(Prescription prescription, CancellationToken ct);   // returns prescription_number

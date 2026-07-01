@@ -6,6 +6,7 @@ using mediq.Application.Cqrs;
 using mediq.Domain.Docslot;
 using mediq.SharedDataModel.Docslot.Clinical;
 using mediq.Utilities.Exceptions;
+using Microsoft.Extensions.Logging;
 
 namespace mediq.Application.Features.Docslot.Clinical;
 
@@ -33,7 +34,8 @@ public sealed class UploadLabReportValidator : AbstractValidator<UploadLabReport
 
 public sealed class UploadLabReportCommandHandler(
     IClinicalRepository clinical, IFieldEncryptionService encryption, IBookingEventPublisher events,
-    IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock)
+    IAuditTrailWriter audit, ICurrentUserContext ctx, IClock clock,
+    ILogger<UploadLabReportCommandHandler> logger)
     : ICommandHandler<UploadLabReportCommand, UploadLabReportResult>
 {
     public async Task<UploadLabReportResult> Handle(UploadLabReportCommand command, CancellationToken ct)
@@ -44,8 +46,14 @@ public sealed class UploadLabReportCommandHandler(
         // so when supplied it must belong to the caller's tenant — otherwise a lab report in THIS tenant could
         // reference ANOTHER tenant's test_id (#71).
         if (req.TestId is { } testId && !await clinical.TestBelongsToTenantAsync(testId, command.TenantId, ct))
+        {
+            // Security signal (survives the rollback the throw triggers; non-transactional; IDs only, no PHI).
+            logger.LogWarning(
+                "SECURITY: lab-report-upload rejected — test {TestId} is not a valid active test in tenant {TenantId} (user {UserId})",
+                testId, command.TenantId, ctx.UserId);
             throw new mediq.Utilities.Exceptions.ValidationException(
                 new Dictionary<string, string[]> { ["testId"] = ["The referenced test was not found for this tenant."] });
+        }
 
         var encCtx = new EncryptionContext(ctx.UserId, command.TenantId, "lab_report", req.PatientId, ctx.IpAddress);
         var resultsEnc = string.IsNullOrEmpty(req.StructuredResultsJson)

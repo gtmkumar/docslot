@@ -82,6 +82,30 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
     }
 
     [Fact]
+    public async Task Issue_Prescription_With_Inactive_Or_Deleted_Doctor_Is_Rejected()
+    {
+        // #71 follow-up: the write guard also refuses a SAME-tenant doctor that is soft-deleted / deactivated —
+        // a new prescription must reference a live, active doctor.
+        var retiredDoctor = Guid.NewGuid();
+        await ExecAsync("INSERT INTO docslot.doctors (doctor_id, tenant_id, full_name, is_active, is_accepting_new_patients, deleted_at, created_at, updated_at) VALUES (@id, @t, 'Dr Retired', false, false, NOW(), NOW(), NOW())",
+            ("id", retiredDoctor), ("t", factory.TenantA));
+        try
+        {
+            var client = await AuthedClientAsync();   // TenantA — same tenant as the doctor
+            var resp = await client.PostAsJsonAsync("/api/v1/prescriptions", new IssuePrescriptionRequest(
+                factory.BookingId, factory.PatientId, retiredDoctor, null, null, "dx", "[]", null, null));
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
+
+            var count = await ScalarIntAsync("SELECT COUNT(*)::int FROM docslot.prescriptions WHERE doctor_id=@d", ("d", retiredDoctor));
+            Assert.Equal(0, count);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.doctors WHERE doctor_id=@id", ("id", retiredDoctor));
+        }
+    }
+
+    [Fact]
     public async Task Amend_Prescription_Supersedes_Original_Encrypts_New_Content_And_Guards_State()
     {
         var client = await AuthedClientAsync();   // tenant A; tenant_owner → create/read/amend

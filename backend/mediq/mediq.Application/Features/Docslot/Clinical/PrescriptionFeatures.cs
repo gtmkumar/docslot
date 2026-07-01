@@ -4,6 +4,7 @@ using mediq.Application.Cqrs;
 using mediq.Domain.Docslot;
 using mediq.SharedDataModel.Docslot.Clinical;
 using mediq.Utilities.Exceptions;
+using Microsoft.Extensions.Logging;
 
 namespace mediq.Application.Features.Docslot.Clinical;
 
@@ -41,7 +42,8 @@ public sealed class IssuePrescriptionCommandHandler(
     IBookingEventPublisher events,
     IAuditTrailWriter audit,
     ICurrentUserContext ctx,
-    IClock clock)
+    IClock clock,
+    ILogger<IssuePrescriptionCommandHandler> logger)
     : ICommandHandler<IssuePrescriptionCommand, IssuePrescriptionResult>
 {
     public async Task<IssuePrescriptionResult> Handle(IssuePrescriptionCommand command, CancellationToken ct)
@@ -51,8 +53,15 @@ public sealed class IssuePrescriptionCommandHandler(
         // Tenant-ownership guard: doctor_id is a tenant-blind FK and docslot.doctors has no RLS, so without this
         // a caller could persist a prescription in THIS tenant referencing ANOTHER tenant's doctor_id (#71).
         if (!await clinical.DoctorBelongsToTenantAsync(req.DoctorId, command.TenantId, ct))
+        {
+            // Security signal (survives the tx rollback the throw triggers — logging is non-transactional, unlike
+            // the audit_log). IDs only, no PHI. A repeated hit is a cross-tenant-probing indicator for the SIEM.
+            logger.LogWarning(
+                "SECURITY: prescription-issue rejected — doctor {DoctorId} is not a valid active doctor in tenant {TenantId} (user {UserId})",
+                req.DoctorId, command.TenantId, ctx.UserId);
             throw new mediq.Utilities.Exceptions.ValidationException(
                 new Dictionary<string, string[]> { ["doctorId"] = ["The referenced doctor was not found for this tenant."] });
+        }
 
         var encCtx = new EncryptionContext(ctx.UserId, command.TenantId, "prescription", req.PatientId, ctx.IpAddress);
 
