@@ -51,6 +51,12 @@ import {
   InvitationListSchema,
   InvitationTokenResultSchema,
   RevokeInvitationResultSchema,
+  IpAllowlistEntrySchema,
+  SecurityPolicyViewSchema,
+  type AddIpAllowlistRequest,
+  type IpAllowlistEntry,
+  type SecurityPolicyInput,
+  type SecurityPolicyView,
   type CreateInvitationRequest,
   type InvitationList,
   type InvitationTokenResult,
@@ -1868,6 +1874,87 @@ export async function revokeAllSessions(
     idempotency: idempotencyKey,
   });
   return RevokeAllSessionsResultSchema.parse(raw);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SECURITY POLICY (#91, epic #80 Phase C) — Team console "Security" tab. The policy
+// lives in platform.tenants.settings->'security' (no new table); the tenant is bound
+// from the JWT server-side (never a client param). Reads gate tenant.settings.read;
+// writes gate tenant.settings.update; the IP allow-list gates platform.ip_allowlist.manage.
+// NO PHI — tenant configuration + CIDR metadata only. Writes carry an Idempotency-Key.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** GET /security/policy → SecurityPolicyDto (effective policy + derived pending count). */
+export async function getSecurityPolicy(): Promise<SecurityPolicyView> {
+  const raw = await apiFetch<unknown>('/security/policy');
+  return SecurityPolicyViewSchema.parse(raw);
+}
+
+/** PUT /security/policy → the re-read effective policy + a fresh pending count.
+ *  Ranges are server-validated (minLen 8..128, idle 1..1440, hours HH:mm, mfaPolicy
+ *  enum) → 422 surfaces via toUserError. Idempotency-Key on the write. */
+export async function updateSecurityPolicy(
+  policy: SecurityPolicyInput,
+  idempotencyKey: string,
+): Promise<SecurityPolicyView> {
+  const raw = await apiFetch<unknown>('/security/policy', {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: {
+      mfaPolicy: policy.mfaPolicy,
+      minPasswordLength: policy.minPasswordLength,
+      idleTimeoutMinutes: policy.idleTimeoutMinutes,
+      requireNewDeviceVerification: policy.requireNewDeviceVerification,
+      restrictLoginHours: policy.restrictLoginHours,
+      loginHoursStart: policy.loginHoursStart,
+      loginHoursEnd: policy.loginHoursEnd,
+      doctorsExemptFromHours: policy.doctorsExemptFromHours,
+      ipAllowlistEnabled: policy.ipAllowlistEnabled,
+      maskSensitiveForReceptionist: policy.maskSensitiveForReceptionist,
+    },
+  });
+  return SecurityPolicyViewSchema.parse(raw);
+}
+
+/** GET /security/ip-allowlist → IpAllowlistEntryDto[] (gated platform.ip_allowlist.manage). */
+export async function listIpAllowlist(): Promise<IpAllowlistEntry[]> {
+  const raw = await apiFetch<unknown[]>('/security/ip-allowlist');
+  return IpAllowlistEntrySchema.array().parse(raw);
+}
+
+/** POST /security/ip-allowlist → the new entry id (a bare Guid string). The CIDR/IP
+ *  is server-validated (422 on a bad value). We build the created entry from the
+ *  request + returned id for an optimistic append; the list invalidates to reconcile.
+ *  Idempotency-Key on the write. */
+export async function addIpAllowlist(
+  req: AddIpAllowlistRequest,
+  idempotencyKey: string,
+): Promise<IpAllowlistEntry> {
+  const raw = await apiFetch<unknown>('/security/ip-allowlist', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: { cidrRange: req.cidrRange.trim(), label: req.label?.trim() || null, expiresAt: req.expiresAt ?? null },
+  });
+  const allowlistId =
+    typeof raw === 'string' ? raw : ((raw as { allowlistId?: string })?.allowlistId ?? crypto.randomUUID());
+  return IpAllowlistEntrySchema.parse({
+    allowlistId,
+    cidrRange: req.cidrRange.trim(),
+    label: req.label?.trim() || null,
+    isActive: true,
+    createdAt: new Date().toISOString(),
+    expiresAt: req.expiresAt ?? null,
+  });
+}
+
+/** DELETE /security/ip-allowlist/{id} → bool (404 unless it belongs to this tenant).
+ *  Soft-deactivates (no DELETE grant). Idempotency-Key on the write. */
+export async function removeIpAllowlist(allowlistId: string, idempotencyKey: string): Promise<boolean> {
+  const raw = await apiFetch<unknown>(`/security/ip-allowlist/${allowlistId}`, {
+    method: 'DELETE',
+    idempotency: idempotencyKey,
+  });
+  return raw === true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

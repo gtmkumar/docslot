@@ -8,7 +8,8 @@
 //
 // People/Roles/Invites/Audit/Security/API all render LIVE surfaces now. Invites
 // (#89) lists pending token-based invitations with per-row resend/revoke and a tab
-// badge for the pending count; Security (#91) still surfaces active sessions (#87).
+// badge for the pending count; Security (#91) surfaces the tenant security policy
+// (2FA / password & session / access restrictions) above the active-sessions panel (#87).
 // Export + Bulk import are D4 (#95): rendered for visual parity but disabled
 // (non-functional) stubs.
 
@@ -24,7 +25,7 @@ import { UsersTab } from './components/UsersTab';
 import { RolesPermissionsTab } from './components/RolesPermissionsTab';
 import { ApiIntegrationsTab } from './components/ApiIntegrationsTab';
 import { AuditLogTab } from './components/AuditLogTab';
-import { SessionsTab } from './components/SessionsTab';
+import { SecurityTab } from './components/SecurityTab';
 import { InvitesTab } from './components/InvitesTab';
 import { useBranches, useInvitations, useRoles, useTenantUsers } from './api';
 
@@ -201,7 +202,7 @@ export function TeamScreen() {
 
           {canReadSettings ? (
             <Tabs.Content value="security" className={contentClass}>
-              <SessionsTab />
+              <SecurityTab />
             </Tabs.Content>
           ) : null}
 

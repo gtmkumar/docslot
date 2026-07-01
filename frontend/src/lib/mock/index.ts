@@ -15,6 +15,8 @@ export * from './security';
 export * from './team-audit-sessions';
 // Team console token-based Invitations (#89) live in ./invitations.
 export * from './invitations';
+// Team console Security policy + IP allow-list (#91) live in ./security-policy.
+export * from './security-policy';
 // Clinical records (Slice 03b) live in ./clinical.
 export * from './clinical';
 // Commission / Care Partners (Slice 07) live in ./commission.
@@ -159,6 +161,11 @@ const SIGNED_IN_PERMISSIONS: PermissionsResponse = {
     'platform.overrides.read',
     'platform.overrides.grant',
     'platform.roles.manage',
+    // Security policy (#91) — view + edit the tenant policy, manage the IP allow-list.
+    // Granted so the Security tab renders a fully editable surface flag-off.
+    'tenant.settings.read',
+    'tenant.settings.update',
+    'platform.ip_allowlist.manage',
     // Developer / API platform portal (Slice 02).
     'platform.api_clients.manage',
     // Security & Compliance console (Slice 05) — super_admin / DPO scope.

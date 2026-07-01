@@ -1297,6 +1297,73 @@ export const RevokeAllSessionsResultSchema = z.object({
 export type RevokeAllSessionsResult = z.infer<typeof RevokeAllSessionsResultSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SECURITY POLICY (issue #91, epic #80 Phase C) — mirrors
+// mediq.SharedDataModel/Docslot/Security/SecurityPolicyDtos.cs (camelCase wire).
+// Surfaced in the Team console "Security" tab, gated on tenant.settings.read
+// (view) / tenant.settings.update (edit). The policy lives in
+// platform.tenants.settings->'security' (no new table); absent keys merge over
+// code defaults (all gates OFF, masking ON, minLen 8), so an unconfigured tenant
+// still returns a fully-populated object. EVERY field is really enforced in the
+// request path (login / password-set / patient-read) — no dead toggles. NO PHI.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 2FA-enforcement tiers. Server-validated on write; anything else is rejected. */
+export const MfaPolicySchema = z.enum(['optional', 'owners_admins', 'all']);
+export type MfaPolicy = z.infer<typeof MfaPolicySchema>;
+
+/** The editable policy fields (the `PUT /security/policy` body shape). Kept as its own
+ *  object schema — NOT derived via Omit from the passthrough view below, since a
+ *  passthrough index signature would collapse an Omit to `{ [k]: unknown }`. */
+export const SecurityPolicyFieldsSchema = z.object({
+  mfaPolicy: MfaPolicySchema,
+  minPasswordLength: z.number().int(),
+  idleTimeoutMinutes: z.number().int(),
+  requireNewDeviceVerification: z.boolean(),
+  restrictLoginHours: z.boolean(),
+  loginHoursStart: z.string(),
+  loginHoursEnd: z.string(),
+  doctorsExemptFromHours: z.boolean(),
+  ipAllowlistEnabled: z.boolean(),
+  maskSensitiveForReceptionist: z.boolean(),
+});
+/** `PUT /security/policy` body — the editable fields only. Request input. */
+export type SecurityPolicyInput = z.infer<typeof SecurityPolicyFieldsSchema>;
+
+/** The effective security policy + the derived pending-2FA-enrolment staff count.
+ *  Mirrors SecurityPolicyDto. `staffPendingMfaEnrolment` is READ-ONLY (server-derived,
+ *  recomputed on every GET/PUT) — never sent back on update. Tolerant (passthrough)
+ *  so additive server fields don't break parsing. */
+export const SecurityPolicyViewSchema = SecurityPolicyFieldsSchema.extend({
+  /** Derived: active staff subject to a REQUIRED-2FA tier who still lack mfa_enabled
+   *  and would be forced to enrol on next login. 0 when mfaPolicy = optional. */
+  staffPendingMfaEnrolment: z.number().int().nonnegative().default(0),
+}).passthrough();
+export type SecurityPolicyView = z.infer<typeof SecurityPolicyViewSchema>;
+
+/** One row of platform.ip_allowlist (tenant-scoped). Mirrors IpAllowlistEntryDto.
+ *  The raw CIDR is network metadata, not a secret — safe to surface. Dates are ISO
+ *  strings on the wire (.NET DateTimeOffset). */
+export const IpAllowlistEntrySchema = z
+  .object({
+    allowlistId: z.string(),
+    cidrRange: z.string(),
+    label: z.string().nullable().default(null),
+    isActive: z.boolean().default(true),
+    createdAt: z.string(),
+    expiresAt: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type IpAllowlistEntry = z.infer<typeof IpAllowlistEntrySchema>;
+
+/** `POST /security/ip-allowlist` body. Mirrors AddIpAllowlistRequest. Request input
+ *  only. The server validates the CIDR/IP authoritatively (422 on a bad value). */
+export interface AddIpAllowlistRequest {
+  cidrRange: string;
+  label?: string | null;
+  expiresAt?: string | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // INVITATIONS (issue #89, epic #80 Phase C) — token-based tenant onboarding.
 // Mirrors mediq.SharedDataModel/Docslot/Admin/InvitationDtos.cs (camelCase wire).
 // The plaintext token is returned EXACTLY ONCE (create/resend); the list/read

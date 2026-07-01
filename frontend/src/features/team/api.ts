@@ -13,18 +13,23 @@
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  addIpAllowlist,
   assignRole,
   createInvitation,
   createModule,
   exportAuditLog,
+  getSecurityPolicy,
   listActiveSessions,
   listAuditLog,
   listBranches,
   listInvitations,
+  listIpAllowlist,
+  removeIpAllowlist,
   resendInvitation,
   revokeAllSessions,
   revokeInvitation,
   revokeSession,
+  updateSecurityPolicy,
   createPermission,
   createRole,
   createUser,
@@ -52,6 +57,7 @@ import {
 import { type CreateRoleRequest } from '@/lib/mock';
 import type {
   ActiveSession,
+  AddIpAllowlistRequest,
   AssignRoleRequest,
   AuditLogFilter,
   CreateInvitationRequest,
@@ -60,7 +66,10 @@ import type {
   CreateUserRequest,
   DuplicateRoleRequest,
   InvitationList,
+  IpAllowlistEntry,
   RoleMatrix,
+  SecurityPolicyInput,
+  SecurityPolicyView,
   SetMemberScopeRequest,
   SetOverrideRequest,
   SetUserStatusRequest,
@@ -516,6 +525,84 @@ export function useRevokeInvitation() {
         const items = old.items.filter((i) => i.invitationId !== res.invitationId);
         return { items, count: items.length };
       });
+    },
+  });
+}
+
+// ── SECURITY POLICY (#91) ──────────────────────────────────────────────────────
+// The tenant security policy (2FA tier, password/session, access restrictions) +
+// the IP allow-list, surfaced in the Team console "Security" tab. Policy read gates
+// tenant.settings.read (the tab already checks it); write gates tenant.settings.update;
+// the allow-list gates platform.ip_allowlist.manage. Policy saves are OPTIMISTIC
+// (the toggles/inputs reflect instantly) then reconciled with the server's re-read
+// DTO (which carries a fresh staffPendingMfaEnrolment). Allow-list add/remove
+// invalidate the list (low-frequency; no optimistic overlay needed).
+
+export const securityPolicyQueryKey = ['team', 'securityPolicy'] as const;
+export const ipAllowlistQueryKey = ['team', 'ipAllowlist'] as const;
+
+/** The effective security policy + derived pending-2FA count. Enabled by the caller
+ *  (the Security tab only mounts when tenant.settings.read is held). */
+export function useSecurityPolicy(enabled = true) {
+  return useQuery({ queryKey: securityPolicyQueryKey, queryFn: getSecurityPolicy, enabled });
+}
+
+/** Save the policy. OPTIMISTIC: the sent fields land in the cache immediately (the
+ *  form reflects the save without a flash); on success the server's authoritative
+ *  DTO (fresh pending count) replaces it; on error we roll back and the caller toasts.
+ *  Idempotency-Key on the PUT. */
+export function useUpdateSecurityPolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { policy: SecurityPolicyInput; idempotencyKey: string }) =>
+      updateSecurityPolicy(vars.policy, vars.idempotencyKey),
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: securityPolicyQueryKey });
+      const previous = qc.getQueryData<SecurityPolicyView>(securityPolicyQueryKey);
+      // Reflect the edited fields at once; keep the prior derived count until the
+      // server reconciles it (we can't recompute pending client-side accurately).
+      qc.setQueryData<SecurityPolicyView>(securityPolicyQueryKey, (old) =>
+        old ? { ...old, ...vars.policy } : old,
+      );
+      return { previous };
+    },
+    onError: (_e, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(securityPolicyQueryKey, ctx.previous);
+    },
+    onSuccess: (dto) => qc.setQueryData(securityPolicyQueryKey, dto),
+    onSettled: () => void qc.invalidateQueries({ queryKey: securityPolicyQueryKey }),
+  });
+}
+
+/** The tenant's IP allow-list. Gated platform.ip_allowlist.manage; pass enabled=false
+ *  when the caller lacks it so we never fire a 403. */
+export function useIpAllowlist(enabled = true) {
+  return useQuery({ queryKey: ipAllowlistQueryKey, queryFn: listIpAllowlist, enabled });
+}
+
+/** Add a CIDR entry. The server validates the IP/CIDR (422 → toast). Invalidates the
+ *  list so the new row appears with its server fields. Idempotency-Key on the POST. */
+export function useAddIpAllowlist() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: AddIpAllowlistRequest & { idempotencyKey: string }) =>
+      addIpAllowlist({ cidrRange: vars.cidrRange, label: vars.label ?? null, expiresAt: vars.expiresAt ?? null }, vars.idempotencyKey),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ipAllowlistQueryKey }),
+  });
+}
+
+/** Soft-deactivate a CIDR entry. Surgically drops the row from the cache on success
+ *  (no refetch flash), then invalidates to reconcile. Idempotency-Key on the DELETE. */
+export function useRemoveIpAllowlist() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { allowlistId: string; idempotencyKey: string }) =>
+      removeIpAllowlist(vars.allowlistId, vars.idempotencyKey),
+    onSuccess: (_r, vars) => {
+      qc.setQueryData<IpAllowlistEntry[]>(ipAllowlistQueryKey, (old) =>
+        old ? old.filter((e) => e.allowlistId !== vars.allowlistId) : old,
+      );
+      void qc.invalidateQueries({ queryKey: ipAllowlistQueryKey });
     },
   });
 }

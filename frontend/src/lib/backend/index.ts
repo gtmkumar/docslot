@@ -198,6 +198,18 @@ export const listActiveSessions = USE_REAL_API ? real.listActiveSessions : mock.
 export const revokeSession = USE_REAL_API ? real.revokeSession : mock.revokeSession;
 export const revokeAllSessions = USE_REAL_API ? real.revokeAllSessions : mock.revokeAllSessions;
 
+// ── SECURITY POLICY (#91) — Team console "Security" tab ────────────────────────
+// Live: GET/PUT /security/policy (gated tenant.settings.read / .update) +
+// GET/POST/DELETE /security/ip-allowlist (gated platform.ip_allowlist.manage). The
+// policy lives in tenants.settings->'security' JSONB; every field is really enforced
+// at login / password-set / patient-read. Writes carry an Idempotency-Key. Mock side
+// seeds a configured tenant so the warning + editor states render flag-off. NO PHI.
+export const getSecurityPolicy = USE_REAL_API ? real.getSecurityPolicy : mock.getSecurityPolicy;
+export const updateSecurityPolicy = USE_REAL_API ? real.updateSecurityPolicy : mock.updateSecurityPolicy;
+export const listIpAllowlist = USE_REAL_API ? real.listIpAllowlist : mock.listIpAllowlist;
+export const addIpAllowlist = USE_REAL_API ? real.addIpAllowlist : mock.addIpAllowlist;
+export const removeIpAllowlist = USE_REAL_API ? real.removeIpAllowlist : mock.removeIpAllowlist;
+
 // TEAM — token-based Invitations (#89)
 export const listInvitations = USE_REAL_API ? real.listInvitations : mock.listInvitations;
 export const createInvitation = USE_REAL_API ? real.createInvitation : mock.createInvitation;
