@@ -1733,6 +1733,307 @@ REVOKE INSERT, UPDATE ON platform.resource_types  FROM docslot_app;
 REVOKE INSERT, UPDATE ON platform.action_types    FROM docslot_app;
 
 -- ============================================================================
+-- INVITATIONS (issue #89, epic #80 Phase C) — token-based tenant onboarding
+-- ============================================================================
+-- A NEW capability that sits ALONGSIDE the existing direct-add invite
+-- (POST /tenants/{id}/users → provision_user + assign_role_to_user). Instead of
+-- an admin conferring a role synchronously, an admin mints a single-use, hashed,
+-- expiring token; the invitee redeems it to self-provision (set their own
+-- password + display name) and receive the pre-vetted role. Only a SHA-256 HASH
+-- of the token is ever stored — the plaintext is returned exactly once at
+-- create/resend time and is never re-fetchable.
+--
+-- All writes travel SECURITY DEFINER functions (mirrors the RBAC write path):
+--   * create/resend/revoke re-check the actor's tenant.users.create at the DB and
+--     RE-USE the assign_role_to_user escalation guard (R3 no-escalation) so an
+--     actor can only ever invite to a role they may themselves confer.
+--   * accept is UNAUTHENTICATED — the token IS the authorization. It runs with no
+--     app.tenant_id / actor context, so it MUST be a definer function (RLS would
+--     otherwise hide the row + block the write). It is single-use and atomic.
+-- The table itself carries tenant RLS (rls_can_see/write_tenant) so the LIST read
+-- (a normal tenant-scoped query) is bounded to the caller's tenant.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS platform.invitations (
+    invitation_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID NOT NULL REFERENCES platform.tenants(tenant_id) ON DELETE CASCADE,
+    invited_email       CITEXT NOT NULL,
+    role_id             UUID REFERENCES platform.roles(role_id),           -- role to grant on accept (nullable)
+    invited_by_user_id  UUID REFERENCES platform.users(user_id),
+    token_hash          TEXT NOT NULL,                                     -- SHA-256 of the random token; plaintext NEVER stored
+    status              VARCHAR(20) NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending','accepted','revoked','expired')),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    resend_count        INT NOT NULL DEFAULT 0,
+    accepted_user_id    UUID REFERENCES platform.users(user_id),
+    accepted_at         TIMESTAMPTZ,
+    revoked_at          TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- List/badge access pattern: the console lists invites for a tenant filtered by status.
+CREATE INDEX IF NOT EXISTS idx_invitations_tenant_status
+    ON platform.invitations(tenant_id, status);
+-- At most ONE live pending invite per (tenant, email) — a second create collides (23505 → 409).
+-- Partial: revoked/accepted/expired rows do NOT block re-inviting the same address later.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_invitations_pending_email
+    ON platform.invitations(tenant_id, invited_email) WHERE status = 'pending';
+
+DROP TRIGGER IF EXISTS trg_invitations_updated_at ON platform.invitations;
+CREATE TRIGGER trg_invitations_updated_at BEFORE UPDATE ON platform.invitations
+    FOR EACH ROW EXECUTE FUNCTION platform.set_updated_at();
+
+-- RLS: tenant-scoped (own tenant + super/impersonation), mirroring tenant_module_entitlements.
+ALTER TABLE platform.invitations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS invitations_read  ON platform.invitations;
+DROP POLICY IF EXISTS invitations_write ON platform.invitations;
+CREATE POLICY invitations_read  ON platform.invitations FOR SELECT
+    USING (platform.rls_can_see_tenant(tenant_id));
+CREATE POLICY invitations_write ON platform.invitations FOR ALL
+    USING (platform.rls_can_write_tenant(tenant_id))
+    WITH CHECK (platform.rls_can_write_tenant(tenant_id));
+
+-- Explicit grant: this table is created AFTER file 10's blanket grant ran. SELECT-only — every write
+-- travels a SECURITY DEFINER function (runs as owner), so the app role must NOT hold direct INSERT/UPDATE:
+-- a raw own-tenant write would bypass the R3 no-escalation guard (rls_can_write_tenant does not enforce it).
+-- The REVOKE is defensive/idempotent for post-hoc application over an already-granted live DB.
+GRANT SELECT ON platform.invitations TO docslot_app;
+REVOKE INSERT, UPDATE ON platform.invitations FROM docslot_app;
+
+-- ---- create_invitation: mint a pending, hashed, expiring invite -----------------------------------
+-- NOTE: p_invited_email is TEXT (not CITEXT) so a driver-sent text parameter resolves to this overload —
+-- PostgreSQL will not implicitly coerce text→citext during FUNCTION resolution. The invited_email COLUMN is
+-- still CITEXT, so the INSERT assignment-casts it (case-insensitive identity is preserved at rest).
+CREATE OR REPLACE FUNCTION platform.create_invitation(
+    p_actor_user_id UUID,
+    p_tenant_id     UUID,
+    p_invited_email TEXT,
+    p_token_hash    TEXT,
+    p_expires_at    TIMESTAMPTZ,
+    p_role_id       UUID DEFAULT NULL
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_role_scope VARCHAR;
+    v_role_key   VARCHAR;
+    v_id         UUID;
+BEGIN
+    -- Actor must be allowed to invite users into THIS tenant.
+    IF NOT platform.is_super_admin(p_actor_user_id)
+       AND NOT platform.user_has_permission(p_actor_user_id, 'tenant.users.create', p_tenant_id) THEN
+        RAISE EXCEPTION 'actor % may not invite users in tenant %', p_actor_user_id, p_tenant_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    -- R3 no-escalation: if a role is pre-attached, the actor must be able to CONFER it — identical guard
+    -- to assign_role_to_user, applied HERE at mint time so the token can never grant more than the inviter
+    -- holds (the actual assignment at accept time is unauthenticated and trusts this decision).
+    IF p_role_id IS NOT NULL THEN
+        SELECT scope, role_key INTO v_role_scope, v_role_key
+        FROM platform.roles WHERE role_id = p_role_id AND deleted_at IS NULL;
+        IF v_role_key IS NULL THEN
+            RAISE EXCEPTION 'unknown or deleted role %', p_role_id;
+        END IF;
+
+        IF NOT platform.is_super_admin(p_actor_user_id) THEN
+            IF v_role_scope = 'platform' THEN
+                RAISE EXCEPTION 'actor % may not invite to platform-scoped role %', p_actor_user_id, v_role_key
+                    USING ERRCODE = 'insufficient_privilege';
+            END IF;
+            IF NOT platform.user_has_permission(p_actor_user_id, 'tenant.roles.assign', p_tenant_id) THEN
+                RAISE EXCEPTION 'actor % may not confer roles in tenant %', p_actor_user_id, p_tenant_id
+                    USING ERRCODE = 'insufficient_privilege';
+            END IF;
+            IF EXISTS (
+                SELECT 1
+                FROM platform.role_permissions rp
+                JOIN platform.permissions pm ON pm.permission_id = rp.permission_id
+                WHERE rp.role_id = p_role_id
+                  AND NOT platform.user_has_permission(p_actor_user_id, pm.permission_key, p_tenant_id)
+            ) THEN
+                RAISE EXCEPTION 'actor % cannot invite to role % — it confers permissions the actor does not hold', p_actor_user_id, v_role_key
+                    USING ERRCODE = 'insufficient_privilege';
+            END IF;
+        END IF;
+    END IF;
+
+    -- One live pending invite per (tenant, email); the partial unique index raises 23505 on a duplicate.
+    INSERT INTO platform.invitations
+        (tenant_id, invited_email, role_id, invited_by_user_id, token_hash, expires_at)
+    VALUES
+        (p_tenant_id, p_invited_email, p_role_id, p_actor_user_id, p_token_hash, p_expires_at)
+    RETURNING invitation_id INTO v_id;
+
+    RETURN v_id;
+END;
+$$;
+COMMENT ON FUNCTION platform.create_invitation IS
+    'Mint a single-use pending invitation (hashed token). Actor needs tenant.users.create; a pre-attached role re-uses the R3 no-escalation guard. One live pending invite per (tenant,email).';
+
+-- ---- resend_invitation: rotate the token + extend expiry, bump the counter -------------------------
+CREATE OR REPLACE FUNCTION platform.resend_invitation(
+    p_actor_user_id  UUID,
+    p_tenant_id      UUID,
+    p_invitation_id  UUID,
+    p_new_token_hash TEXT,
+    p_new_expires_at TIMESTAMPTZ
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_id UUID;
+BEGIN
+    IF NOT platform.is_super_admin(p_actor_user_id)
+       AND NOT platform.user_has_permission(p_actor_user_id, 'tenant.users.create', p_tenant_id) THEN
+        RAISE EXCEPTION 'actor % may not resend invitations in tenant %', p_actor_user_id, p_tenant_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    -- Only a still-PENDING invite is resendable; rotating the hash invalidates any previously-issued token.
+    UPDATE platform.invitations
+        SET token_hash   = p_new_token_hash,
+            expires_at   = p_new_expires_at,
+            resend_count = resend_count + 1,
+            updated_at   = NOW()
+        WHERE invitation_id = p_invitation_id
+          AND tenant_id     = p_tenant_id
+          AND status        = 'pending'
+    RETURNING invitation_id INTO v_id;
+
+    IF v_id IS NULL THEN
+        RAISE EXCEPTION 'invitation % is not pending in tenant %', p_invitation_id, p_tenant_id
+            USING ERRCODE = 'no_data_found';
+    END IF;
+    RETURN v_id;
+END;
+$$;
+COMMENT ON FUNCTION platform.resend_invitation IS
+    'Rotate an invitation token + extend expiry (bumps resend_count). Pending-only; needs tenant.users.create. Invalidates any prior token for the invite.';
+
+-- ---- revoke_invitation: cancel a pending invite ---------------------------------------------------
+CREATE OR REPLACE FUNCTION platform.revoke_invitation(
+    p_actor_user_id UUID,
+    p_tenant_id     UUID,
+    p_invitation_id UUID
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_id UUID;
+BEGIN
+    IF NOT platform.is_super_admin(p_actor_user_id)
+       AND NOT platform.user_has_permission(p_actor_user_id, 'tenant.users.create', p_tenant_id) THEN
+        RAISE EXCEPTION 'actor % may not revoke invitations in tenant %', p_actor_user_id, p_tenant_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    UPDATE platform.invitations
+        SET status     = 'revoked',
+            revoked_at = NOW(),
+            updated_at = NOW()
+        WHERE invitation_id = p_invitation_id
+          AND tenant_id     = p_tenant_id
+          AND status        = 'pending'
+    RETURNING invitation_id INTO v_id;
+
+    RETURN v_id IS NOT NULL;   -- false when already accepted/revoked/expired (idempotent)
+END;
+$$;
+COMMENT ON FUNCTION platform.revoke_invitation IS
+    'Revoke a pending invitation (status=revoked). Needs tenant.users.create. Idempotent: returns false if not pending.';
+
+-- ---- accept_invitation: UNAUTHENTICATED redemption (the token is the authorization) ---------------
+-- Runs with NO actor/tenant context, so it is a definer function that bypasses RLS. Constant-time-ish:
+-- a garbage/expired/revoked/already-used token all raise the SAME no_data_found error (no enumeration).
+-- Provisions the user (or LINKS an existing global identity by email without overwriting the profile),
+-- assigns the pre-vetted role (no re-escalation check — the mint already vetted it), marks accepted.
+-- OUT columns are out_*-prefixed so they can't collide with column references inside the body (e.g. the
+-- ON CONFLICT (user_id, tenant_id, role_id) target would otherwise be ambiguous → SQLSTATE 42702).
+DROP FUNCTION IF EXISTS platform.accept_invitation(TEXT, TEXT, TEXT);
+CREATE FUNCTION platform.accept_invitation(
+    p_token_hash    TEXT,
+    p_password_hash TEXT,
+    p_display_name  TEXT
+) RETURNS TABLE(out_invitation_id UUID, out_user_id UUID, out_tenant_id UUID, out_already_existed BOOLEAN)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, pg_temp
+AS $$
+DECLARE
+    v_inv        platform.invitations%ROWTYPE;
+    v_user_id    UUID;
+    v_existed    BOOLEAN := false;
+BEGIN
+    -- Opportunistically age out anything past its window so a stale 'pending' can't be accepted below.
+    UPDATE platform.invitations
+        SET status = 'expired', updated_at = NOW()
+        WHERE status = 'pending' AND expires_at <= NOW() AND token_hash = p_token_hash;
+
+    SELECT * INTO v_inv
+    FROM platform.invitations
+    WHERE token_hash = p_token_hash
+      AND status = 'pending'
+      AND expires_at > NOW();
+
+    IF v_inv.invitation_id IS NULL THEN
+        -- Garbage OR expired OR revoked OR already accepted — one indistinguishable failure.
+        RAISE EXCEPTION 'invitation is invalid, expired, or already used'
+            USING ERRCODE = 'no_data_found';
+    END IF;
+
+    -- Provision-or-link the user (email is the GLOBAL identity). Never overwrite an existing profile.
+    SELECT u.user_id INTO v_user_id
+    FROM platform.users u WHERE u.email = v_inv.invited_email;
+
+    IF v_user_id IS NULL THEN
+        INSERT INTO platform.users
+            (email, password_hash, full_name, email_verified, must_change_password, is_active, created_at, updated_at)
+        VALUES
+            (v_inv.invited_email, p_password_hash, p_display_name, true, false, true, NOW(), NOW())
+        RETURNING platform.users.user_id INTO v_user_id;
+    ELSE
+        v_existed := true;   -- link only; do NOT reset their password/profile
+    END IF;
+
+    -- Assign the pre-vetted role (mint-time R3 guard already authorized it). ON CONFLICT un-revokes.
+    IF v_inv.role_id IS NOT NULL THEN
+        INSERT INTO platform.user_tenant_roles (user_id, tenant_id, role_id, granted_by)
+        VALUES (v_user_id, v_inv.tenant_id, v_inv.role_id, v_inv.invited_by_user_id)
+        ON CONFLICT (user_id, tenant_id, role_id) DO UPDATE
+            SET revoked_at = NULL, revoked_by = NULL, revoked_reason = NULL;
+    END IF;
+
+    -- Single-use: flip to accepted. The partial unique index means only one pending row existed.
+    UPDATE platform.invitations
+        SET status = 'accepted', accepted_user_id = v_user_id, accepted_at = NOW(), updated_at = NOW()
+        WHERE platform.invitations.invitation_id = v_inv.invitation_id;
+
+    out_invitation_id   := v_inv.invitation_id;
+    out_user_id         := v_user_id;
+    out_tenant_id       := v_inv.tenant_id;
+    out_already_existed := v_existed;
+    RETURN NEXT;
+END;
+$$;
+COMMENT ON FUNCTION platform.accept_invitation IS
+    'Unauthenticated single-use redemption: token hash → provision/link user + assign pre-vetted role + mark accepted. Garbage/expired/revoked/used all raise one no_data_found (no enumeration).';
+
+-- EXECUTE grants for the invitation definer functions (docslot_app calls them; they run as owner).
+GRANT EXECUTE ON FUNCTION
+    platform.create_invitation(UUID, UUID, TEXT, TEXT, TIMESTAMPTZ, UUID),
+    platform.resend_invitation(UUID, UUID, UUID, TEXT, TIMESTAMPTZ),
+    platform.revoke_invitation(UUID, UUID, UUID),
+    platform.accept_invitation(TEXT, TEXT, TEXT)
+TO docslot_app;
+
+-- ============================================================================
 -- POST-CONDITIONS (fail loud if the hardening did not take)
 -- ============================================================================
 DO $verify$

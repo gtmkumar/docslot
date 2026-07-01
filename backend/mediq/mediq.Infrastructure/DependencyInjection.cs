@@ -42,6 +42,7 @@ public static class InfrastructureRegistration
         services.AddScoped<ITenantRepository, TenantRepository>();
         services.AddScoped<IRoleAssignmentRepository, RoleAssignmentRepository>();
         services.AddScoped<IImpersonationRepository, ImpersonationRepository>();
+        services.AddScoped<IInvitationRepository, Persistence.Repositories.InvitationRepository>();
 
         // Read-side projections + provisioning.
         services.AddScoped<IUserDirectory, UserDirectory>();
@@ -50,6 +51,7 @@ public static class InfrastructureRegistration
 
         // Security.
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
+        services.AddSingleton<IInvitationTokenFactory, Security.InvitationTokenFactory>();
         services.AddScoped<ITokenService, JwtTokenService>();
         services.AddScoped<ISessionStore, SessionStore>();
         services.AddScoped<ISessionAdminService, Security.SessionAdminService>();
