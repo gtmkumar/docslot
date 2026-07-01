@@ -199,6 +199,38 @@ public sealed class CommissionTests(CommissionWebAppFactory factory) : IClassFix
             (await broker.PostAsJsonAsync($"/api/v1/commission/brokers/{factory.BrokerId}/activate", new SetBrokerStatusReasonRequest(null))).StatusCode);
     }
 
+    [Fact]
+    public async Task Broker_Suspend_Only_Principal_Can_Suspend_But_Not_Activate()
+    {
+        // #58 negative gate: a principal holding ONLY commission.broker.suspend (activate DENIED via a
+        // deny-wins per-user override) must be able to suspend but be 403'd on activate — this is the assertion
+        // that fails if the two endpoints are ever re-coupled or a permission string is swapped. FinanceUser
+        // (tenant_admin) normally has BOTH broker perms; the override removes .activate only.
+        await ExecAsync(
+            """
+            INSERT INTO platform.user_permission_overrides (user_id, permission_id, tenant_id, is_allowed, reason, granted_by_user_id)
+            SELECT @u, p.permission_id, @t, false, 'test: deny activate to prove suspend/activate SoD', @u
+            FROM platform.permissions p WHERE p.permission_key = 'commission.broker.activate'
+            """, ("u", factory.FinanceUserId), ("t", factory.TenantId));
+        try
+        {
+            var suspendOnly = await ClientAsync(factory.FinanceEmail);
+
+            var suspend = await suspendOnly.PostAsJsonAsync($"/api/v1/commission/brokers/{factory.BrokerId}/suspend",
+                new SetBrokerStatusReasonRequest("suspend-only principal"));
+            Assert.Equal(HttpStatusCode.NoContent, suspend.StatusCode);   // has .suspend
+
+            var activate = await suspendOnly.PostAsJsonAsync($"/api/v1/commission/brokers/{factory.BrokerId}/activate",
+                new SetBrokerStatusReasonRequest(null));
+            Assert.Equal(HttpStatusCode.Forbidden, activate.StatusCode);  // DENIED .activate → 403, not the endpoint's 204
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform.user_permission_overrides WHERE user_id=@u", ("u", factory.FinanceUserId));
+            await ExecAsync("UPDATE commission.brokers SET is_active=true WHERE broker_id=@b", ("b", factory.BrokerId));
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private async Task<HttpClient> ClientAsync(string email)
