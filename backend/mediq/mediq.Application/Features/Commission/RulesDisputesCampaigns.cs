@@ -17,6 +17,21 @@ public sealed class CreateRuleValidator : AbstractValidator<CreateRuleCommand>
         RuleFor(x => x.Request.RuleName).NotEmpty();
         RuleFor(x => x.Request.RuleKey).NotEmpty().Matches("^[a-z0-9_]+$");
         RuleFor(x => x.Request.CalcType).Must(t => t is "flat" or "percentage" or "tiered_table");
+
+        // Server-side range guards (a hardened API must not rely on the client's min={0}/max={100} inputs).
+        // The .NET CommissionCalculator treats null=unset and 0=a real cap distinctly, so negatives are the
+        // only genuinely invalid values here; percentage is bounded 0..100.
+        RuleFor(x => x.Request.FlatAmountInr).GreaterThanOrEqualTo(0m).When(x => x.Request.FlatAmountInr.HasValue);
+        RuleFor(x => x.Request.Percentage).InclusiveBetween(0m, 100m).When(x => x.Request.Percentage.HasValue);
+        RuleFor(x => x.Request.MinCommissionInr).GreaterThanOrEqualTo(0m).When(x => x.Request.MinCommissionInr.HasValue);
+        RuleFor(x => x.Request.MaxCommissionInr).GreaterThanOrEqualTo(0m).When(x => x.Request.MaxCommissionInr.HasValue);
+        RuleFor(x => x.Request.MaxMonthlyPerBrokerInr).GreaterThanOrEqualTo(0m).When(x => x.Request.MaxMonthlyPerBrokerInr.HasValue);
+        RuleFor(x => x.Request.Priority).GreaterThanOrEqualTo(0);
+        // A floor above the ceiling is contradictory: the calculator applies the floor first (Math.Max) then the
+        // ceiling (Math.Min), so an inverted min>max would clamp every payout to the ceiling — reject it when both set.
+        RuleFor(x => x.Request)
+            .Must(r => !(r.MinCommissionInr.HasValue && r.MaxCommissionInr.HasValue) || r.MinCommissionInr!.Value <= r.MaxCommissionInr!.Value)
+            .WithMessage("MinCommissionInr must not exceed MaxCommissionInr.");
     }
 }
 

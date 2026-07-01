@@ -231,6 +231,32 @@ public sealed class CommissionTests(CommissionWebAppFactory factory) : IClassFix
         }
     }
 
+    [Fact]
+    public async Task Create_Rule_Rejects_Negative_And_Inverted_Caps_But_Still_Allows_Zero()
+    {
+        // #57 follow-up: server-side range guards on commission-rule caps (a hardened API must not rely on the
+        // client's min={0}/max={100} inputs). Negatives and a floor-above-ceiling are rejected; a legitimate
+        // 0 cap ('pay nothing', distinct from null='unset') is still accepted.
+        var client = await ClientAsync(factory.SuperEmail);
+
+        var neg = await client.PostAsJsonAsync("/api/v1/commission/rules",
+            new CreateCommissionRuleRequest("Neg", "rng_neg", "flat", -5m, null, null, null, null, null, null, 10, false));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, neg.StatusCode);
+
+        var inverted = await client.PostAsJsonAsync("/api/v1/commission/rules",
+            new CreateCommissionRuleRequest("Inv", "rng_inv", "flat", 100m, null, 500m, 100m, null, null, null, 10, false));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, inverted.StatusCode);
+
+        var zeroCap = await client.PostAsJsonAsync("/api/v1/commission/rules",
+            new CreateCommissionRuleRequest("Zero", "rng_zero", "flat", 100m, null, null, 0m, null, null, null, 10, false));
+        Assert.Equal(HttpStatusCode.OK, zeroCap.StatusCode);
+
+        var badCount = await ScalarIntAsync("SELECT COUNT(*)::int FROM commission.commission_rules WHERE rule_key IN ('rng_neg','rng_inv')");
+        Assert.Equal(0, badCount);
+
+        await ExecAsync("DELETE FROM commission.commission_rules WHERE rule_key='rng_zero'");
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private async Task<HttpClient> ClientAsync(string email)
