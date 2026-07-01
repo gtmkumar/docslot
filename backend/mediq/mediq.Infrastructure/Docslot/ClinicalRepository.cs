@@ -21,11 +21,13 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
     // cross-tenant reference at write (belt-and-suspenders behind the read-side JOIN predicates). No RLS on
     // these tables means app.tenant_id is irrelevant; the WHERE tenant_id does the scoping.
 
+    // Also filters is_active / (doctors) deleted_at: a new clinical row must not reference a soft-deleted or
+    // deactivated doctor/test even within the same tenant. test_catalog has no deleted_at column (is_active only).
     public async Task<bool> DoctorBelongsToTenantAsync(Guid doctorId, Guid tenantId, CancellationToken ct)
-        => await ExistsAsync("SELECT EXISTS(SELECT 1 FROM docslot.doctors WHERE doctor_id = @p0 AND tenant_id = @p1)", doctorId, tenantId, ct);
+        => await ExistsAsync("SELECT EXISTS(SELECT 1 FROM docslot.doctors WHERE doctor_id = @p0 AND tenant_id = @p1 AND deleted_at IS NULL AND is_active)", doctorId, tenantId, ct);
 
     public async Task<bool> TestBelongsToTenantAsync(Guid testId, Guid tenantId, CancellationToken ct)
-        => await ExistsAsync("SELECT EXISTS(SELECT 1 FROM docslot.test_catalog WHERE test_id = @p0 AND tenant_id = @p1)", testId, tenantId, ct);
+        => await ExistsAsync("SELECT EXISTS(SELECT 1 FROM docslot.test_catalog WHERE test_id = @p0 AND tenant_id = @p1 AND is_active)", testId, tenantId, ct);
 
     private async Task<bool> ExistsAsync(string sql, Guid id, Guid tenantId, CancellationToken ct)
     {
