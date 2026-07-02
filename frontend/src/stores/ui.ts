@@ -94,6 +94,18 @@ export type Panel =
   // clinical panels as transient (not URL-addressable) for a uniform PHI posture.
   | { type: 'createHistory'; patientId: string; purpose: PurposeOfUse }
   | { type: 'editHistory'; patientId: string; purpose: PurposeOfUse; entry: MedicalHistory }
+  // Paper-prescription intake (front-desk import of external history). Transient
+  // like the other clinical panels: it carries the declared purpose + captures PHI
+  // (transcribed records + a scanned image), so it is never URL-encoded/restored.
+  | { type: 'importHistory'; patientId: string; purpose: PurposeOfUse }
+  // Attachment viewer for a scanned paper Rx. Carries the patientId + historyId +
+  // declared purpose; the image bytes (PHI) are fetched authenticated and never
+  // URL-encoded. Transient. `fileName` is display-only.
+  | { type: 'historyAttachment'; patientId: string; historyId: string; purpose: PurposeOfUse; fileName: string }
+  // Medical-history batch viewer — the detail surface a timeline
+  // 'medical_history_batch' card opens. Carries the batch id + declared purpose +
+  // patientId (PHI rows), so it is transient (never URL-encoded).
+  | { type: 'historyBatch'; batchId: string; patientId: string; purpose: PurposeOfUse }
   // Break-glass (emergency access) bound to a clinical read's context. Carries the
   // patientId + the consent-denied resource (type + optional id). `reopen` is the
   // gated detail panel to restore on success (so the now-unblocked read re-runs in

@@ -552,6 +552,14 @@ export type EndImpersonationRequest = z.infer<typeof EndImpersonationRequestSche
 export const EndImpersonationResultSchema = TokenResponseSchema;
 export type EndImpersonationResult = z.infer<typeof EndImpersonationResultSchema>;
 
+/** A role the user holds in the ACTIVE tenant (from platform.roles). `name` is the
+ *  English display name rendered as-is (backend-driven — never branch on roleKey). */
+export const MeRoleSchema = z.object({
+  roleKey: z.string(),
+  name: z.string(),
+});
+export type MeRole = z.infer<typeof MeRoleSchema>;
+
 /** `GET /api/v1/me`. Mirrors MeDto. */
 export const MeSchema = z.object({
   userId: z.string(),
@@ -562,6 +570,9 @@ export const MeSchema = z.object({
   mfaEnabled: z.boolean(),
   activeTenantId: z.string().nullable(),
   tenants: z.array(MeTenantSchema),
+  // Roles for the active tenant. Optional-with-default so a stale API (or the mock
+  // seam) that omits it still parses — the Sidebar falls back to the i18n label.
+  roles: z.array(MeRoleSchema).default([]),
 });
 export type Me = z.infer<typeof MeSchema>;
 
@@ -1546,7 +1557,8 @@ export const PrescriptionListItemSchema = z.object({
 });
 export type PrescriptionListItem = z.infer<typeof PrescriptionListItemSchema>;
 
-/** One medication line, parsed from PrescriptionDto.medicationsJson. */
+/** LEGACY free-text medication line ({name,dose,frequency,duration}). Kept as a
+ *  graceful fallback for older prescriptions; new writes use StructuredMedication. */
 export const MedicationSchema = z.object({
   name: z.string(),
   dose: z.string(),
@@ -1555,7 +1567,98 @@ export const MedicationSchema = z.object({
 });
 export type Medication = z.infer<typeof MedicationSchema>;
 
-/** Decrypted detail. Mirrors PrescriptionDto (medicationsJson parsed to array). */
+/** Food timing for a structured medication line. Mirrors the SQL CHECK. */
+export const MedTimingSchema = z.enum(['after_food', 'before_food', 'empty_stomach', 'anytime']);
+export type MedTiming = z.infer<typeof MedTimingSchema>;
+
+/** A structured medication line — the shape the composer, preview and WhatsApp
+ *  reminder copy all consume. `dose` is a morning-noon-night triple (0/1/2…);
+ *  `sos` (as-needed) and `weekly` are flags that override the triple for display.
+ *  strength ("650 mg") / form ("tab") / durationDays / instructions are optional.
+ *  Passthrough-tolerant on unknown keys so an additive backend field never drops
+ *  the item. */
+export const StructuredMedicationSchema = z.object({
+  name: z.string(),
+  strength: z.string().nullable().default(null),
+  form: z.string().nullable().default(null),
+  dose: z.object({
+    morning: z.number().nonnegative().default(0),
+    noon: z.number().nonnegative().default(0),
+    night: z.number().nonnegative().default(0),
+  }),
+  sos: z.boolean().default(false),
+  weekly: z.boolean().default(false),
+  timing: MedTimingSchema.default('anytime'),
+  durationDays: z.number().int().positive().nullable().default(null),
+  instructions: z.string().nullable().default(null),
+});
+export type StructuredMedication = z.infer<typeof StructuredMedicationSchema>;
+
+/** A medication line as it appears on the wire: the NEW structured shape, or the
+ *  LEGACY free-text {name,dose,frequency,duration} fallback. zod tries structured
+ *  first (its `dose` is an object); a legacy row's string `dose` fails that and
+ *  falls to the legacy branch. Consumers render either via {@link formatMedicationLine}. */
+export const RxMedicationSchema = z.union([StructuredMedicationSchema, MedicationSchema]);
+export type RxMedication = z.infer<typeof RxMedicationSchema>;
+
+/** True for the legacy free-text medication shape (has a `frequency` string). */
+export function isLegacyMedication(med: RxMedication): med is Medication {
+  return 'frequency' in med && typeof (med as Medication).frequency === 'string';
+}
+
+/** PER-ITEM TOLERANT parse of a medications payload (a medicationsJson STRING, or an
+ *  already-decoded array). Every item is validated against the RxMedication union
+ *  INDEPENDENTLY — a single odd/legacy/partial item is dropped, never emptying or
+ *  rejecting the whole list. This is the ONLY way prescriptions/consultations decode
+ *  their medications, so a structured item can never be silently lost to the legacy
+ *  schema again. */
+export function parseMedications(raw: unknown): RxMedication[] {
+  let arr: unknown = raw;
+  if (typeof raw === 'string') {
+    if (!raw.trim()) return [];
+    try {
+      arr = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(arr)) return [];
+  const out: RxMedication[] = [];
+  for (const item of arr) {
+    const parsed = RxMedicationSchema.safeParse(item);
+    if (parsed.success) out.push(parsed.data);
+  }
+  return out;
+}
+
+/** The dose token for a structured line: "1-0-1", or "SOS" / "Weekly" when those
+ *  flags are set. `t` maps the flag labels through i18n so it stays bilingual. */
+export function formatDose(med: StructuredMedication, t: (key: string) => string): string {
+  if (med.sos) return t('consult.dose.sos');
+  if (med.weekly) return t('consult.dose.weekly');
+  return `${med.dose.morning}-${med.dose.noon}-${med.dose.night}`;
+}
+
+/** Human display for a medication line — powers the Rx preview and the reminder
+ *  copy. e.g. "1-0-1 · After food · 5 days" / "SOS · If vomiting". `t` supplies the
+ *  bilingual timing/duration labels (never baked-in English). Legacy rows render as
+ *  "dose · frequency · duration". */
+export function formatMedicationLine(
+  med: RxMedication,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  if (isLegacyMedication(med)) {
+    return [med.dose, med.frequency, med.duration].filter(Boolean).join(' · ');
+  }
+  const parts: string[] = [formatDose(med, t)];
+  parts.push(t(`consult.timing.${med.timing}`));
+  if (med.durationDays != null) parts.push(t('consult.durationValue', { count: med.durationDays }));
+  if (med.instructions && med.instructions.trim()) parts.push(med.instructions.trim());
+  return parts.filter(Boolean).join(' · ');
+}
+
+/** Decrypted detail. Mirrors PrescriptionDto (medicationsJson parsed to array via
+ *  {@link parseMedications} — the structured OR legacy union, per-item tolerant). */
 export const PrescriptionDetailSchema = z.object({
   prescriptionId: z.string(),
   prescriptionNumber: z.string().nullable(),
@@ -1565,7 +1668,7 @@ export const PrescriptionDetailSchema = z.object({
   chiefComplaints: z.string().nullable(),
   examination: z.string().nullable(),
   diagnosis: z.string().nullable(),
-  medications: z.array(MedicationSchema),
+  medications: z.array(RxMedicationSchema),
   advice: z.string().nullable(),
   followUpInDays: z.number().nullable(),
   status: z.string(),
@@ -1611,70 +1714,6 @@ export const VitalsSchema = z.object({
   weightKg: z.number().nullable().default(null),
 });
 export type Vitals = z.infer<typeof VitalsSchema>;
-
-/** Food timing for a structured medication line. Mirrors the SQL CHECK. */
-export const MedTimingSchema = z.enum(['after_food', 'before_food', 'empty_stomach', 'anytime']);
-export type MedTiming = z.infer<typeof MedTimingSchema>;
-
-/** A structured medication line — the shape the composer, preview and WhatsApp
- *  reminder copy all consume. `dose` is a morning-noon-night triple (0/1/2…);
- *  `sos` (as-needed) and `weekly` are flags that override the triple for display.
- *  strength ("650 mg") / form ("tab") / durationDays / instructions are optional. */
-export const StructuredMedicationSchema = z.object({
-  name: z.string(),
-  strength: z.string().nullable().default(null),
-  form: z.string().nullable().default(null),
-  dose: z.object({
-    morning: z.number().nonnegative().default(0),
-    noon: z.number().nonnegative().default(0),
-    night: z.number().nonnegative().default(0),
-  }),
-  sos: z.boolean().default(false),
-  weekly: z.boolean().default(false),
-  timing: MedTimingSchema.default('anytime'),
-  durationDays: z.number().int().positive().nullable().default(null),
-  instructions: z.string().nullable().default(null),
-});
-export type StructuredMedication = z.infer<typeof StructuredMedicationSchema>;
-
-/** A medication line as it appears on the wire: the NEW structured shape, or the
- *  LEGACY free-text {name,dose,frequency,duration} as a graceful fallback (older
- *  prescriptions parse + display unchanged). zod tries structured first (its `dose`
- *  is an object); a legacy row's string `dose` fails that and falls to the legacy
- *  branch. Consumers render either via {@link formatMedicationLine}. */
-export const RxMedicationSchema = z.union([StructuredMedicationSchema, MedicationSchema]);
-export type RxMedication = z.infer<typeof RxMedicationSchema>;
-
-/** True for the legacy free-text medication shape (has a `frequency` string). */
-export function isLegacyMedication(med: RxMedication): med is Medication {
-  return 'frequency' in med && typeof (med as Medication).frequency === 'string';
-}
-
-/** The dose token for a structured line: "1-0-1", or "SOS" / "Weekly" when those
- *  flags are set. `t` maps the flag labels through i18n so it stays bilingual. */
-export function formatDose(med: StructuredMedication, t: (key: string) => string): string {
-  if (med.sos) return t('consult.dose.sos');
-  if (med.weekly) return t('consult.dose.weekly');
-  return `${med.dose.morning}-${med.dose.noon}-${med.dose.night}`;
-}
-
-/** Human display for a medication line — powers the Rx preview and the reminder
- *  copy. e.g. "1-0-1 · After food · 5 days" / "SOS · If vomiting". `t` supplies the
- *  bilingual timing/duration labels (never baked-in English). Legacy rows render as
- *  "dose · frequency · duration". */
-export function formatMedicationLine(
-  med: RxMedication,
-  t: (key: string, opts?: Record<string, unknown>) => string,
-): string {
-  if (isLegacyMedication(med)) {
-    return [med.dose, med.frequency, med.duration].filter(Boolean).join(' · ');
-  }
-  const parts: string[] = [formatDose(med, t)];
-  parts.push(t(`consult.timing.${med.timing}`));
-  if (med.durationDays != null) parts.push(t('consult.durationValue', { count: med.durationDays }));
-  if (med.instructions && med.instructions.trim()) parts.push(med.instructions.trim());
-  return parts.filter(Boolean).join(' · ');
-}
 
 /** Consultation lifecycle. `draft` is editable/autosaved; `finalized` is signed. */
 export const ConsultationStatusSchema = z.enum(['draft', 'finalized']);
@@ -1802,6 +1841,15 @@ export const UploadLabReportResultSchema = z.object({
 export type UploadLabReportResult = z.infer<typeof UploadLabReportResultSchema>;
 
 // ---- Medical history --------------------------------------------------------
+/** Provenance of a medical-history row. 'clinic' = entered inside DocSlot (the
+ *  default for every pre-existing row); the two external sources come from the
+ *  paper-prescription intake flow. Read tolerantly: an unknown token falls back to
+ *  'clinic' and an absent field defaults to 'clinic', so the pre-import API (which
+ *  omits the field) still parses. The WRITE (import) side only ever sends the two
+ *  external values (see {@link ImportMedicalHistorySourceSchema}). */
+export const MedicalHistorySourceSchema = z.enum(['clinic', 'paper_prescription', 'patient_reported']);
+export type MedicalHistorySource = z.infer<typeof MedicalHistorySourceSchema>;
+
 /** Record-type enum for a NEW medical-history entry. Mirrors the SQL CHECK on
  *  docslot.medical_history.record_type. The READ shape keeps recordType as a free
  *  string (tolerant of server tokens); the WRITE form is constrained to this set. */
@@ -1839,8 +1887,34 @@ export const MedicalHistorySchema = z.object({
   isActive: z.boolean(),
   isCritical: z.boolean(),
   addedAt: z.string(),
+  // Paper-prescription intake fields. ALL optional with sane defaults so the
+  // pre-import API (which omits every one of these) still parses cleanly.
+  //  - source: provenance; 'clinic' for a normally-entered row.
+  //  - verifiedAt: null ⇒ UNVERIFIED (an external row a doctor hasn't confirmed).
+  //  - the rest annotate an imported external record (who wrote the paper Rx, the
+  //    date on it, the batch it came in with, and its scanned attachment).
+  source: MedicalHistorySourceSchema.default('clinic').catch('clinic'),
+  externalDoctorName: z.string().nullable().default(null),
+  recordedDate: z.string().nullable().default(null),
+  verifiedAt: z.string().nullable().default(null),
+  importBatchId: z.string().nullable().default(null),
+  attachmentFileName: z.string().nullable().default(null),
+  attachmentMimeType: z.string().nullable().default(null),
 });
 export type MedicalHistory = z.infer<typeof MedicalHistorySchema>;
+/** INPUT shape (before defaults are applied) — the paper-Rx fields are optional
+ *  here, so fixtures/seeds can omit them and rely on the schema defaults. */
+export type MedicalHistoryInput = z.input<typeof MedicalHistorySchema>;
+
+/** True when a row is an external (imported) record still awaiting a doctor's
+ *  verification. A 'clinic' row is never "unverified" — it's authored in-app. */
+export function isUnverifiedExternal(h: MedicalHistory): boolean {
+  return h.source !== 'clinic' && h.verifiedAt === null;
+}
+/** True for any external (imported) row, verified or not. */
+export function isExternalRecord(h: MedicalHistory): boolean {
+  return h.source !== 'clinic';
+}
 
 /** Create body. Mirrors CreateMedicalHistoryRequest. title/description are PHI. */
 export const CreateMedicalHistoryRequestSchema = z.object({
@@ -1871,6 +1945,137 @@ export const UpdateMedicalHistoryRequestSchema = z.object({
   isCritical: z.boolean(),
 });
 export type UpdateMedicalHistoryRequest = z.infer<typeof UpdateMedicalHistoryRequestSchema>;
+
+// ── Paper-prescription import (front-desk intake of external history) ─────────
+/** The two provenance values the IMPORT flow can send (a subset of
+ *  {@link MedicalHistorySourceSchema} — 'clinic' is never imported). */
+export const ImportMedicalHistorySourceSchema = z.enum(['paper_prescription', 'patient_reported']);
+export type ImportMedicalHistorySource = z.infer<typeof ImportMedicalHistorySourceSchema>;
+
+/** One transcribed line inside an import batch. title/description are PHI. */
+export const ImportMedicalHistoryRecordSchema = z.object({
+  recordType: MedicalHistoryRecordTypeSchema,
+  title: z.string(),
+  description: z.string().nullable().optional(),
+  severity: MedicalHistorySeveritySchema.nullable().optional(),
+  isCritical: z.boolean(),
+  startedDate: z.string().nullable().optional(),
+});
+export type ImportMedicalHistoryRecord = z.infer<typeof ImportMedicalHistoryRecordSchema>;
+
+/** The scanned paper Rx, sent inline as base64. The image bytes are PHI — held
+ *  only in the form + the POST body, never the URL or a log. */
+export const ImportMedicalHistoryAttachmentSchema = z.object({
+  fileName: z.string(),
+  contentType: z.string(),
+  contentBase64: z.string(),
+});
+export type ImportMedicalHistoryAttachment = z.infer<typeof ImportMedicalHistoryAttachmentSchema>;
+
+/** POST body for /medical-history/import. Records land UNVERIFIED (verifiedAt
+ *  null) until a doctor confirms them. Mirrors ImportMedicalHistoryRequest. */
+export const ImportMedicalHistoryRequestSchema = z.object({
+  source: ImportMedicalHistorySourceSchema,
+  externalDoctorName: z.string().nullable().optional(),
+  recordedDate: z.string().nullable().optional(),
+  attachment: ImportMedicalHistoryAttachmentSchema.nullable().optional(),
+  records: z.array(ImportMedicalHistoryRecordSchema).min(1),
+});
+export type ImportMedicalHistoryRequest = z.infer<typeof ImportMedicalHistoryRequestSchema>;
+
+/** 201 result: the batch id + the ids of the rows it created (tolerant of an
+ *  absent historyIds array). */
+export const ImportMedicalHistoryResultSchema = z.object({
+  importBatchId: z.string(),
+  historyIds: z.array(z.string()).default([]),
+});
+export type ImportMedicalHistoryResult = z.infer<typeof ImportMedicalHistoryResultSchema>;
+
+// ── OCR assist: extract a paper prescription (advisory, human-in-the-loop) ───
+/** Input for POST /medical-history/extract-prescription. The base64 image + the
+ *  returned fields are PHI — request body only, never logged/cached; the result is
+ *  a SUGGESTION the user reviews before importing (nothing auto-saves). */
+export interface ExtractPrescriptionInput {
+  patientId: string;
+  fileName: string;
+  contentType: string;
+  contentBase64: string;
+  purposeOfUse: string | undefined;
+}
+
+/** One AI-suggested line. recordType is a free string (coerced to the form enum);
+ *  confidence is 0..1 or null. Tolerant so a lean/partial parse still loads. */
+export const ExtractPrescriptionRecordSchema = z.object({
+  recordType: z.string().default('medication'),
+  title: z.string(),
+  description: z.string().nullable().default(null),
+  confidence: z.number().nullable().default(null),
+});
+export type ExtractPrescriptionRecord = z.infer<typeof ExtractPrescriptionRecordSchema>;
+
+/** Result of the OCR extraction. `available:false` (or an HTTP error) means the UI
+ *  falls back to manual entry — never a fabricated parse. Everything is tolerant. */
+export const ExtractPrescriptionResultSchema = z.object({
+  extractionId: z.string().nullable().default(null),
+  overallConfidence: z.number().nullable().default(null),
+  externalDoctorName: z.string().nullable().default(null),
+  recordedDate: z.string().nullable().default(null),
+  records: z.array(ExtractPrescriptionRecordSchema).default([]),
+  rawText: z.string().nullable().default(null),
+  available: z.boolean().default(true),
+});
+export type ExtractPrescriptionResult = z.infer<typeof ExtractPrescriptionResultSchema>;
+
+// ── Unified patient timeline (GET /patients/{id}/timeline) ───────────────────
+/** A backend-driven category chip. The server returns ONLY the categories the
+ *  caller may read, with a bilingual label + count — the UI renders them verbatim
+ *  (never hardcodes the category list), so a new category (e.g. 'imaging') appears
+ *  automatically. `key` is a free string for forward-compat. */
+export const TimelineCategorySchema = z.object({
+  key: z.string(),
+  labelEn: z.string(),
+  labelHi: z.string(),
+  count: z.number(),
+});
+export type TimelineCategory = z.infer<typeof TimelineCategorySchema>;
+
+/** A card's link to its detail surface. `type` is a free string (tolerant): a
+ *  known type opens the matching panel, an unknown one renders but is inert. */
+export const TimelineRefSchema = z.object({
+  type: z.string(),
+  id: z.string(),
+});
+export type TimelineRef = z.infer<typeof TimelineRefSchema>;
+
+/** One timeline card. title is required; the rest are tolerant (nullable/defaulted)
+ *  so a lean backend row still parses. `category` matches a TimelineCategory.key. */
+export const TimelineItemSchema = z.object({
+  itemId: z.string(),
+  category: z.string(),
+  occurredAt: z.string(),
+  title: z.string(),
+  subtitle: z.string().nullable().default(null),
+  summary: z.string().nullable().default(null),
+  tags: z.array(z.string()).default([]),
+  unverified: z.boolean().default(false),
+  hasAttachment: z.boolean().default(false),
+  ref: TimelineRefSchema,
+});
+export type TimelineItem = z.infer<typeof TimelineItemSchema>;
+
+/** GET /patients/{id}/timeline. patientSince/visitCount feed the summary rail;
+ *  categories drive the chips; items are the reverse-chronological cards. */
+export const PatientTimelineSchema = z.object({
+  patient: z
+    .object({
+      patientSince: z.string().nullable().default(null),
+      visitCount: z.number().default(0),
+    })
+    .default({ patientSince: null, visitCount: 0 }),
+  categories: z.array(TimelineCategorySchema).default([]),
+  items: z.array(TimelineItemSchema).default([]),
+});
+export type PatientTimeline = z.infer<typeof PatientTimelineSchema>;
 
 /** Break-glass (emergency access) request. resourceId is null for a whole-patient
  *  grant; justification is server-validated to >=10 chars. Mirrors the

@@ -19,6 +19,9 @@ import {
   BreakGlassResultSchema,
   ConsultationDraftSchema,
   CreateMedicalHistoryResultSchema,
+  ImportMedicalHistoryResultSchema,
+  ExtractPrescriptionResultSchema,
+  PatientTimelineSchema,
   FinalizeConsultationResultSchema,
   IssuePrescriptionResultSchema,
   LabReportDetailSchema,
@@ -28,7 +31,7 @@ import {
   PrescriptionDetailSchema,
   PrescriptionListItemSchema,
   PushAbdmRecordResultSchema,
-  RxMedicationSchema,
+  parseMedications,
   UploadLabReportResultSchema,
   type AbdmRecordDetail,
   type AbdmRecordListItem,
@@ -37,6 +40,13 @@ import {
   type ConsultationDraft,
   type CreateMedicalHistoryRequest,
   type CreateMedicalHistoryResult,
+  type ImportMedicalHistoryRequest,
+  type ImportMedicalHistoryResult,
+  type ExtractPrescriptionInput,
+  type ExtractPrescriptionResult,
+  type PatientTimeline,
+  type TimelineCategory,
+  type TimelineItem,
   type DrugAlert,
   type FinalizeConsultationResult,
   type IssuePrescriptionRequest,
@@ -44,6 +54,7 @@ import {
   type LabReportDetail,
   type LabReportListItem,
   type MedicalHistory,
+  type MedicalHistoryInput,
   type PatientConsent,
   type PrescriptionDetail,
   type PrescriptionListItem,
@@ -320,8 +331,7 @@ export function saveConsultation(consultationId: string, req: SaveConsultationRe
   if (req.examination !== undefined) d.examination = req.examination;
   if (req.diagnosis !== undefined) d.diagnosis = req.diagnosis;
   if (req.medicationsJson !== undefined) {
-    const parsed = req.medicationsJson.trim() ? (JSON.parse(req.medicationsJson) as unknown[]) : [];
-    d.medications = parsed.map((m) => RxMedicationSchema.parse(m));
+    d.medications = parseMedications(req.medicationsJson);
   }
   if (req.investigations !== undefined) d.investigations = req.investigations;
   if (req.advice !== undefined) d.advice = req.advice;
@@ -495,11 +505,17 @@ export function deliverLabReport(
 // Records carry the non-encrypted scalars severity/icd10Code/startedDate/endedDate
 // (matching MedicalHistoryDto) so the EDIT round-trip is exercisable flag-off — an
 // edit that doesn't touch these must PRESERVE them (the PUT treats missing as null).
-const HISTORY: Record<string, MedicalHistory[]> = {
+const HISTORY: Record<string, MedicalHistoryInput[]> = {
   p1: [
     { historyId: 'h-1', recordType: 'chronic_condition', title: 'Hypertension', description: 'Diagnosed 2024; on Telmisartan', severity: 'moderate', icd10Code: 'I10', startedDate: '2024-02-14', endedDate: null, isActive: true, isCritical: false, addedAt: iso(420) },
     { historyId: 'h-2', recordType: 'allergy', title: 'Penicillin allergy', description: 'Rash on exposure', severity: 'severe', icd10Code: 'Z88.0', startedDate: null, endedDate: null, isActive: true, isCritical: true, addedAt: iso(900) },
     { historyId: 'h-3', recordType: 'surgery', title: 'Appendectomy', description: 'Laparoscopic, uneventful', severity: null, icd10Code: 'K35.80', startedDate: '2021-07-03', endedDate: '2021-07-05', isActive: false, isCritical: false, addedAt: iso(1800) },
+    // One UNVERIFIED paper-prescription batch (imb-seed) transcribed at the front
+    // desk from a scan the patient brought in — verifiedAt null ⇒ badged
+    // "Unverified · Paper Rx", the doctor can Verify. The first row carries a
+    // scanned attachment (mock returns a synthetic placeholder image).
+    { historyId: 'h-4', recordType: 'medication', title: 'Metformin 500', description: '1-0-1 after food', severity: null, icd10Code: null, startedDate: null, endedDate: null, isActive: true, isCritical: false, addedAt: iso(60), source: 'paper_prescription', externalDoctorName: 'Dr. Gupta', recordedDate: '2025-11-04', verifiedAt: null, importBatchId: 'imb-seed', attachmentFileName: 'rx-gupta.jpg', attachmentMimeType: 'image/jpeg' },
+    { historyId: 'h-5', recordType: 'chronic_condition', title: 'Type 2 diabetes', description: 'Per paper prescription; unconfirmed', severity: 'moderate', icd10Code: null, startedDate: null, endedDate: null, isActive: true, isCritical: false, addedAt: iso(60), source: 'paper_prescription', externalDoctorName: 'Dr. Gupta', recordedDate: '2025-11-04', verifiedAt: null, importBatchId: 'imb-seed', attachmentFileName: null, attachmentMimeType: null },
   ],
   // p5 (Pooja Singh) has a CONFIRMED booking today (B-2837) + a critical penicillin
   // allergy — so the composer's blocked-finalize + override path is demoable straight
@@ -572,6 +588,203 @@ export function updateMedicalHistory(
     row.isCritical = req.isCritical;
     return true;
   });
+}
+
+/** Import a paper-prescription (or patient-reported) batch. Mutates the seed so the
+ *  timeline reflects the new UNVERIFIED external rows after the list invalidates
+ *  (flag-off parity). Every row lands with verifiedAt null. The attachment (if any)
+ *  is stashed under the first row's id so the mock viewer can return an image. */
+export function importMedicalHistory(
+  patientId: string,
+  req: ImportMedicalHistoryRequest,
+  idempotencyKey: string,
+): Promise<ImportMedicalHistoryResult> {
+  return withIdem(idempotencyKey, () => {
+    const importBatchId = crypto.randomUUID();
+    const list = HISTORY[patientId] ?? (HISTORY[patientId] = []);
+    const now = new Date().toISOString();
+    const historyIds: string[] = [];
+    // Newest-first: build the rows then unshift so the batch appears at the top in
+    // the order the desk transcribed it.
+    const rows = req.records.map((r, i) => {
+      const historyId = crypto.randomUUID();
+      historyIds.push(historyId);
+      const hasAttachment = i === 0 && Boolean(req.attachment);
+      if (hasAttachment && req.attachment) ATTACHMENTS[historyId] = req.attachment.contentBase64;
+      return MedicalHistorySchema.parse({
+        historyId,
+        recordType: r.recordType,
+        title: r.title,
+        description: r.description ?? null,
+        severity: r.severity ?? null,
+        icd10Code: null,
+        startedDate: r.startedDate ?? null,
+        endedDate: null,
+        isActive: true,
+        isCritical: r.isCritical,
+        addedAt: now,
+        source: req.source,
+        externalDoctorName: req.externalDoctorName ?? null,
+        recordedDate: req.recordedDate ?? null,
+        verifiedAt: null,
+        importBatchId,
+        attachmentFileName: hasAttachment && req.attachment ? req.attachment.fileName : null,
+        attachmentMimeType: hasAttachment && req.attachment ? req.attachment.contentType : null,
+      });
+    });
+    list.unshift(...rows);
+    return ImportMedicalHistoryResultSchema.parse({ importBatchId, historyIds });
+  });
+}
+
+/** Verify an external record (stamps verifiedAt). Returns void (204 in real). */
+export function verifyMedicalHistory(patientId: string, historyId: string, idempotencyKey: string): Promise<void> {
+  return withIdem(idempotencyKey, () => {
+    const row = HISTORY[patientId]?.find((h) => h.historyId === historyId);
+    if (row) row.verifiedAt = new Date().toISOString();
+    return undefined;
+  });
+}
+
+/** Base64 payloads for imported attachments, keyed by history id. Seeded for the
+ *  demo batch (h-4) with a synthetic "scanned Rx" SVG so the viewer has something
+ *  to show flag-off; imports stash their real base64 here at import time. */
+// MUST stay pure ASCII: btoa() throws on any char > U+00FF, and this runs at MODULE
+// LOAD — one stray unicode char (an Rx sign, an em dash) blanks the entire app.
+const RX_PLACEHOLDER_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="480" viewBox="0 0 360 480"><rect width="360" height="480" fill="#F6F4EE"/><rect x="20" y="20" width="320" height="440" rx="8" fill="#fff" stroke="#1F5E50" stroke-width="2"/><text x="40" y="70" font-family="serif" font-size="26" fill="#1F5E50">Rx  Dr. Gupta</text><line x1="40" y1="90" x2="320" y2="90" stroke="#0E1F1C" stroke-width="1"/><text x="40" y="140" font-family="sans-serif" font-size="16" fill="#0E1F1C">Metformin 500 mg</text><text x="40" y="168" font-family="sans-serif" font-size="14" fill="#555">1-0-1 after food</text><text x="40" y="220" font-family="sans-serif" font-size="16" fill="#0E1F1C">Type 2 diabetes - review 04/11/2025</text><text x="40" y="430" font-family="cursive" font-size="20" fill="#0E1F1C">- Dr. Gupta</text></svg>';
+const ATTACHMENTS: Record<string, string> = {
+  'h-4': typeof btoa !== 'undefined' ? btoa(RX_PLACEHOLDER_SVG) : '',
+};
+
+/** Return a displayable URL for a record's scanned attachment. Purpose-gated like
+ *  every clinical read. In mock mode we hand back a data URL (an object URL would
+ *  need a real Blob); the viewer treats both uniformly and revokes on unmount
+ *  (revoking a data: URL is a harmless no-op). */
+export function fetchMedicalHistoryAttachment(
+  patientId: string,
+  historyId: string,
+  purpose: string | undefined,
+): Promise<string> {
+  requirePurpose(purpose);
+  requireClinicalConsent(patientId);
+  const b64 = ATTACHMENTS[historyId];
+  if (!b64) return Promise.reject(new Error('No attachment'));
+  // The seed uses SVG; a real import stores whatever the desk uploaded. We only
+  // ever produced image payloads, so image/svg+xml is a safe display type here.
+  const mime = historyId === 'h-4' ? 'image/svg+xml' : 'image/jpeg';
+  return delay(`data:${mime};base64,${b64}`);
+}
+
+/** OCR-extract a paper prescription (mock). Advisory + human-in-the-loop: returns a
+ *  canned 2-line parse with ONE low-confidence line (<0.6) so the review styling is
+ *  demoable flag-off. Purpose-gated like the real call; the image bytes are ignored
+ *  (never stored). Clearly synthetic — this NEVER implies a real model ran. */
+export function extractPrescription(input: ExtractPrescriptionInput): Promise<ExtractPrescriptionResult> {
+  requirePurpose(input.purposeOfUse);
+  return delay(
+    ExtractPrescriptionResultSchema.parse({
+      extractionId: crypto.randomUUID(),
+      overallConfidence: 0.82,
+      externalDoctorName: 'Dr. Gupta (City Clinic)',
+      recordedDate: '2025-11-04',
+      records: [
+        { recordType: 'medication', title: 'Metformin 500', description: '1-0-1 · after food · 30 days', confidence: 0.94 },
+        { recordType: 'medication', title: 'Glimepiride 1', description: '1-0-0 · before breakfast', confidence: 0.52 },
+      ],
+      rawText: 'Rx  Dr. Gupta\nMetformin 500  1-0-1 after food  x30d\nGlimepiride 1  1-0-0 before breakfast',
+      available: true,
+    }),
+  );
+}
+
+// ── Unified timeline (built from the mock fixtures for flag-off parity) ───────
+/** GET /patients/{id}/timeline mock. Merges the prescription + lab-report +
+ *  medical-history fixtures into ONE reverse-chronological stream + backend-driven
+ *  categories with counts. Medical-history rows are grouped by import batch (a
+ *  clinic row is its own single-row "batch"). Purpose-gated like the real read. */
+export function getPatientTimeline(patientId: string, purpose: string | undefined): Promise<PatientTimeline> {
+  requirePurpose(purpose);
+  const rx = RX.filter((r) => r.patientId === patientId);
+  const reports = REPORTS.filter((r) => r.patientId === patientId);
+  const history = HISTORY[patientId] ?? [];
+
+  // Group medical-history rows by import batch (importBatchId ?? historyId).
+  const batches = new Map<string, MedicalHistoryInput[]>();
+  for (const h of history) {
+    const bid = h.importBatchId ?? h.historyId;
+    const list = batches.get(bid) ?? [];
+    list.push(h);
+    batches.set(bid, list);
+  }
+
+  const items: TimelineItem[] = [];
+  for (const r of rx) {
+    items.push({
+      itemId: `rx-${r.prescriptionId}`,
+      category: 'prescription',
+      occurredAt: r.createdAt,
+      title: r.prescriptionNumber,
+      subtitle: doctorName(r.doctorId),
+      summary: r.diagnosis,
+      tags: [r.status],
+      unverified: false,
+      hasAttachment: false,
+      ref: { type: 'prescription', id: r.prescriptionId },
+    });
+  }
+  for (const r of reports) {
+    items.push({
+      itemId: `rep-${r.reportId}`,
+      category: 'lab_report',
+      occurredAt: r.createdAt,
+      title: r.testName,
+      subtitle: r.reportNumber,
+      summary: r.hasCriticalFindings ? 'Critical findings flagged' : null,
+      tags: [r.status],
+      unverified: false,
+      hasAttachment: true,
+      ref: { type: 'lab_report', id: r.reportId },
+    });
+  }
+  for (const [bid, rows] of batches) {
+    const first = rows[0];
+    const external = (first.source ?? 'clinic') !== 'clinic';
+    const unverified = rows.some((rr) => (rr.source ?? 'clinic') !== 'clinic' && !rr.verifiedAt);
+    const tags = [...new Set(rows.map((rr) => rr.recordType))];
+    items.push({
+      itemId: `his-${bid}`,
+      // Matches the real backend, which files medical-history batches under the
+      // 'document' category (a clinic row is its own single-row batch).
+      category: 'document',
+      occurredAt: first.addedAt ?? new Date().toISOString(),
+      title: rows.length > 1 ? `${first.title} +${rows.length - 1}` : first.title,
+      subtitle: external ? (first.externalDoctorName ?? 'External record') : 'Clinic',
+      summary: first.description ?? null,
+      tags,
+      unverified,
+      hasAttachment: rows.some((rr) => Boolean(rr.attachmentFileName)),
+      ref: { type: 'medical_history_batch', id: bid },
+    });
+  }
+  items.sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : a.occurredAt > b.occurredAt ? -1 : 0));
+
+  // Category keys mirror the real backend ('document' for medical-history batches).
+  // Zero-count chips are INCLUDED (rendered verbatim), matching the live contract.
+  const categories: TimelineCategory[] = [
+    { key: 'prescription', labelEn: 'Prescriptions', labelHi: 'प्रिस्क्रिप्शन', count: rx.length },
+    { key: 'lab_report', labelEn: 'Lab reports', labelHi: 'लैब रिपोर्ट', count: reports.length },
+    { key: 'document', labelEn: 'Documents', labelHi: 'दस्तावेज़', count: batches.size },
+  ];
+
+  const patientSince = items.length ? items[items.length - 1].occurredAt : null;
+  return delay(
+    PatientTimelineSchema.parse({
+      patient: { patientSince, visitCount: rx.length },
+      categories,
+      items,
+    }),
+  );
 }
 
 // ── ABDM (consent-gated) ─────────────────────────────────────────────────────

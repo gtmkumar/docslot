@@ -14,11 +14,13 @@ namespace mediq.IntegrationTests;
 /// <list type="bullet">
 /// <item><b>Reschedule</b> terminates the old booking ('rescheduled'), mints a NEW booking on the new slot
 /// linked via <c>rescheduled_from_booking_id</c>, frees the OLD slot (re-bookable) and consumes the new one;
-/// a too-soon new slot (within cutoff) is 422; rescheduling a checked-in / terminal booking is 422.</item>
-/// <item><b>Check-in</b>: confirmed → checked_in sets <c>checked_in_at</c>; checked_in → complete succeeds;
-/// pending → check-in is an illegal transition (422).</item>
-/// <item><b>Cutoff</b>: a slot within <c>bookingCutoffHours</c> (fixture default 2h) is rejected 422; a slot
-/// beyond the cutoff succeeds.</item>
+/// a past new slot is 422 (old untouched); a within-cutoff FUTURE slot succeeds (staff-driven); rescheduling
+/// a checked-in / terminal booking is 422.</item>
+/// <item><b>Check-in</b>: confirmed → checked_in sets <c>checked_in_at</c> and the LIST read-model surfaces
+/// CheckedIn (not Pending); checked_in → complete succeeds; pending → check-in is illegal (422).</item>
+/// <item><b>Slot timing</b>: the <c>bookingCutoffHours</c> lead-time (fixture default 2h) rejects only
+/// SELF-SERVICE channels (whatsapp/api); staff channels (dashboard/walk_in/phone_call) may book any FUTURE
+/// slot; an already-started slot is 422 on every channel.</item>
 /// </list>
 /// </summary>
 public sealed class BookingLifecyclePhase1Tests(DocslotWebAppFactory factory) : IClassFixture<DocslotWebAppFactory>
@@ -58,25 +60,47 @@ public sealed class BookingLifecyclePhase1Tests(DocslotWebAppFactory factory) : 
     }
 
     [Fact]
-    public async Task Reschedule_To_TooSoon_Slot_Is_Rejected_422_And_Old_Untouched()
+    public async Task Reschedule_To_Past_Slot_Is_Rejected_422_And_Old_Untouched()
     {
         var client = await AuthedClientAsync();
         var oldSlot = Guid.NewGuid();
         await SeedSlotAsync(oldSlot, new TimeOnly(9, 35));
         var created = await CreateAsync(client, oldSlot);
 
-        // A new slot TODAY within the 2h cutoff → reschedule's shared cutoff guard rejects it (422).
-        var tooSoon = Guid.NewGuid();
-        await SeedSlotAtAsync(tooSoon, DateOnly.FromDateTime(DateTime.UtcNow.Date), TimeOnly.FromDateTime(DateTime.UtcNow.AddMinutes(30)));
+        // A slot that already started (1h ago IST) → the shared slot-timing guard rejects it (422).
+        var past = Guid.NewGuid();
+        SeedIstSlotAt(out var pastDate, out var pastTime, minutesFromNow: -60);
+        await SeedSlotAtAsync(past, pastDate, pastTime);
 
         var reschedule = await PostAsync(client, $"/api/v1/bookings/{created.BookingId}/reschedule",
-            Guid.NewGuid().ToString(), new { newSlotId = tooSoon });
+            Guid.NewGuid().ToString(), new { newSlotId = past });
         Assert.Equal(HttpStatusCode.UnprocessableEntity, reschedule.StatusCode);
 
         // The OLD booking is untouched (still pending) and its slot still consumed.
         Assert.Equal("pending", await BookingStatusAsync(created.BookingId));
         Assert.Equal((1, "booked"), await SlotStateAsync(oldSlot));
-        Assert.Equal((0, "available"), await SlotStateAsync(tooSoon));   // too-soon slot never consumed
+        Assert.Equal((0, "available"), await SlotStateAsync(past));   // past slot never consumed
+    }
+
+    [Fact]
+    public async Task Reschedule_To_Future_Slot_Within_Cutoff_Succeeds_StaffDriven()
+    {
+        var client = await AuthedClientAsync();
+        var oldSlot = Guid.NewGuid();
+        await SeedSlotAsync(oldSlot, new TimeOnly(9, 40));
+        var created = await CreateAsync(client, oldSlot);
+
+        // 30 min out (inside the 2h cutoff) — reschedules are staff-driven, so the cutoff does NOT apply;
+        // only already-started slots are refused.
+        var soon = Guid.NewGuid();
+        SeedIstSlotAt(out var soonDate, out var soonTime, minutesFromNow: 30);
+        await SeedSlotAtAsync(soon, soonDate, soonTime);
+
+        var reschedule = await PostAsync(client, $"/api/v1/bookings/{created.BookingId}/reschedule",
+            Guid.NewGuid().ToString(), new { newSlotId = soon, reason = "walk-in moved up" });
+        Assert.Equal(HttpStatusCode.OK, reschedule.StatusCode);
+        Assert.Equal("rescheduled", await BookingStatusAsync(created.BookingId));
+        Assert.Equal((1, "booked"), await SlotStateAsync(soon));
     }
 
     [Fact]
@@ -141,6 +165,12 @@ public sealed class BookingLifecyclePhase1Tests(DocslotWebAppFactory factory) : 
         // checked_in_at is stamped.
         Assert.NotNull(await CheckedInAtAsync(created.BookingId));
 
+        // Regression (list read-model): the LIST endpoint must surface checked_in as CheckedIn — a missing
+        // EnumParse arm once defaulted it to Pending, putting checked-in patients back in the approval queue.
+        var list = await client.GetFromJsonAsync<List<BookingListItemDto>>("/api/v1/bookings");
+        var row = list!.Single(b => b.BookingId == created.BookingId);
+        Assert.Equal(mediq.SharedDataModel.Docslot.Dashboard.Enums.BookingStatus.CheckedIn, row.Status);
+
         // checked_in → complete succeeds.
         var complete = await PostAsync(client, $"/api/v1/bookings/{created.BookingId}/complete", Guid.NewGuid().ToString(), new { });
         Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
@@ -161,20 +191,59 @@ public sealed class BookingLifecyclePhase1Tests(DocslotWebAppFactory factory) : 
         Assert.Null(await CheckedInAtAsync(created.BookingId));
     }
 
-    // ---- Cutoff ---------------------------------------------------------------------------------------
+    // ---- Slot-timing guard (past slots + channel-aware cutoff) -----------------------------------------
+    //
+    // The cutoff shields the clinic from last-minute SELF-SERVICE bookings (whatsapp/api). Staff channels
+    // (dashboard/walk_in/phone_call) bypass it — the front desk must be able to register the walk-in
+    // standing at the desk — but NO channel may book a slot that has already started.
 
     [Fact]
-    public async Task Create_On_Slot_Within_Cutoff_Is_Rejected_422()
+    public async Task Create_SelfService_Within_Cutoff_Is_Rejected_422()
     {
         var client = await AuthedClientAsync();
         var slot = Guid.NewGuid();
-        // Today, 30 min out → inside the fixture's 2h bookingCutoffHours → rejected.
-        await SeedSlotAtAsync(slot, DateOnly.FromDateTime(DateTime.UtcNow.Date), TimeOnly.FromDateTime(DateTime.UtcNow.AddMinutes(30)));
+        // 30 min out IST → inside the fixture's 2h bookingCutoffHours → rejected for a whatsapp booking.
+        SeedIstSlotAt(out var date, out var time, minutesFromNow: 30);
+        await SeedSlotAtAsync(slot, date, time);
 
         var key = Guid.NewGuid().ToString();
         var resp = await PostAsync(client, "/api/v1/bookings", key, new CreateBookingRequest(
             slot, factory.DoctorId, factory.DepartmentId, factory.PatientPhone,
-            "Cutoff Test", 30, "male", "consultation", "dashboard", null, false, key));
+            "Cutoff Test", 30, "male", "consultation", "whatsapp", null, false, key));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
+        Assert.Equal((0, "available"), await SlotStateAsync(slot));   // not consumed
+    }
+
+    [Fact]
+    public async Task Create_Staff_Walkin_Within_Cutoff_Succeeds()
+    {
+        var client = await AuthedClientAsync();
+        var slot = Guid.NewGuid();
+        // 30 min out IST — inside the cutoff, but walk_in is a staff channel → allowed.
+        SeedIstSlotAt(out var date, out var time, minutesFromNow: 30);
+        await SeedSlotAtAsync(slot, date, time);
+
+        var key = Guid.NewGuid().ToString();
+        var resp = await PostAsync(client, "/api/v1/bookings", key, new CreateBookingRequest(
+            slot, factory.DoctorId, factory.DepartmentId, factory.PatientPhone,
+            "Walk-in Test", 30, "male", "consultation", "walk_in", null, false, key));
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        Assert.Equal((1, "booked"), await SlotStateAsync(slot));
+    }
+
+    [Fact]
+    public async Task Create_On_Past_Slot_Is_Rejected_422_Even_For_Staff()
+    {
+        var client = await AuthedClientAsync();
+        var slot = Guid.NewGuid();
+        // Started 1h ago IST → rejected on every channel, staff included.
+        SeedIstSlotAt(out var date, out var time, minutesFromNow: -60);
+        await SeedSlotAtAsync(slot, date, time);
+
+        var key = Guid.NewGuid().ToString();
+        var resp = await PostAsync(client, "/api/v1/bookings", key, new CreateBookingRequest(
+            slot, factory.DoctorId, factory.DepartmentId, factory.PatientPhone,
+            "Past Slot Test", 30, "male", "consultation", "dashboard", null, false, key));
         Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
         Assert.Equal((0, "available"), await SlotStateAsync(slot));   // not consumed
     }
@@ -226,6 +295,17 @@ public sealed class BookingLifecyclePhase1Tests(DocslotWebAppFactory factory) : 
 
     private Task SeedSlotAsync(Guid slotId, TimeOnly start) =>
         SeedSlotAtAsync(slotId, DocslotWebAppFactory.SlotDate, start);
+
+    /// <summary>
+    /// slot_date/start_time are IST WALL CLOCK (converted via AT TIME ZONE 'Asia/Kolkata' when compared to
+    /// now) — so relative-to-now seeds must be computed in IST, not UTC, or "30 min out" lands hours off.
+    /// </summary>
+    private static void SeedIstSlotAt(out DateOnly date, out TimeOnly time, int minutesFromNow)
+    {
+        var istWallClock = DateTime.UtcNow.AddMinutes(minutesFromNow).AddMinutes(330);   // UTC+05:30
+        date = DateOnly.FromDateTime(istWallClock);
+        time = TimeOnly.FromDateTime(istWallClock);
+    }
 
     private async Task SeedSlotAtAsync(Guid slotId, DateOnly date, TimeOnly start)
     {

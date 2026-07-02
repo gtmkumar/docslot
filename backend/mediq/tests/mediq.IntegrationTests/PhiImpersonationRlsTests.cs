@@ -60,15 +60,6 @@ public sealed class PhiImpersonationRlsTests : IAsyncLifetime
             "INSERT INTO docslot.patients (patient_id, phone_number) VALUES (@id, @phone) ON CONFLICT (patient_id) DO NOTHING",
             ("id", _patientId), ("phone", _phone));
 
-        foreach (var (rid, tid) in new[] { (_rowA, _tenantA), (_rowB, _tenantB), (_rowC, _tenantC) })
-            await Exec(conn,
-                """
-                INSERT INTO docslot.patient_medical_history (history_id, patient_id, tenant_id, record_type, title)
-                VALUES (@id, @pid, @tid, 'allergy', 'penicillin')
-                ON CONFLICT (history_id) DO NOTHING
-                """,
-                ("id", rid), ("pid", _patientId), ("tid", tid));
-
         // A support actor holding platform.users.impersonate (via the seeded platform_support role at
         // PLATFORM scope, tenant NULL) — the only principal begin_impersonation() will accept.
         await Exec(conn,
@@ -86,6 +77,17 @@ public sealed class PhiImpersonationRlsTests : IAsyncLifetime
             ON CONFLICT DO NOTHING
             """,
             ("uid", _actorUserId));
+
+        // Clinic-source medical-history rows are verified at creation by definition (schema CHECK
+        // chk_history_clinic_rows_verified) — stamp the verifier pair (any valid platform user; the actor above).
+        foreach (var (rid, tid) in new[] { (_rowA, _tenantA), (_rowB, _tenantB), (_rowC, _tenantC) })
+            await Exec(conn,
+                """
+                INSERT INTO docslot.patient_medical_history (history_id, patient_id, tenant_id, record_type, title, verified_by_user_id, verified_at)
+                VALUES (@id, @pid, @tid, 'allergy', 'penicillin', @vby, NOW())
+                ON CONFLICT (history_id) DO NOTHING
+                """,
+                ("id", rid), ("pid", _patientId), ("tid", tid), ("vby", _actorUserId));
 
         // Open the audited, time-boxed session actor → tenant B. This writes the hash-chained audit_log row
         // and is the ONLY way to make app.impersonated_tenant=B resolve for this actor.

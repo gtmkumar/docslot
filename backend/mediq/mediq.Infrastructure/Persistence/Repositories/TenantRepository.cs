@@ -53,4 +53,27 @@ public sealed class TenantRepository(PlatformDbContext db) : ITenantRepository
             .Select(r => new UserTenantMembership(r.TenantId, r.TenantCode, r.DisplayName, r.TenantType, r.IsPrimary))
             .ToList();
     }
+
+    /// <summary>
+    /// Display-only role labels for GET /me. Runs in REQUEST context (active tenant set), so the direct read
+    /// passes RLS: system roles have <c>tenant_id IS NULL</c> (globally visible) and the membership rows belong
+    /// to the caller's own tenant. Never an authorization input — permissions come from resolve_user_permissions.
+    /// </summary>
+    public async Task<IReadOnlyList<UserRoleLabel>> GetRoleLabelsAsync(Guid userId, Guid tenantId, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<RoleLabelRow>(
+                """
+                SELECT r.role_key AS "RoleKey", r.name AS "Name"
+                FROM platform.user_tenant_roles utr
+                JOIN platform.roles r ON r.role_id = utr.role_id
+                WHERE utr.user_id = @p0 AND utr.tenant_id = @p1 AND utr.revoked_at IS NULL
+                ORDER BY r.name
+                """,
+                new NpgsqlParameter("@p0", userId), new NpgsqlParameter("@p1", tenantId))
+            .ToListAsync(ct);
+
+        return rows.Select(r => new UserRoleLabel(r.RoleKey, r.Name)).ToList();
+    }
+
+    private sealed record RoleLabelRow(string RoleKey, string Name);
 }

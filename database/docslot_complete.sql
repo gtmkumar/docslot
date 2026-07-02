@@ -1877,11 +1877,38 @@ CREATE TABLE docslot.patient_medical_history (
     is_critical         BOOLEAN NOT NULL DEFAULT false,         -- Flagged for safety alerts
     added_by_user_id    UUID REFERENCES platform.users(user_id),
     added_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    metadata            JSONB DEFAULT '{}'
+    metadata            JSONB DEFAULT '{}',
+
+    -- External-record provenance (paper-prescription import). 'clinic' = entered by this clinic's
+    -- clinician (verified at creation); external sources are drafted by intake staff and shown as
+    -- UNVERIFIED until a clinician confirms. External rows still feed the drug-safety screen
+    -- (fail-safe: over-alerting beats missing a patient-reported allergy).
+    source              VARCHAR(30) NOT NULL DEFAULT 'clinic' CHECK (source IN ('clinic', 'paper_prescription', 'patient_reported')),
+    external_doctor_name TEXT,                                  -- ENCRYPTED at rest (registry) — reveals care relationships
+    recorded_date       DATE,                                   -- date written on the source document
+    verified_by_user_id UUID REFERENCES platform.users(user_id),
+    verified_at         TIMESTAMPTZ,
+    import_batch_id     UUID,                                   -- rows imported from ONE document share a batch
+    -- Scanned source document (photo of the paper Rx): PHI blob-store key (encrypted envelope,
+    -- same seam as lab_reports.file_url). Every row of a batch carries the same pointer.
+    attachment_url      TEXT,
+    attachment_file_name VARCHAR(200),
+    attachment_mime_type VARCHAR(100),
+    attachment_size_bytes BIGINT,
+
+    -- A clinic-entered row is verified by definition (the clinician who added it signs it).
+    CONSTRAINT chk_history_clinic_rows_verified CHECK (
+        source <> 'clinic' OR verified_by_user_id IS NOT NULL
+    ),
+    -- Verification is a pair: both stamps or neither.
+    CONSTRAINT chk_history_verify_pair CHECK (
+        (verified_by_user_id IS NULL) = (verified_at IS NULL)
+    )
 );
 
 CREATE INDEX idx_medical_history_patient ON docslot.patient_medical_history(patient_id, record_type) WHERE is_active = true;
 CREATE INDEX idx_medical_history_critical ON docslot.patient_medical_history(patient_id) WHERE is_critical = true;
+CREATE INDEX idx_medical_history_batch ON docslot.patient_medical_history(import_batch_id) WHERE import_batch_id IS NOT NULL;
 
 -- ============================================================================
 -- TABLE D16: PRESCRIPTIONS
@@ -2248,6 +2275,10 @@ BEGIN
     ('docslot.medical_history.read', docslot_product_id, 'medical_history', 'read', 'tenant', 'Read patient medical history (PHI)', true),
     ('docslot.medical_history.create', docslot_product_id, 'medical_history', 'create', 'tenant', 'Add a patient medical-history record (PHI)', true),
     ('docslot.medical_history.update', docslot_product_id, 'medical_history', 'update', 'tenant', 'Edit/retire a patient medical-history record (PHI)', true),
+    -- Intake is a NARROW write: import EXTERNAL records (paper Rx / patient-reported) that land
+    -- UNVERIFIED until a clinician (medical_history.update holder) confirms. Cannot create
+    -- clinic-source rows and grants no read — front-desk staff can transcribe, not browse PHI.
+    ('docslot.medical_history.intake', docslot_product_id, 'medical_history', 'intake', 'tenant', 'Import external medical-history records as unverified drafts (PHI write-only)', true),
 
     -- Procedures
     ('docslot.procedure.manage', docslot_product_id, 'procedure', 'update', 'tenant', 'Manage procedure catalog', false),
@@ -2293,7 +2324,10 @@ BEGIN
         'docslot.booking.cancel', 'docslot.booking.reschedule', 'docslot.booking.complete',
         'docslot.patient.read', 'docslot.patient.update',
         'docslot.report.upload', 'docslot.report.deliver',
-        'docslot.slot.read', 'docslot.doctor.read'
+        'docslot.slot.read', 'docslot.doctor.read',
+        -- Front desk transcribes a patient's paper prescription / self-reported history into
+        -- UNVERIFIED external records (write-only intake; clinician verifies).
+        'docslot.medical_history.intake'
       );
 END $$;
 
@@ -2907,6 +2941,9 @@ CREATE TABLE platform.encrypted_fields_registry (
 INSERT INTO platform.encrypted_fields_registry (schema_name, table_name, column_name, data_class, pii_category, legal_basis) VALUES
 ('docslot', 'patient_medical_history', 'description', 'medical_history', 'medical', 'consent'),
 ('docslot', 'patient_medical_history', 'title', 'medical_history', 'medical', 'consent'),
+-- Paper-Rx import provenance: the external prescriber's name reveals the patient's care
+-- relationships (who they consulted) — same medical data class as the record itself.
+('docslot', 'patient_medical_history', 'external_doctor_name', 'medical_history', 'medical', 'consent'),
 ('docslot', 'prescriptions', 'diagnosis', 'medical_history', 'medical', 'consent'),
 ('docslot', 'prescriptions', 'medications', 'medical_history', 'medical', 'consent'),
 ('docslot', 'prescriptions', 'examination', 'medical_history', 'medical', 'consent'),

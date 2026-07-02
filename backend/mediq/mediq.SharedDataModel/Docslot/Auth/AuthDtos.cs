@@ -74,7 +74,9 @@ public sealed record EndImpersonationRequest(Guid ImpersonationId, string Refres
 
 /// <summary>
 /// Authenticated profile for <c>GET /api/v1/me</c>. <see cref="ActiveTenantId"/> is the tenant the
-/// current token is scoped to; <see cref="Tenants"/> lists every tenant the user may switch into.
+/// current token is scoped to; <see cref="Tenants"/> lists every tenant the user may switch into;
+/// <see cref="Roles"/> carries the caller's role display labels IN the active tenant (display-only —
+/// authorization always flows from the effective permission set, never from these labels).
 /// </summary>
 public sealed record MeDto(
     Guid UserId,
@@ -84,9 +86,13 @@ public sealed record MeDto(
     string Timezone,
     bool MfaEnabled,
     Guid? ActiveTenantId,
-    IReadOnlyList<MeTenantDto> Tenants);
+    IReadOnlyList<MeTenantDto> Tenants,
+    IReadOnlyList<MeRoleDto> Roles);
 
 public sealed record MeTenantDto(Guid TenantId, string TenantCode, string DisplayName, string TenantType, bool IsPrimary);
+
+/// <summary>A role held by the caller in the active tenant — display label only, not an authz input.</summary>
+public sealed record MeRoleDto(string RoleKey, string Name);
 
 /// <summary>A single dashboard badge count keyed by <c>navigation_menus.badge_source</c>. Mirrors <c>GET /api/v1/me/badges</c>.</summary>
 public sealed record BadgesDto(IReadOnlyDictionary<string, int> Counts);

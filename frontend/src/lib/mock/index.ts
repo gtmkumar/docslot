@@ -185,6 +185,12 @@ const SIGNED_IN_PERMISSIONS: PermissionsResponse = {
     'docslot.report.upload',
     'docslot.report.deliver',
     'docslot.medical_history.read',
+    // Paper-prescription intake + manual history (Slice: paper-Rx). Granted in the
+    // demo so the "Add paper Rx" / "Add record" launchers, the OCR "Extract with AI"
+    // action, and per-row Verify/Edit are all exercisable flag-off.
+    'docslot.medical_history.intake',
+    'docslot.medical_history.create',
+    'docslot.medical_history.update',
     'docslot.abdm.records.read',
     'docslot.abdm.records.create',
     // Commission / Care Partners (Slice 07). Granted the FULL set in the demo so

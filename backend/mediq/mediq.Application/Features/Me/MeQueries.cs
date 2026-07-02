@@ -22,9 +22,15 @@ public sealed class GetMeQueryHandler(IUserRepository users, ITenantRepository t
             .Select(m => new MeTenantDto(m.TenantId, m.TenantCode, m.DisplayName, m.TenantType, m.IsPrimary))
             .ToList();
 
+        // Role display labels for the ACTIVE tenant (sidebar chip). Display-only — never an authz input.
+        var roleDtos = query.ActiveTenantId is { } activeTenantId
+            ? (await tenants.GetRoleLabelsAsync(query.UserId, activeTenantId, ct))
+                .Select(r => new MeRoleDto(r.RoleKey, r.Name)).ToList()
+            : [];
+
         return new MeDto(
             user.UserId, user.Email, user.FullName, user.PreferredLanguage, user.Timezone,
-            user.MfaEnabled, query.ActiveTenantId, tenantDtos);
+            user.MfaEnabled, query.ActiveTenantId, tenantDtos, roleDtos);
     }
 }
 

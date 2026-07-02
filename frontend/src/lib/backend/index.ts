@@ -318,6 +318,15 @@ export const listMedicalHistory = USE_REAL_API ? real.listMedicalHistory : mock.
 // NEW (this slice) — medical-history create/update + the contextual break-glass.
 export const createMedicalHistory = USE_REAL_API ? real.createMedicalHistory : mock.createMedicalHistory;
 export const updateMedicalHistory = USE_REAL_API ? real.updateMedicalHistory : mock.updateMedicalHistory;
+// Paper-prescription intake — import a batch of UNVERIFIED external records + an
+// optional scan, verify an external record, and fetch a record's attachment image.
+export const importMedicalHistory = USE_REAL_API ? real.importMedicalHistory : mock.importMedicalHistory;
+export const verifyMedicalHistory = USE_REAL_API ? real.verifyMedicalHistory : mock.verifyMedicalHistory;
+export const fetchMedicalHistoryAttachment = USE_REAL_API ? real.fetchMedicalHistoryAttachment : mock.fetchMedicalHistoryAttachment;
+// Unified patient timeline (prescriptions + reports + history in one purpose-gated read).
+export const getPatientTimeline = USE_REAL_API ? real.getPatientTimeline : mock.getPatientTimeline;
+// OCR assist: extract a paper prescription into review-first suggested lines (advisory).
+export const extractPrescription = USE_REAL_API ? real.extractPrescription : mock.extractPrescription;
 export const listAbdmRecords = USE_REAL_API ? real.listAbdmRecords : mock.listAbdmRecords;
 export const getAbdmRecord = USE_REAL_API ? real.getAbdmRecord : mock.getAbdmRecord;
 export const pushAbdmRecord = USE_REAL_API ? real.pushAbdmRecord : mock.pushAbdmRecord;

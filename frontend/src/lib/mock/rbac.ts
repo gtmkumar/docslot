@@ -175,6 +175,9 @@ export function getMe(): Promise<Me> {
           isPrimary: true,
         },
       ],
+      // Demo persona is the reception desk — surface a sensible role for the
+      // sidebar chip (display only; nav/permissions stay backend-driven).
+      roles: [{ roleKey: 'tenant_staff', name: 'Receptionist' }],
     }),
   );
 }

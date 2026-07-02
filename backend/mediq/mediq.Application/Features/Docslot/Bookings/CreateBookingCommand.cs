@@ -42,18 +42,33 @@ public sealed record CreateBookingRequest(
 public sealed record CreateBookingResult(Guid BookingId, string? BookingNumber, int? TokenNumber);
 
 /// <summary>
-/// Shared booking-cutoff guard: the chosen slot must be at least the tenant's <c>BookingCutoffHours</c> in
-/// the future. Used by create + reschedule so the rule is enforced identically on every path (FR-BOOK).
+/// Shared slot-timing guard (FR-BOOK). Two rules, applied on create + reschedule alike:
+/// (1) NO channel may book a slot that has already started;
+/// (2) the tenant's <c>BookingCutoffHours</c> lead-time applies only to PATIENT-INITIATED channels
+///     (whatsapp/api) on fresh creates — staff channels (dashboard/walk_in/phone_call) and reschedules
+///     bypass it, because the cutoff exists to shield the clinic from last-minute self-service bookings,
+///     not to stop the front desk registering the walk-in patient standing at it.
+/// A future patient self-reschedule surface must pass its real channel so the cutoff re-engages.
 /// </summary>
 internal static class BookingCutoff
 {
+    /// <summary>Channels where the patient books for themselves (the cutoff's actual target).</summary>
+    private static readonly string[] SelfServiceChannels = ["whatsapp", "api"];
+
     public static async Task EnsureSlotBeyondCutoffAsync(
-        ISettingsReadService settings, ISlotHoldService slots, Guid tenantId, Guid slotId, DateTime nowUtc, CancellationToken ct)
+        ISettingsReadService settings, ISlotHoldService slots, Guid tenantId, Guid slotId,
+        string bookedVia, bool isReschedule, DateTime nowUtc, CancellationToken ct)
     {
-        var cutoffHours = (await settings.GetAsync(tenantId, ct))?.AppointmentSettings.BookingCutoffHours ?? 0;
-        if (cutoffHours <= 0) return;
         var start = await slots.GetSlotStartUtcAsync(slotId, ct);
-        if (start is { } s && s < nowUtc.AddHours(cutoffHours))
+        if (start is not { } s) return;   // unknown slot → the slot-hold below raises the authoritative error
+        if (s <= nowUtc)
+            throw new mediq.Utilities.Exceptions.BusinessRuleException(
+                "This slot has already started — pick an upcoming slot.");
+
+        if (isReschedule || !SelfServiceChannels.Contains(bookedVia)) return;
+
+        var cutoffHours = (await settings.GetAsync(tenantId, ct))?.AppointmentSettings.BookingCutoffHours ?? 0;
+        if (cutoffHours > 0 && s < nowUtc.AddHours(cutoffHours))
             throw new mediq.Utilities.Exceptions.BusinessRuleException(
                 $"Bookings must be made at least {cutoffHours} hour(s) before the appointment time.");
     }

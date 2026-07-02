@@ -105,7 +105,88 @@ public sealed record DeliverLabReportResult(Guid ReportId, string Status, DateTi
 public sealed record MedicalHistoryDto(
     Guid HistoryId, string RecordType, string Title, string? Description,   // title/description decrypted
     string? Severity, string? Icd10Code, DateOnly? StartedDate, DateOnly? EndedDate,   // non-encrypted scalars — surfaced so an edit round-trips losslessly
-    bool IsActive, bool IsCritical, DateTimeOffset AddedAt);
+    bool IsActive, bool IsCritical, DateTimeOffset AddedAt,
+    // Paper-import provenance/verification. source distinguishes clinic vs imported (paper_prescription /
+    // patient_reported); externalDoctorName is DECRYPTED (this endpoint is read-permission + purpose gated);
+    // verifiedAt NULL ⇒ still an unverified draft; attachment* are surfaced so the UI can offer the scan download.
+    string Source = "clinic",
+    string? ExternalDoctorName = null,
+    DateOnly? RecordedDate = null,
+    DateTimeOffset? VerifiedAt = null,
+    Guid? ImportBatchId = null,
+    string? AttachmentFileName = null,
+    string? AttachmentMimeType = null);
+
+// ---- Paper-prescription / external-history import (front-desk intake → UNVERIFIED drafts) ---------
+
+/// <summary>The scanned source document (photo of the paper Rx) — base64 in the JSON body (internal storage
+/// seam; a multipart/presigned path is the prod follow-up for large files). Stored encrypted-at-rest.</summary>
+public sealed record ImportAttachment(string FileName, string ContentType, string ContentBase64);
+
+/// <summary>One transcribed record within an import batch. title/description are encrypted at rest by the handler.</summary>
+public sealed record ImportMedicalHistoryRecord(
+    string RecordType,                 // allergy | chronic_condition | surgery | medication | vaccination | family_history | lifestyle
+    string Title,
+    string? Description,
+    string? Severity,                  // mild | moderate | severe | critical
+    bool? IsCritical,
+    DateOnly? StartedDate);
+
+/// <summary>Import a patient's paper prescription / self-reported history as UNVERIFIED external records. source
+/// MUST be external ('clinic' rejected). All records share one generated import batch + the attachment pointer;
+/// externalDoctorName + each title/description are encrypted at rest. PatientId comes from the route.</summary>
+public sealed record ImportMedicalHistoryRequest(
+    string Source,                     // paper_prescription | patient_reported
+    string? ExternalDoctorName,
+    DateOnly? RecordedDate,
+    ImportAttachment? Attachment,
+    IReadOnlyList<ImportMedicalHistoryRecord> Records);
+
+/// <summary>Result of an import — the batch id + the created (unverified) history ids. NO PHI echoed back.</summary>
+public sealed record ImportMedicalHistoryResult(Guid ImportBatchId, IReadOnlyList<Guid> HistoryIds);
+
+/// <summary>The decrypted scanned-document attachment streamed back by the consent-gated download endpoint
+/// (never serialized as JSON).</summary>
+public sealed record MedicalHistoryAttachmentDto(Guid HistoryId, string FileName, string ContentType, byte[] Content);
+
+// ---- Unified patient timeline (merged, purpose-gated PHI read-model) ------------------------------
+
+/// <summary>The patient strip that heads the timeline — low-sensitivity relationship facts (NO clinical PHI):
+/// when the patient first visited this tenant (first booking) and how many non-cancelled visits.</summary>
+public sealed record PatientTimelineStripDto(DateOnly? PatientSince, int VisitCount);
+
+/// <summary>A backend-driven category chip: bilingual label + item count. Included iff the caller holds the
+/// category's read permission (count 0 chips are still returned) — the frontend renders chips purely from this
+/// list (no client-side role logic).</summary>
+public sealed record TimelineCategoryDto(string Key, string LabelEn, string LabelHi, int Count);
+
+/// <summary>Points a timeline item at the row/aggregate its detail panel opens. <c>Type</c> is
+/// prescription | lab_report | medical_history | medical_history_batch; <c>Id</c> is the source row id (or the
+/// import_batch_id for a document card).</summary>
+public sealed record TimelineRefDto(string Type, Guid Id);
+
+/// <summary>One merged timeline entry. <c>Title</c>/<c>Subtitle</c>/<c>Summary</c> are decrypted where the source
+/// is PHI (in-policy — the whole read is permission + purpose + consent gated). <c>Summary</c> never lists drug
+/// names (only counts). <c>Tags</c> are non-PHI tokens (human id, status, 'critical'). <c>Unverified</c> flags an
+/// external record a clinician has not confirmed.</summary>
+public sealed record TimelineItemDto(
+    Guid ItemId,
+    string Category,                 // prescription | lab_report | vaccination | document
+    DateTimeOffset OccurredAt,
+    string Title,
+    string? Subtitle,
+    string? Summary,
+    IReadOnlyList<string> Tags,
+    bool Unverified,
+    bool HasAttachment,
+    TimelineRefDto Ref);
+
+/// <summary>The unified patient timeline: the header strip, the permitted category chips (with counts), and the
+/// merged items sorted most-recent-first (capped). Categories the caller cannot read are omitted entirely.</summary>
+public sealed record PatientTimelineDto(
+    PatientTimelineStripDto Patient,
+    IReadOnlyList<TimelineCategoryDto> Categories,
+    IReadOnlyList<TimelineItemDto> Items);
 
 /// <summary>Create a medical-history record. title/description are encrypted at rest by the handler. PatientId comes from the route.</summary>
 public sealed record CreateMedicalHistoryRequest(

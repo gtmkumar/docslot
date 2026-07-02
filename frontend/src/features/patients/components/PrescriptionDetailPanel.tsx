@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { shortDate } from '@/lib/format';
 import { usePrescription } from '../api';
 import { ConsentBlocked, isConsentDenied } from './ConsentBlocked';
-import type { PurposeOfUse } from '@/lib/mock/contracts';
+import { formatMedicationLine, type PurposeOfUse } from '@/lib/mock/contracts';
 
 export function PrescriptionDetailPanel({
   prescriptionId,
@@ -73,9 +73,7 @@ export function PrescriptionDetailPanel({
               {data.medications.map((m, i) => (
                 <li key={i} className="rounded-[var(--radius-sm)] border border-line px-3 py-2">
                   <p className="text-[13px] font-medium text-ink">{m.name}</p>
-                  <p className="mono text-[11px] text-muted">
-                    {m.dose} · {m.frequency} · {m.duration}
-                  </p>
+                  <p className="mono text-[11px] text-muted">{formatMedicationLine(m, t)}</p>
                 </li>
               ))}
             </ul>

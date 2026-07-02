@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { EllipsisVertical } from 'lucide-react';
+import { ChevronDown, EllipsisVertical } from 'lucide-react';
 
 export interface KebabItem {
   key: string;
@@ -20,7 +20,22 @@ export interface KebabItem {
   tone?: 'default' | 'danger';
 }
 
-export function KebabMenu({ label, items }: { label: string; items: KebabItem[] }) {
+export function KebabMenu({
+  label,
+  items,
+  variant = 'kebab',
+  triggerIcon,
+  align = 'right',
+}: {
+  label: string;
+  items: KebabItem[];
+  /** 'kebab' (default) → the ⋮ icon trigger; 'labeled' → a bordered button that
+   *  shows `triggerIcon` + `label` + a chevron (e.g. an "Upload record" menu). */
+  variant?: 'kebab' | 'labeled';
+  triggerIcon?: ReactNode;
+  /** Which edge the popover aligns to. */
+  align?: 'left' | 'right';
+}) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -69,27 +84,45 @@ export function KebabMenu({ label, items }: { label: string; items: KebabItem[] 
 
   return (
     <div ref={rootRef} className="relative shrink-0">
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={label}
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((o) => !o);
-        }}
-        className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] border border-transparent text-muted-2 transition-colors hover:bg-surface-sunk hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-      >
-        <EllipsisVertical size={16} aria-hidden="true" />
-      </button>
+      {variant === 'labeled' ? (
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen((o) => !o);
+          }}
+          className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-line bg-surface px-3 py-1.5 text-[13px] font-medium text-ink transition-colors hover:bg-surface-sunk focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          {triggerIcon ? <span aria-hidden="true" className="shrink-0">{triggerIcon}</span> : null}
+          {label}
+          <ChevronDown size={14} aria-hidden="true" className={`text-muted-2 transition-transform ${open ? 'rotate-180' : ''}`} />
+        </button>
+      ) : (
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={label}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen((o) => !o);
+          }}
+          className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] border border-transparent text-muted-2 transition-colors hover:bg-surface-sunk hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <EllipsisVertical size={16} aria-hidden="true" />
+        </button>
+      )}
 
       {open ? (
         <div
           role="menu"
           aria-label={label}
           onKeyDown={onMenuKeyDown}
-          className="absolute right-0 z-50 mt-1 min-w-44 rounded-[var(--radius)] border border-line bg-surface p-1 shadow-[var(--shadow-lg)]"
+          className={`absolute z-50 mt-1 min-w-44 rounded-[var(--radius)] border border-line bg-surface p-1 shadow-[var(--shadow-lg)] ${align === 'left' ? 'left-0' : 'right-0'}`}
         >
           {items.map((item) => (
             <button

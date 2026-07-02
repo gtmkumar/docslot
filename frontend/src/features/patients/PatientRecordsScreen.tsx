@@ -1,14 +1,15 @@
 // Patient clinical records (/patients/{id}/records) — the most PHI-sensitive
 // screen. Header: identity (MASKED phone), consent badge. Body: the
-// purpose-of-use GATE — clinical tabs are LOCKED until a purpose is declared.
-// Once declared, the purpose is passed to every clinical read. Tabs:
-// Prescriptions | Lab reports | Medical history | ABDM records.
+// purpose-of-use GATE — the record is LOCKED until a purpose is declared. Once
+// declared, ONE declaration covers the whole view: a left summary rail (recent-
+// patient switcher, identity, allergies, chronic, visits) + a center unified
+// timeline (GET /patients/{id}/timeline) with backend-driven category chips that
+// replaces the old per-type tabs.
 //
 // The declared purpose lives in component state so it RESETS when you navigate
 // away — re-entry requires re-declaring (and re-logging) access.
 
 import { useState } from 'react';
-import * as Tabs from '@radix-ui/react-tabs';
 import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
@@ -17,30 +18,25 @@ import { useTranslation } from 'react-i18next';
 import { Avatar } from '@/components/ui/Avatar';
 import { Card } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { maskPhone, shortDate } from '@/lib/format';
+import { shortDate } from '@/lib/format';
 import { listBookings } from '@/lib/backend';
-import { PATIENTS } from '@/lib/data';
 import { usePermissions } from '@/lib/permissions';
-import { usePatientConsent } from './api';
+import { usePatientConsent, usePatients } from './api';
 import { ConsentBadge } from './components/ConsentBadge';
 import { PurposeBanner, PurposeGate } from '@/components/ui/PurposeGate';
-import { PrescriptionsTab } from './components/PrescriptionsTab';
-import { ReportsTab } from './components/ReportsTab';
-import { HistoryTab } from './components/HistoryTab';
-import { AbdmTab } from './components/AbdmTab';
+import { PatientSummaryRail } from './components/PatientSummaryRail';
+import { ClinicalTimeline } from './components/ClinicalTimeline';
 import type { PurposeOfUse } from '@/lib/mock/contracts';
-
-const tabTrigger =
-  'shrink-0 whitespace-nowrap px-3 py-2 text-[13px] font-medium text-muted border-b-2 border-transparent transition-colors ' +
-  'hover:text-ink data-[state=active]:border-primary data-[state=active]:text-ink ' +
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary';
 
 export function PatientRecordsScreen() {
   const { t } = useTranslation();
   const { can } = usePermissions();
   const navigate = useNavigate();
   const { patientId } = useParams({ from: '/authed/patients/$patientId/records' });
-  const patient = PATIENTS.find((p) => p.id === patientId);
+  // Identity from the tenant-scoped patients list (masked phone only — no clinical
+  // content). Keyed by the route id, so it resolves for real UUIDs too.
+  const { data: patients } = usePatients();
+  const patient = patients?.find((p) => p.id === patientId);
   const { data: consent, isLoading: consentLoading } = usePatientConsent(patientId);
 
   // Declared purpose — null until the gate is satisfied. Resets on navigation.
@@ -54,7 +50,7 @@ export function PatientRecordsScreen() {
   const bookingsQ = useQuery({ queryKey: ['bookings', 'list'] as const, queryFn: listBookings, enabled: canCreateRx });
   const activeBooking = patient
     ? bookingsQ.data?.find(
-        (b) => b.maskedPhone === maskPhone(patient.phone) && (b.status === 'pending' || b.status === 'confirmed' || b.status === 'checked_in'),
+        (b) => b.maskedPhone === patient.maskedPhone && (b.status === 'pending' || b.status === 'confirmed' || b.status === 'checked_in'),
       )
     : undefined;
   const onNewPrescription = () => {
@@ -80,7 +76,7 @@ export function PatientRecordsScreen() {
             <h1 id="screen-heading" tabIndex={-1} className="text-lg font-semibold text-ink outline-none">
               {patient?.name ?? '—'}
             </h1>
-            <p className="mono text-[12px] text-muted">{patient ? maskPhone(patient.phone) : '—'}</p>
+            <p className="mono text-[12px] text-muted">{patient?.maskedPhone ?? '—'}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -97,59 +93,19 @@ export function PatientRecordsScreen() {
         </div>
       </Card>
 
-      {/* Gate: clinical tabs are locked until a purpose is declared. */}
+      {/* Gate: the record is locked until a purpose is declared. One declaration
+          covers the whole timeline + summary rail. */}
       {purpose === null ? (
         <PurposeGate onDeclare={setPurpose} />
       ) : (
         <>
           <PurposeBanner purpose={purpose} onChange={() => setPurpose(null)} />
-          <Tabs.Root defaultValue="prescriptions">
-            <div className="border-b border-line">
-              <Tabs.List className="flex gap-1 overflow-x-auto" aria-label={t('clinical.title')}>
-                {can('docslot.prescription.read') ? (
-                  <Tabs.Trigger value="prescriptions" className={tabTrigger}>
-                    {t('clinical.tabPrescriptions')}
-                  </Tabs.Trigger>
-                ) : null}
-                {can('docslot.report.read') ? (
-                  <Tabs.Trigger value="reports" className={tabTrigger}>
-                    {t('clinical.tabReports')}
-                  </Tabs.Trigger>
-                ) : null}
-                {can('docslot.medical_history.read') ? (
-                  <Tabs.Trigger value="history" className={tabTrigger}>
-                    {t('clinical.tabHistory')}
-                  </Tabs.Trigger>
-                ) : null}
-                {can('docslot.abdm.records.read') ? (
-                  <Tabs.Trigger value="abdm" className={tabTrigger}>
-                    {t('clinical.tabAbdm')}
-                  </Tabs.Trigger>
-                ) : null}
-              </Tabs.List>
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
+            <PatientSummaryRail patientId={patientId} purpose={purpose} />
+            <div className="min-w-0 flex-1">
+              <ClinicalTimeline patientId={patientId} purpose={purpose} abdmConsent={consent?.abdmConsent} onNewPrescription={onNewPrescription} />
             </div>
-
-            {can('docslot.prescription.read') ? (
-              <Tabs.Content value="prescriptions" className="pt-5 focus-visible:outline-none">
-                <PrescriptionsTab patientId={patientId} purpose={purpose} onNewPrescription={onNewPrescription} />
-              </Tabs.Content>
-            ) : null}
-            {can('docslot.report.read') ? (
-              <Tabs.Content value="reports" className="pt-5 focus-visible:outline-none">
-                <ReportsTab patientId={patientId} purpose={purpose} />
-              </Tabs.Content>
-            ) : null}
-            {can('docslot.medical_history.read') ? (
-              <Tabs.Content value="history" className="pt-5 focus-visible:outline-none">
-                <HistoryTab patientId={patientId} purpose={purpose} />
-              </Tabs.Content>
-            ) : null}
-            {can('docslot.abdm.records.read') ? (
-              <Tabs.Content value="abdm" className="pt-5 focus-visible:outline-none">
-                <AbdmTab patientId={patientId} purpose={purpose} abdmConsent={consent?.abdmConsent} />
-              </Tabs.Content>
-            ) : null}
-          </Tabs.Root>
+          </div>
         </>
       )}
     </section>

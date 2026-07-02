@@ -75,8 +75,11 @@ import {
   BreakGlassResultSchema,
   ConsultationDraftSchema,
   FinalizeConsultationResultSchema,
-  RxMedicationSchema,
+  parseMedications,
   CreateMedicalHistoryResultSchema,
+  ImportMedicalHistoryResultSchema,
+  ExtractPrescriptionResultSchema,
+  PatientTimelineSchema,
   IssuePrescriptionResultSchema,
   LabReportDetailSchema,
   LabReportListItemSchema,
@@ -182,6 +185,11 @@ import {
   type BreakGlassResult,
   type CreateMedicalHistoryRequest,
   type CreateMedicalHistoryResult,
+  type ImportMedicalHistoryRequest,
+  type ImportMedicalHistoryResult,
+  type ExtractPrescriptionInput,
+  type ExtractPrescriptionResult,
+  type PatientTimeline,
   type ConsultationDraft,
   type SaveConsultationRequest,
   type FinalizeConsultationResult,
@@ -412,6 +420,18 @@ function istToday(): string {
   }).format(new Date());
 }
 
+/** Current wall-clock time as "HH:mm" in Asia/Kolkata (the clinic timezone), for
+ *  dropping already-passed slots when booking for today. Zero-padded 24h, so a
+ *  lexicographic string compare against a slot's "HH:mm" start is a time compare. */
+function istNowClock(): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date());
+}
+
 // The API serializes booking enums as the canonical snake_case STRING tokens
 // (status/source). We pass them straight through to BookingRowSchema, which is
 // the authoritative enum gate — an unexpected token surfaces here rather than
@@ -568,8 +588,12 @@ export async function listSlots(doctorId: string, date?: string): Promise<Slot[]
   const day = date ?? istToday();
   const raw = await apiFetch<unknown[]>(`/doctors/${doctorId}/slots?date=${day}`);
   const dtos = SlotDtoSchema.array().parse(raw);
+  // When booking for TODAY (Asia/Kolkata), a slot whose start time has already
+  // passed can't be booked — drop it. Future dates keep every available slot.
+  const nowClock = day === istToday() ? istNowClock() : null;
   return dtos
     .filter((s) => s.status.toLowerCase() === 'available')
+    .filter((s) => !nowClock || s.startTime.slice(0, 5) > nowClock)
     .map((s) =>
       SlotSchema.parse({
         time: s.startTime.slice(0, 5),
@@ -2588,14 +2612,12 @@ export async function getPrescription(
 ): Promise<PrescriptionDetail> {
   const raw = (await apiFetch<unknown>(`/prescriptions/${prescriptionId}`, { purposeOfUse: purpose })) as Record<string, unknown>;
   // PrescriptionDto sends medicationsJson (a string) and — until the #53 backend half — no doctorName.
-  // Parse the JSON into the medications array and coalesce the name so the detail renders.
+  // Decode meds per-item tolerant (structured OR legacy union) so a structured line is never dropped
+  // to the legacy schema and one odd item never empties/rejects the list; coalesce the name.
   return PrescriptionDetailSchema.parse({
     ...raw,
     doctorName: (raw.doctorName as string | null | undefined) ?? '—',
-    medications:
-      typeof raw.medicationsJson === 'string' && raw.medicationsJson.trim()
-        ? JSON.parse(raw.medicationsJson)
-        : (raw.medications ?? []),
+    medications: parseMedications(typeof raw.medicationsJson === 'string' ? raw.medicationsJson : raw.medications),
   });
 }
 
@@ -2630,13 +2652,10 @@ export async function issuePrescription(
 
 function parseConsultationDraft(raw: unknown): ConsultationDraft {
   const r = raw as Record<string, unknown>;
-  const meds =
-    typeof r.medicationsJson === 'string' && r.medicationsJson.trim()
-      ? (JSON.parse(r.medicationsJson) as unknown[])
-      : ((r.medications as unknown[]) ?? []);
   return ConsultationDraftSchema.parse({
     ...r,
-    medications: meds.map((m) => RxMedicationSchema.parse(m)),
+    // Per-item tolerant decode (structured OR legacy union) — see parseMedications.
+    medications: parseMedications(typeof r.medicationsJson === 'string' ? r.medicationsJson : r.medications),
   });
 }
 
@@ -2808,6 +2827,99 @@ export async function updateMedicalHistory(
   });
   // A 200 with a bool body; treat anything truthy/empty as success (404 throws).
   return raw === false ? false : true;
+}
+
+/** POST /patients/{patientId}/medical-history/import → 201 { importBatchId,
+ *  historyIds }. Front-desk intake of a paper prescription (or patient-reported
+ *  history): one batch of UNVERIFIED external records + an optional inline scan.
+ *  title/description + the base64 image are PHI — sent in the body only, never the
+ *  URL or a log. Stable Idempotency-Key de-dupes a double-submit server-side. */
+export async function importMedicalHistory(
+  patientId: string,
+  req: ImportMedicalHistoryRequest,
+  idempotencyKey: string,
+): Promise<ImportMedicalHistoryResult> {
+  const raw = await apiFetch<unknown>(`/patients/${patientId}/medical-history/import`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {
+      source: req.source,
+      externalDoctorName: req.externalDoctorName ?? null,
+      recordedDate: req.recordedDate ?? null,
+      attachment: req.attachment ?? null,
+      records: req.records.map((r) => ({
+        recordType: r.recordType,
+        title: r.title,
+        description: r.description ?? null,
+        severity: r.severity ?? null,
+        isCritical: r.isCritical,
+        startedDate: r.startedDate ?? null,
+      })),
+    },
+  });
+  return ImportMedicalHistoryResultSchema.parse(raw);
+}
+
+/** POST /patients/{patientId}/medical-history/{historyId}/verify → 204. Marks an
+ *  external record verified (gated docslot.medical_history.update). Idempotency-Key. */
+export async function verifyMedicalHistory(
+  patientId: string,
+  historyId: string,
+  idempotencyKey: string,
+): Promise<void> {
+  await apiFetch<void>(`/patients/${patientId}/medical-history/${historyId}/verify`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+  });
+}
+
+/** GET /patients/{patientId}/medical-history/{historyId}/attachment → the scanned
+ *  paper Rx (binary image). Requires the Bearer token + tenant header + the same
+ *  X-Purpose-Of-Use the history read carries, so a bare <img src> wouldn't
+ *  authenticate: fetch WITH headers into a transient blob and return an object URL
+ *  the viewer revokes on unmount. The bytes are PHI — never cached or logged. */
+export async function fetchMedicalHistoryAttachment(
+  patientId: string,
+  historyId: string,
+  purpose: string | undefined,
+): Promise<string> {
+  const { accessToken, tenantId } = getSessionSnapshot();
+  const headers: Record<string, string> = {};
+  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+  if (tenantId) headers['X-Tenant-Id'] = tenantId;
+  if (purpose) headers['X-Purpose-Of-Use'] = purpose;
+
+  const res = await fetch(`/api/v1/patients/${patientId}/medical-history/${historyId}/attachment`, { headers });
+  if (!res.ok) throw new ApiError(res.status, `Attachment fetch failed: ${res.status}`);
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+/** GET /patients/{patientId}/timeline → the unified clinical timeline (categories
+ *  the caller may read + reverse-chronological items). Purpose-gated. */
+export async function getPatientTimeline(patientId: string, purpose: string | undefined): Promise<PatientTimeline> {
+  const raw = await apiFetch<unknown>(`/patients/${patientId}/timeline`, { purposeOfUse: purpose });
+  return PatientTimelineSchema.parse(raw);
+}
+
+/** POST /medical-history/extract-prescription → an ADVISORY OCR parse the front
+ *  desk reviews before importing (nothing auto-saves). Patient-bound PHI (the image
+ *  bytes + the parsed lines) → X-Purpose-Of-Use is REQUIRED; the base64 flows
+ *  through the body only. `available:false` is preserved so the UI can fall back to
+ *  manual entry rather than fabricate a parse. No Idempotency-Key (advisory, like
+ *  RAG ask — the persisted write is the separate import POST). */
+export async function extractPrescription(input: ExtractPrescriptionInput): Promise<ExtractPrescriptionResult> {
+  const raw = await apiFetch<unknown>('/medical-history/extract-prescription', {
+    method: 'POST',
+    purposeOfUse: input.purposeOfUse,
+    body: {
+      patientId: input.patientId,
+      fileName: input.fileName,
+      contentType: input.contentType,
+      contentBase64: input.contentBase64,
+    },
+  });
+  return ExtractPrescriptionResultSchema.parse(raw);
 }
 
 // ── ABDM (consent-gated detail) ───────────────────────────────────────────────

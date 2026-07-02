@@ -1,5 +1,6 @@
 # dotnet-microservices-architect — Memory Index
 
+- [Paper-Rx import](project_paper_rx_import.md) — external medical-history intake→unverified→clinician verify; source CHECK forces clinic rows verified; FromRow optional-param trick; drug-screen includes unverified; LIVE-DB super_admin sweep gap (10_roles_grants) blocks RbacNavigationTests.
 - [Consultation draft→finalize](project_consultation_draft_finalize.md) — composer backend on docslot.prescriptions; signer-CHECK regression (finalized rows need finalized_by/at), idempotent screening, COALESCE-cast gotcha, doctor-user test fixture, pre-existing bookings-nav failure.
 
 - [Slice 95 people import/export](project_slice95_people_import_export.md) — People CSV export (reuse AuditCsv neutralization) + bulk import; per-row SAVEPOINT inside command UoW un-aborts R3-escalation-42501 rows so batch continues; tenant from JWT.

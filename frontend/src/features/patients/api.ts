@@ -19,6 +19,11 @@ import {
   addPatient,
   breakGlass,
   createMedicalHistory,
+  importMedicalHistory,
+  verifyMedicalHistory,
+  fetchMedicalHistoryAttachment,
+  getPatientTimeline,
+  extractPrescription,
   deliverLabReport,
   getAbdmRecord,
   getLabReport,
@@ -36,6 +41,7 @@ import {
 import type {
   BreakGlassRequest,
   CreateMedicalHistoryRequest,
+  ImportMedicalHistoryRequest,
   UpdateMedicalHistoryRequest,
   UploadLabReportRequest,
 } from '@/lib/mock/contracts';
@@ -165,6 +171,77 @@ export function useUpdateMedicalHistory(patientId: string) {
     }: UpdateMedicalHistoryRequest & { historyId: string; idempotencyKey: string }) =>
       updateMedicalHistory(patientId, historyId, req, idempotencyKey),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['clinical', 'history', patientId] }),
+  });
+}
+
+/** Query key for the unified patient timeline. */
+export const patientTimelineQueryKey = (patientId: string) => ['clinical', 'timeline', patientId] as const;
+
+/** The unified patient timeline (categories + reverse-chron items). Purpose-gated;
+ *  disabled until a purpose is declared. */
+export function usePatientTimeline(patientId: string | undefined, purpose: string | undefined) {
+  return useQuery({
+    queryKey: ['clinical', 'timeline', patientId, purpose] as const,
+    queryFn: () => getPatientTimeline(patientId ?? '', purpose),
+    enabled: Boolean(patientId) && Boolean(purpose),
+  });
+}
+
+/** Import a paper-prescription / patient-reported batch. One POST with a stable
+ *  Idempotency-Key; the created rows land UNVERIFIED. Invalidates the history AND
+ *  timeline queries so both surfaces show the new (unverified) rows. */
+export function useImportMedicalHistory(patientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ idempotencyKey, ...req }: ImportMedicalHistoryRequest & { idempotencyKey: string }) =>
+      importMedicalHistory(patientId, req, idempotencyKey),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['clinical', 'history', patientId] });
+      void qc.invalidateQueries({ queryKey: patientTimelineQueryKey(patientId) });
+    },
+  });
+}
+
+/** OCR-extract a paper prescription into review-first suggested lines. ADVISORY:
+ *  nothing is persisted here (the import POST is the only write), so there's no
+ *  cache invalidation. Purpose is threaded to the extract call's X-Purpose-Of-Use. */
+export function useExtractPrescription(patientId: string, purpose: string | undefined) {
+  return useMutation({
+    mutationFn: (att: { fileName: string; contentType: string; contentBase64: string }) =>
+      extractPrescription({ patientId, purposeOfUse: purpose, ...att }),
+  });
+}
+
+/** Verify an external (imported) record. POST → 204, stable Idempotency-Key.
+ *  Invalidates the history AND timeline queries so the row re-renders verified. */
+export function useVerifyMedicalHistory(patientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ historyId, idempotencyKey }: { historyId: string; idempotencyKey: string }) =>
+      verifyMedicalHistory(patientId, historyId, idempotencyKey),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['clinical', 'history', patientId] });
+      void qc.invalidateQueries({ queryKey: patientTimelineQueryKey(patientId) });
+    },
+  });
+}
+
+/** Fetch a record's scanned attachment as a displayable URL (authenticated blob →
+ *  object URL in real; data URL in mock). Purpose-gated. The viewer owns the query
+ *  lifecycle and revokes the URL on unmount — the bytes are PHI, never cached. */
+export function useMedicalHistoryAttachment(
+  patientId: string,
+  historyId: string | undefined,
+  purpose: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['clinical', 'history', patientId, 'attachment', historyId, purpose] as const,
+    queryFn: () => fetchMedicalHistoryAttachment(patientId, historyId ?? '', purpose),
+    enabled: Boolean(patientId) && Boolean(historyId) && Boolean(purpose),
+    // PHI bytes must not linger in the cache: don't retain after the viewer unmounts.
+    gcTime: 0,
+    staleTime: 0,
+    retry: false,
   });
 }
 

@@ -75,11 +75,35 @@ public interface IAiOcrClient
     /// AI 4xx surfaces as ForbiddenException/ValidationException/KeyNotFoundException, not a null.</summary>
     Task<OcrExtractionResult?> ExtractLabReportAsync(OcrExtractInput input, CancellationToken ct);
 
+    /// <summary>Runs OCR on a CALLER-SUPPLIED paper-prescription image, returning transcribable draft records (drug
+    /// names etc.) for the paper-Rx intake flow. Unlike the lab extract, the image bytes are provided by the caller
+    /// (front desk holds the physical document) — no server-side blob is read. Returns null only when the AI service
+    /// is UNAVAILABLE (5xx/network); an AI 4xx surfaces as a typed exception (the gate is never masked).</summary>
+    Task<PrescriptionExtractionResult?> ExtractPrescriptionAsync(OcrPrescriptionInput input, CancellationToken ct);
+
     /// <summary>Lists the tenant's recent extraction SUMMARIES (no analyte values) for the ops/forensics view.
     /// The AI service scopes by the JWT tenant. Returns null when the AI service is UNAVAILABLE (5xx/network);
     /// AI 4xx surfaces as a typed exception.</summary>
     Task<IReadOnlyList<OcrExtractionSummaryResult>?> ListExtractionsAsync(int limit, CancellationToken ct);
 }
+
+/// <summary>A paper-prescription OCR request. The caller supplies the image bytes (base64) — the front desk holds
+/// the physical Rx — so there is no server blob / client filesystem path to resolve. <paramref name="DeclaredPurpose"/>
+/// is the X-Purpose-Of-Use (DPDP) — REQUIRED and forwarded to the AI sibling.</summary>
+public sealed record OcrPrescriptionInput(
+    Guid RelatedPatientId, string ImageBase64, string ContentType, string FileName, string DeclaredPurpose);
+
+/// <summary>One transcribable draft record OCR'd from a paper prescription (the intake staff verifies/edits before
+/// import). <paramref name="Confidence"/> (0..1) is per-record; the whole result is advisory. Title/description are
+/// PHI (the response is never cached + is purpose gated).</summary>
+public sealed record PrescriptionRecordResult(string RecordType, string Title, string? Description, double? Confidence);
+
+/// <summary>A paper-prescription OCR result (advisory). <paramref name="Source"/> records provenance
+/// ('ai-service-http' | 'stub-dev'). <paramref name="RawText"/> is the transcribed text (surfaced for the intake
+/// desk to verify against the scan — PHI, so the response is never cached and is purpose gated).</summary>
+public sealed record PrescriptionExtractionResult(
+    string ExtractionId, double? OverallConfidence, string? ExternalDoctorName, DateOnly? RecordedDate,
+    IReadOnlyList<PrescriptionRecordResult> Records, string? RawText, string Source);
 
 /// <summary>An extraction SUMMARY (header only — never the analyte values). Operational metadata for the ops list;
 /// <paramref name="AbnormalCount"/> is an aggregate count, not an individual result. <paramref name="Source"/>

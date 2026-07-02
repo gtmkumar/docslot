@@ -23,15 +23,19 @@ export function HistoryRail({
   patientId,
   purpose,
   onRepeat,
+  excludeId,
 }: {
   patientId: string;
   purpose: PurposeOfUse;
   onRepeat: (diagnosis: string | null, meds: RxMedication[]) => void;
+  /** The current consultation's prescription id — excluded from "past" visits (a
+   *  draft/the in-progress record is not a past visit). */
+  excludeId?: string;
 }) {
   const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-5">
-      <PastVisits patientId={patientId} purpose={purpose} onRepeat={onRepeat} />
+      <PastVisits patientId={patientId} purpose={purpose} onRepeat={onRepeat} excludeId={excludeId} />
       <div>
         <h3 className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wide text-muted">
           <FlaskConical size={14} aria-hidden="true" />
@@ -43,7 +47,7 @@ export function HistoryRail({
   );
 }
 
-function PastVisits({ patientId, purpose, onRepeat }: { patientId: string; purpose: PurposeOfUse; onRepeat: (d: string | null, m: RxMedication[]) => void }) {
+function PastVisits({ patientId, purpose, onRepeat, excludeId }: { patientId: string; purpose: PurposeOfUse; onRepeat: (d: string | null, m: RxMedication[]) => void; excludeId?: string }) {
   const { t } = useTranslation();
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['clinical', 'prescriptions', patientId, purpose] as const,
@@ -51,6 +55,10 @@ function PastVisits({ patientId, purpose, onRepeat }: { patientId: string; purpo
     enabled: Boolean(patientId) && Boolean(purpose),
     retry: false,
   });
+
+  // A draft (incl. the current in-progress consultation) is NOT a past visit —
+  // exclude unsigned drafts and the current consultation's own record.
+  const visits = (data ?? []).filter((rx) => rx.status !== 'draft' && rx.prescriptionId !== excludeId);
 
   return (
     <div>
@@ -66,11 +74,11 @@ function PastVisits({ patientId, purpose, onRepeat }: { patientId: string; purpo
             <Skeleton key={i} className="h-16 w-full rounded-[var(--radius)]" />
           ))}
         </div>
-      ) : data.length === 0 ? (
+      ) : visits.length === 0 ? (
         <EmptyState title={t('consult.history.emptyRx')} />
       ) : (
         <ul className="flex flex-col gap-2">
-          {data.map((rx) => (
+          {visits.map((rx) => (
             <PastRxCard key={rx.prescriptionId} prescriptionId={rx.prescriptionId} doctorName={rx.doctorName} createdAt={rx.createdAt} purpose={purpose} onRepeat={onRepeat} />
           ))}
         </ul>
@@ -146,8 +154,9 @@ function PastRxCard({
               )}
               <button
                 type="button"
+                disabled={detail.data.medications.length === 0}
                 onClick={() => onRepeat(detail.data.diagnosis, detail.data.medications)}
-                className="mt-1 inline-flex w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border border-primary-soft bg-primary-soft px-2.5 py-1.5 text-[12px] font-medium text-primary transition-colors hover:bg-primary hover:text-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                className="mt-1 inline-flex w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border border-primary-soft bg-primary-soft px-2.5 py-1.5 text-[12px] font-medium text-primary transition-colors hover:bg-primary hover:text-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary-soft disabled:hover:text-primary"
               >
                 <CopyPlus size={13} aria-hidden="true" />
                 {t('consult.history.repeat')}

@@ -93,7 +93,7 @@ Ctrl+F a table name (`platform.users`). Notation: `PK`, `FK→table`, `NOT NULL`
 - `docslot.lab_reports` — 20 columns
 - `docslot.opd_tokens` — 11 columns
 - `docslot.outbox_messages` — 14 columns
-- `docslot.patient_medical_history` — 15 columns
+- `docslot.patient_medical_history` — 25 columns
 - `docslot.patient_tenant_links` — 8 columns
 - `docslot.patients` — 30 columns
 - `docslot.prescriptions` — 26 columns
@@ -1478,9 +1478,14 @@ _Source: `database/03_docslot.sql` · 14 columns_
 
 ### `docslot.patient_medical_history`
 
-TABLE D15: PATIENT_MEDICAL_HISTORY (allergies, conditions, medications).
+TABLE D15: PATIENT_MEDICAL_HISTORY (allergies, conditions, medications). Rows may be imported
+from EXTERNAL sources (paper prescription / patient-reported): those land unverified (`source`,
+`verified_by_user_id`/`verified_at` NULL) until a clinician confirms; the scanned source document
+lives in the PHI blob store via `attachment_url`. Clinic-entered rows are verified at creation
+(`chk_history_clinic_rows_verified`). `title`/`description`/`external_doctor_name` are encrypted
+at rest (encrypted_fields_registry).
 
-_Source: `database/03_docslot.sql` · 15 columns_
+_Source: `database/03_docslot.sql` · 25 columns_
 
 | # | Column | Type | Constraints |
 |---|--------|------|-------------|
@@ -1488,8 +1493,8 @@ _Source: `database/03_docslot.sql` · 15 columns_
 | 2 | `patient_id` | `UUID` | FK→docslot.patients, NOT NULL |
 | 3 | `tenant_id` | `UUID` | FK→platform.tenants, NOT NULL |
 | 4 | `record_type` | `VARCHAR(30)` | NOT NULL |
-| 5 | `title` | `VARCHAR(200)` | NOT NULL |
-| 6 | `description` | `TEXT` | — |
+| 5 | `title` | `TEXT` | NOT NULL (encrypted) |
+| 6 | `description` | `TEXT` | — (encrypted) |
 | 7 | `started_date` | `DATE` | — |
 | 8 | `ended_date` | `DATE` | — |
 | 9 | `severity` | `VARCHAR(20)` | — |
@@ -1499,6 +1504,16 @@ _Source: `database/03_docslot.sql` · 15 columns_
 | 13 | `added_by_user_id` | `UUID` | FK→platform.users |
 | 14 | `added_at` | `TIMESTAMPTZ` | NOT NULL, default |
 | 15 | `metadata` | `JSONB` | default |
+| 16 | `source` | `VARCHAR(30)` | NOT NULL, default 'clinic', CHECK in (clinic, paper_prescription, patient_reported) |
+| 17 | `external_doctor_name` | `TEXT` | — (encrypted; external prescriber) |
+| 18 | `recorded_date` | `DATE` | — (date on the source document) |
+| 19 | `verified_by_user_id` | `UUID` | FK→platform.users |
+| 20 | `verified_at` | `TIMESTAMPTZ` | — (pair-CHECKed with verifier) |
+| 21 | `import_batch_id` | `UUID` | — (rows from one document share it) |
+| 22 | `attachment_url` | `TEXT` | — (PHI blob-store key) |
+| 23 | `attachment_file_name` | `VARCHAR(200)` | — |
+| 24 | `attachment_mime_type` | `VARCHAR(100)` | — |
+| 25 | `attachment_size_bytes` | `BIGINT` | — |
 
 ### `docslot.patient_tenant_links`
 

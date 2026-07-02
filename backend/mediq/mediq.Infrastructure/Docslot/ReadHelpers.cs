@@ -25,15 +25,18 @@ internal static class PhoneMasker
 /// </summary>
 internal static class EnumParse
 {
+    // Covers every token the bookings.status CHECK allows. The default must NOT silently fall back to
+    // Pending: a missing arm once made checked-in patients reappear in the approval queue (Approve → 422).
     public static BookingStatus Status(string token) => token switch
     {
         "pending" => BookingStatus.Pending,
         "confirmed" => BookingStatus.Confirmed,
+        "checked_in" => BookingStatus.CheckedIn,
         "cancelled" => BookingStatus.Cancelled,
         "completed" => BookingStatus.Completed,
         "no_show" => BookingStatus.NoShow,
         "rescheduled" => BookingStatus.Rescheduled,
-        _ => BookingStatus.Pending,
+        _ => throw new ArgumentOutOfRangeException(nameof(token), token, "Unknown booking status token."),
     };
 
     public static BookingSource Source(string token) => token switch

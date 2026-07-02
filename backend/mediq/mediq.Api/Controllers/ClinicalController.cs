@@ -187,6 +187,69 @@ public sealed class ClinicalController(
         Guid patientId, Guid historyId, [FromBody] UpdateMedicalHistoryRequest request, CancellationToken ct)
         => Ok(await commands.Send(new UpdateMedicalHistoryCommand(RequireTenant(), historyId, request), ct));
 
+    /// <summary>Import a patient's paper prescription / self-reported history as UNVERIFIED external records
+    /// (front-desk transcription; a clinician verifies later). Any-of gate: the doctor-level create permission OR
+    /// the write-only intake permission (front desk). source MUST be external ('clinic' rejected). Idempotency-Key
+    /// required. Title/description/externalDoctorName encrypted at rest; the scanned document is stored encrypted.
+    /// 201 with the batch id + created (unverified) history ids — NO PHI echoed back.</summary>
+    [HttpPost("patients/{patientId:guid}/medical-history/import")]
+    [RequireAnyPermission("docslot.medical_history.create", "docslot.medical_history.intake")]
+    [ProducesResponseType<ImportMedicalHistoryResult>(StatusCodes.Status201Created)]
+    public async Task<ActionResult<ImportMedicalHistoryResult>> ImportMedicalHistory(
+        Guid patientId, [FromBody] ImportMedicalHistoryRequest request, CancellationToken ct)
+    {
+        var result = await commands.Send(new ImportMedicalHistoryCommand(RequireTenant(), patientId, request), ct);
+        return CreatedAtAction(nameof(MedicalHistory), new { patientId }, result);
+    }
+
+    /// <summary>Verify an imported external record (clinician confirms an unverified draft). 404 if missing /
+    /// cross-tenant / patient mismatch; 422 if it is a clinic row or already verified. Stamps verified_by/at = caller/now.</summary>
+    [HttpPost("patients/{patientId:guid}/medical-history/{historyId:guid}/verify")]
+    [RequirePermission("docslot.medical_history.update")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> VerifyMedicalHistory(Guid patientId, Guid historyId, CancellationToken ct)
+    {
+        await commands.Send(new VerifyMedicalHistoryCommand(RequireTenant(), patientId, historyId), ct);
+        return NoContent();
+    }
+
+    /// <summary>OCR a caller-supplied paper-prescription image into transcribable draft records for the paper-Rx
+    /// intake flow (front desk verifies/edits before importing). Proxied to the AI sibling. Any-of gate: the same
+    /// people who can transcribe a paper Rx (create OR intake). X-Purpose-Of-Use required + forwarded. The result
+    /// carries PHI (drug names / raw text) → never cached. available=false only when the AI service is unreachable;
+    /// an authorization/validation denial surfaces as 403/422/404.</summary>
+    [HttpPost("medical-history/extract-prescription")]
+    [RequireAnyPermission("docslot.medical_history.create", "docslot.medical_history.intake")]
+    [RequestSizeLimit(30_000_000)]
+    [ProducesResponseType<PrescriptionExtractionDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<PrescriptionExtractionDto>> ExtractPrescription([FromBody] ExtractPrescriptionRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new ExtractPrescriptionCommand(RequireTenant(), request, RawPurpose()), ct));
+
+    /// <summary>Download the scanned source document attached to an imported record (PHI) — consent + purpose-of-use
+    /// + break-glass gated (same discipline as the lab-report file download). 404 when no attachment. Streamed as
+    /// the stored file (never JSON-serialized bytes).</summary>
+    [HttpGet("patients/{patientId:guid}/medical-history/{historyId:guid}/attachment")]
+    [RequirePermission("docslot.medical_history.read")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<IActionResult> DownloadMedicalHistoryAttachment(Guid patientId, Guid historyId, CancellationToken ct)
+    {
+        var file = await queries.Query(new GetMedicalHistoryAttachmentQuery(RequireTenant(), patientId, historyId, Purpose()), ct);
+        return File(file.Content, file.ContentType, file.FileName);
+    }
+
+    // ---- Unified patient timeline ----------------------------------------------------------------
+
+    /// <summary>The unified patient timeline: the relationship strip + backend-driven category chips (bilingual,
+    /// counts) + a merged, most-recent-first feed of prescriptions/lab-reports/vaccinations/document cards.
+    /// Any-of gate: the caller needs AT LEAST ONE category read permission; the handler then includes only the
+    /// categories the caller can read AND that consent/break-glass unlocks. X-Purpose-Of-Use required (decrypted
+    /// titles are in-policy behind the read + consent gate).</summary>
+    [HttpGet("patients/{patientId:guid}/timeline")]
+    [RequireAnyPermission("docslot.prescription.read", "docslot.report.read", "docslot.medical_history.read")]
+    [ProducesResponseType<PatientTimelineDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<PatientTimelineDto>> Timeline(Guid patientId, CancellationToken ct)
+        => Ok(await queries.Query(new GetPatientTimelineQuery(RequireTenant(), patientId, Purpose()), ct));
+
     // ---- ABDM (consent-required) -----------------------------------------------------------------
 
     [HttpPost("abdm/records")]

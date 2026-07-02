@@ -30,9 +30,14 @@ public interface ITenantRepository
     Task<Tenant?> GetByIdAsync(Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<Tenant>> ListAsync(int skip, int take, CancellationToken ct);
     Task<IReadOnlyList<UserTenantMembership>> GetMembershipsAsync(Guid userId, CancellationToken ct);
+
+    /// <summary>The user's active (non-revoked) role labels within one tenant — display-only for GET /me.</summary>
+    Task<IReadOnlyList<UserRoleLabel>> GetRoleLabelsAsync(Guid userId, Guid tenantId, CancellationToken ct);
 }
 
 public sealed record UserTenantMembership(Guid TenantId, string TenantCode, string DisplayName, string TenantType, bool IsPrimary);
+
+public sealed record UserRoleLabel(string RoleKey, string Name);
 
 /// <summary>
 /// Reads and writes <c>roles</c>, <c>user_tenant_roles</c> and <c>user_permission_overrides</c> (admin surface).

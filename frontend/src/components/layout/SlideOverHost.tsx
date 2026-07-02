@@ -58,6 +58,9 @@ const LabReportDetailPanel = lazy(() => import('@/features/patients/components/L
 const UploadReportPanel = lazy(() => import('@/features/patients/components/UploadReportPanel').then((m) => ({ default: m.UploadReportPanel })));
 const AbdmDetailPanel = lazy(() => import('@/features/patients/components/AbdmDetailPanel').then((m) => ({ default: m.AbdmDetailPanel })));
 const MedicalHistoryPanel = lazy(() => import('@/features/patients/components/MedicalHistoryPanel').then((m) => ({ default: m.MedicalHistoryPanel })));
+const PaperRxImportPanel = lazy(() => import('@/features/patients/components/PaperRxImportPanel').then((m) => ({ default: m.PaperRxImportPanel })));
+const HistoryAttachmentPanel = lazy(() => import('@/features/patients/components/HistoryAttachmentPanel').then((m) => ({ default: m.HistoryAttachmentPanel })));
+const HistoryBatchPanel = lazy(() => import('@/features/patients/components/HistoryBatchPanel').then((m) => ({ default: m.HistoryBatchPanel })));
 const ClinicalBreakGlassPanel = lazy(() => import('@/features/patients/components/ClinicalBreakGlassPanel').then((m) => ({ default: m.ClinicalBreakGlassPanel })));
 const OcrExtractPanel = lazy(() => import('@/features/patients/components/OcrExtractPanel').then((m) => ({ default: m.OcrExtractPanel })));
 const RagAskPanel = lazy(() => import('@/features/patients/components/RagAskPanel').then((m) => ({ default: m.RagAskPanel })));
@@ -90,6 +93,9 @@ type TransientPanelType =
   | 'abdmDetail'
   | 'createHistory'
   | 'editHistory'
+  | 'importHistory'
+  | 'historyAttachment'
+  | 'historyBatch'
   | 'clinicalBreakGlass'
   | 'ocrExtract'
   | 'ragAsk';
@@ -98,9 +104,10 @@ type UrlPanelType = Exclude<PanelType, TransientPanelType>;
 const TRANSIENT_SET = new Set<PanelType>([
   'clientSecret', 'invitationToken', 'deletionCertificate',
   'prescriptionDetail', 'labReportDetail', 'uploadReport', 'abdmDetail',
-  // Medical-history create/edit + the clinical break-glass carry PHI and/or a
-  // declared purpose-of-use — never URL-encoded or restored from a refresh.
-  'createHistory', 'editHistory', 'clinicalBreakGlass',
+  // Medical-history create/edit + import + attachment viewer + the clinical
+  // break-glass carry PHI and/or a declared purpose-of-use — never URL-encoded or
+  // restored from a refresh.
+  'createHistory', 'editHistory', 'importHistory', 'historyAttachment', 'historyBatch', 'clinicalBreakGlass',
   // AI document assist (OCR extract / RAG ask): patient-bound PHI + declared
   // purpose-of-use — never URL-encoded or restored from a refresh.
   'ocrExtract', 'ragAsk',
@@ -314,6 +321,12 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <MedicalHistoryPanel patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
     case 'editHistory':
       return <MedicalHistoryPanel patientId={panel.patientId} purpose={panel.purpose} entry={panel.entry} open onClose={closePanel} />;
+    case 'importHistory':
+      return <PaperRxImportPanel patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
+    case 'historyAttachment':
+      return <HistoryAttachmentPanel patientId={panel.patientId} historyId={panel.historyId} purpose={panel.purpose} fileName={panel.fileName} open onClose={closePanel} />;
+    case 'historyBatch':
+      return <HistoryBatchPanel batchId={panel.batchId} patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
     case 'clinicalBreakGlass':
       return <ClinicalBreakGlassPanel patientId={panel.patientId} resourceType={panel.resourceType} resourceId={panel.resourceId} reopen={panel.reopen} open onClose={closePanel} />;
     case 'ocrExtract':

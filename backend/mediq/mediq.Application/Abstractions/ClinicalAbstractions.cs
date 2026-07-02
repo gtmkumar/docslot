@@ -24,6 +24,21 @@ public interface IClinicalRepository
     /// Callers that only need the entity (amend, drug-alerts) unwrap <c>.Prescription</c>.</summary>
     Task<PrescriptionDetail?> GetPrescriptionAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct);
     Task<IReadOnlyList<PrescriptionRow>> ListPrescriptionsAsync(Guid tenantId, Guid patientId, CancellationToken ct);
+
+    /// <summary>NON-DRAFT prescription rows for the unified timeline: id + human number + status + created/finalized
+    /// + CIPHERTEXT diagnosis and medications (decrypted in-policy by the handler for the title + a "N medicines"
+    /// summary — never drug names) + the prescriber's directory name/specialization (plaintext, NOT PHI). Drafts
+    /// are excluded. Tenant-scoped + RLS.</summary>
+    Task<IReadOnlyList<TimelinePrescriptionRow>> ListTimelinePrescriptionsAsync(Guid tenantId, Guid patientId, CancellationToken ct);
+
+    /// <summary>Lab-report rows for the unified timeline: id + human number + test name + status + critical flag +
+    /// created_at + whether a PHI file artifact is attached. NO decrypted clinical content. Tenant-scoped + RLS.</summary>
+    Task<IReadOnlyList<TimelineLabRow>> ListTimelineLabReportsAsync(Guid tenantId, Guid patientId, CancellationToken ct);
+
+    /// <summary>The patient's relationship strip for a tenant, derived from docslot.bookings: the first booking's
+    /// date (Asia/Kolkata) and the count of NON-CANCELLED bookings. Null date + 0 count when the patient has no
+    /// bookings in the tenant. NO clinical PHI.</summary>
+    Task<PatientTimelineStrip> GetPatientTimelineStripAsync(Guid tenantId, Guid patientId, CancellationToken ct);
     /// <summary>Conditionally marks an amendable prescription (status finalized/delivered) as 'amended'.
     /// Returns false if it was not in an amendable state (already amended / draft / cross-tenant) — the
     /// single-winner guard for a concurrent amend.</summary>
@@ -75,10 +90,20 @@ public interface IClinicalRepository
     Task<(string Status, DateTime? DeliveredAt)?> DeliverLabReportAsync(Guid reportId, Guid tenantId, CancellationToken ct);
 
     Task<IReadOnlyList<MedicalHistory>> ListMedicalHistoryAsync(Guid tenantId, Guid patientId, CancellationToken ct);
-    /// <summary>Inserts a medical-history record (title/description already ciphertext). Returns the new history_id.</summary>
+    /// <summary>Inserts a medical-history record (title/description/external_doctor_name already ciphertext).
+    /// A clinic row carries source='clinic' + the verifier pair (verified at creation); an imported external row
+    /// carries source + import_batch_id + attachment pointer and lands unverified. Returns the new history_id.</summary>
     Task<Guid> AddMedicalHistoryAsync(MedicalHistory history, CancellationToken ct);
-    /// <summary>Fetches one record (existence + patient_id for the encryption context) within the tenant, or null.</summary>
+    /// <summary>Bulk-inserts a paper-import batch (all UNVERIFIED external rows sharing one import_batch_id +
+    /// attachment pointer) inside the command's UoW tx — atomic (all commit or none). Returns the new history_ids.</summary>
+    Task<IReadOnlyList<Guid>> AddMedicalHistoryBatchAsync(IReadOnlyList<MedicalHistory> rows, CancellationToken ct);
+    /// <summary>Fetches one record (existence + patient_id for the encryption context + source/verification state)
+    /// within the tenant, or null.</summary>
     Task<MedicalHistory?> GetMedicalHistoryAsync(Guid historyId, Guid tenantId, CancellationToken ct);
+    /// <summary>Single-winner verify: stamps verified_by_user_id + verified_at on an as-yet-unverified EXTERNAL
+    /// row in the tenant. Returns false if it was a clinic row, already verified, or not found (→ the handler
+    /// pre-checks via <see cref="GetMedicalHistoryAsync"/> to return 404 vs 422 and this guards concurrent verify).</summary>
+    Task<bool> VerifyMedicalHistoryAsync(Guid historyId, Guid tenantId, Guid verifiedByUserId, DateTime verifiedAt, CancellationToken ct);
     /// <summary>
     /// Updates a record in place (title/description already ciphertext) within the tenant. Returns true if a
     /// row matched (history_id + tenant_id). No physical delete — set <paramref name="isActive"/>=false to retire.
@@ -139,6 +164,21 @@ public sealed record LabReportDetail(LabReport Report, string? TestName);
 
 /// <summary>Lab-report list header (NO clinical content — the structured results are not selected/decrypted).</summary>
 public sealed record LabReportListRow(Guid ReportId, string? ReportNumber, string TestName, string Status, bool HasCriticalFindings, DateTime CreatedAt);
+
+/// <summary>Timeline prescription projection: identity + human number + status + created/finalized + the
+/// CIPHERTEXT diagnosis + medications envelope (decrypted in-policy by the handler) + the prescriber's plaintext
+/// directory name/specialization (NOT PHI). DiagnosisEnc null ⇒ no diagnosis; MedicationsEnc is the jsonb envelope.</summary>
+public sealed record TimelinePrescriptionRow(
+    Guid PrescriptionId, string? PrescriptionNumber, string Status, DateTime CreatedAt, DateTime? FinalizedAt,
+    string? DiagnosisEnc, string MedicationsEnc, Guid DoctorId, string? DoctorName, string? Specialization);
+
+/// <summary>Timeline lab-report projection — headers only (no decrypted results). HasFile ⇒ a PHI artifact is attached.</summary>
+public sealed record TimelineLabRow(
+    Guid ReportId, string? ReportNumber, string TestName, string Status, bool HasCriticalFindings, DateTime CreatedAt, bool HasFile);
+
+/// <summary>Patient relationship strip (from docslot.bookings): first-booking DATE (Asia/Kolkata) — null if none —
+/// and the count of NON-CANCELLED bookings. NO PHI.</summary>
+public sealed record PatientTimelineStrip(DateOnly? PatientSince, int VisitCount);
 
 /// <summary>
 /// ABDM consent gate (<c>docslot.abdm_consents</c>). An ABDM record read/push requires an ACTIVE granted,

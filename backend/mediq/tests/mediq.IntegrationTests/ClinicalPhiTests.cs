@@ -1185,7 +1185,599 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
         }
     }
 
+    // ---- Paper-prescription import (external history → UNVERIFIED drafts → clinician verify) --------
+
+    [Fact]
+    public async Task Import_By_IntakeOnly_Staff_Creates_Unverified_Rows_And_Plain_Create_Is_Forbidden()
+    {
+        // tenant_staff holds docslot.medical_history.intake (write-only) but NOT .create/.read — front desk can
+        // transcribe a paper Rx into UNVERIFIED drafts, but cannot author a (verified) clinic record or browse PHI.
+        var (client, userId, email) = await RoleClientAsync("tenant_staff");
+        Guid? batchId = null;
+        try
+        {
+            var import = await PostImportAsync(client, factory.PatientId,
+                new ImportMedicalHistoryRequest("paper_prescription", "Dr External Sharma", new DateOnly(2024, 3, 10), null,
+                [
+                    new ImportMedicalHistoryRecord("medication", "Amlodipine 5mg", "Once daily", null, false, new DateOnly(2024, 3, 10)),
+                    new ImportMedicalHistoryRecord("chronic_condition", "Hypertension", "Since 2020", "moderate", true, null),
+                ]));
+            Assert.Equal(HttpStatusCode.Created, import.StatusCode);
+            var result = (await import.Content.ReadFromJsonAsync<ImportMedicalHistoryResult>())!;
+            batchId = result.ImportBatchId;
+            Assert.Equal(2, result.HistoryIds.Count);
+
+            // Rows persisted UNVERIFIED, external source, sharing ONE batch id, added_by = the intake staff.
+            foreach (var id in result.HistoryIds)
+            {
+                Assert.Equal("paper_prescription", await ScalarStrAsync("SELECT source FROM docslot.patient_medical_history WHERE history_id=@id", ("id", id)));
+                Assert.Null(await ScalarStrAsync("SELECT verified_by_user_id::text FROM docslot.patient_medical_history WHERE history_id=@id", ("id", id)));
+                Assert.Null(await ScalarStrAsync("SELECT verified_at::text FROM docslot.patient_medical_history WHERE history_id=@id", ("id", id)));
+                Assert.Equal(result.ImportBatchId.ToString(), await ScalarStrAsync("SELECT import_batch_id::text FROM docslot.patient_medical_history WHERE history_id=@id", ("id", id)));
+                Assert.Equal(userId.ToString(), await ScalarStrAsync("SELECT added_by_user_id::text FROM docslot.patient_medical_history WHERE history_id=@id", ("id", id)));
+            }
+            // external_doctor_name encrypted at rest (never plaintext).
+            var rawDoctor = await ScalarStrAsync("SELECT external_doctor_name FROM docslot.patient_medical_history WHERE history_id=@id", ("id", result.HistoryIds[0]));
+            Assert.DoesNotContain("Sharma", rawDoctor!);
+
+            // The SAME intake-only principal cannot author a clinic record via the plain create path → 403.
+            var create = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history",
+                new CreateMedicalHistoryRequest("allergy", "x", null, null, null, null, null, false));
+            Assert.Equal(HttpStatusCode.Forbidden, create.StatusCode);
+        }
+        finally
+        {
+            if (batchId is Guid b) await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE import_batch_id=@b", ("b", b));
+            await CleanupUserAsync(userId, email);
+        }
+    }
+
+    [Fact]
+    public async Task Import_With_Clinic_Source_Is_Rejected()
+    {
+        var client = await AuthedClientAsync();
+
+        // source='clinic' is not importable (a clinic record is authored + verified via the create path) → 422.
+        var resp = await PostImportAsync(client, factory.PatientId,
+            new ImportMedicalHistoryRequest("clinic", null, null, null,
+                [new ImportMedicalHistoryRecord("medication", "Metformin", null, null, false, null)]));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Verify_By_Update_Holder_Flips_State_Then_Second_Verify_422_And_CrossTenant_404()
+    {
+        var client = await AuthedClientAsync();   // tenant_owner → holds create (→ import) + update (→ verify)
+        Guid? batchId = null;
+        try
+        {
+            var import = await PostImportAsync(client, factory.PatientId,
+                new ImportMedicalHistoryRequest("patient_reported", null, null, null,
+                    [new ImportMedicalHistoryRecord("allergy", "Sulfa drugs", "Rash reported", "moderate", false, null)]));
+            var result = (await import.Content.ReadFromJsonAsync<ImportMedicalHistoryResult>())!;
+            batchId = result.ImportBatchId;
+            var historyId = result.HistoryIds[0];
+
+            // Verify (update-holder) → 204; verifier pair stamped + a 'verify' audit row written.
+            var verify = await client.PostAsync($"/api/v1/patients/{factory.PatientId}/medical-history/{historyId}/verify", null);
+            Assert.Equal(HttpStatusCode.NoContent, verify.StatusCode);
+            Assert.Equal(factory.AdminUserId.ToString(), await ScalarStrAsync("SELECT verified_by_user_id::text FROM docslot.patient_medical_history WHERE history_id=@id", ("id", historyId)));
+            Assert.False(string.IsNullOrEmpty(await ScalarStrAsync("SELECT verified_at::text FROM docslot.patient_medical_history WHERE history_id=@id", ("id", historyId))));
+            Assert.True(await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM platform.audit_log WHERE action='verify' AND resource_type='medical_history' AND resource_id=@id", ("id", historyId)) >= 1);
+
+            // Second verify of an already-verified record → 422.
+            var again = await client.PostAsync($"/api/v1/patients/{factory.PatientId}/medical-history/{historyId}/verify", null);
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, again.StatusCode);
+
+            // Verifying a non-existent (or cross-tenant) record → 404.
+            var missing = await client.PostAsync($"/api/v1/patients/{factory.PatientId}/medical-history/{Guid.NewGuid()}/verify", null);
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        }
+        finally
+        {
+            if (batchId is Guid b) await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE import_batch_id=@b", ("b", b));
+        }
+    }
+
+    [Fact]
+    public async Task Single_Create_Now_Lands_Verified_Satisfying_The_Clinic_Rows_Verified_Check()
+    {
+        var client = await AuthedClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+        var create = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history",
+            new CreateMedicalHistoryRequest("chronic_condition", "Asthma", "Mild intermittent", "mild", "J45.9", null, null, false));
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        var created = (await create.Content.ReadFromJsonAsync<CreateMedicalHistoryResult>())!;
+        try
+        {
+            // A clinic record is verified at creation (the schema CHECK requires it): source='clinic' + verifier stamped.
+            Assert.Equal("clinic", await ScalarStrAsync("SELECT source FROM docslot.patient_medical_history WHERE history_id=@id", ("id", created.HistoryId)));
+            Assert.Equal(factory.AdminUserId.ToString(), await ScalarStrAsync("SELECT verified_by_user_id::text FROM docslot.patient_medical_history WHERE history_id=@id", ("id", created.HistoryId)));
+            Assert.False(string.IsNullOrEmpty(await ScalarStrAsync("SELECT verified_at::text FROM docslot.patient_medical_history WHERE history_id=@id", ("id", created.HistoryId))));
+
+            // And the read surfaces it as a verified clinic row (verifiedAt present).
+            var list = await (await client.GetAsync($"/api/v1/patients/{factory.PatientId}/medical-history"))
+                .Content.ReadFromJsonAsync<List<MedicalHistoryDto>>();
+            var item = list!.Single(h => h.HistoryId == created.HistoryId);
+            Assert.Equal("clinic", item.Source);
+            Assert.NotNull(item.VerifiedAt);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE history_id=@id", ("id", created.HistoryId));
+        }
+    }
+
+    [Fact]
+    public async Task Import_Attachment_Is_Encrypted_At_Rest_RoundTrips_And_Requires_Read_Permission()
+    {
+        var client = await AuthedClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+        var scanBytes = Encoding.UTF8.GetBytes("\x89PNG\r\n[PAPER-RX SCAN: penicillin allergy, warfarin 5mg]\n");
+        Guid? batchId = null;
+        (HttpClient Client, Guid UserId, string Email)? staff = null;
+        try
+        {
+            var import = await PostImportAsync(client, factory.PatientId,
+                new ImportMedicalHistoryRequest("paper_prescription", "Dr External", null,
+                    new ImportAttachment("rx.png", "image/png", Convert.ToBase64String(scanBytes)),
+                    [new ImportMedicalHistoryRecord("medication", "Warfarin 5mg", null, null, true, null)]));
+            Assert.Equal(HttpStatusCode.Created, import.StatusCode);
+            var result = (await import.Content.ReadFromJsonAsync<ImportMedicalHistoryResult>())!;
+            batchId = result.ImportBatchId;
+            var historyId = result.HistoryIds[0];
+
+            // Attachment metadata persisted: storage key + PLAINTEXT size on the row.
+            var attUrl = await ScalarStrAsync("SELECT attachment_url FROM docslot.patient_medical_history WHERE history_id=@id", ("id", historyId));
+            Assert.False(string.IsNullOrEmpty(attUrl));
+            Assert.Equal(scanBytes.Length, await ScalarIntAsync("SELECT attachment_size_bytes::int FROM docslot.patient_medical_history WHERE history_id=@id", ("id", historyId)));
+
+            // CIPHERTEXT AT REST: the stored blob is an encryption envelope, not the plaintext scan.
+            var onDisk = Encoding.UTF8.GetString(await File.ReadAllBytesAsync(Path.Combine(factory.BlobRoot, attUrl!)));
+            Assert.DoesNotContain("PAPER-RX SCAN", onDisk);
+            Assert.Contains("\"keyId\"", Encoding.UTF8.GetString(Convert.FromBase64String(onDisk)));
+
+            // Authorized download (read permission + consent + purpose) → decrypts to the EXACT original bytes.
+            var download = await client.GetAsync($"/api/v1/patients/{factory.PatientId}/medical-history/{historyId}/attachment");
+            Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+            Assert.Equal("image/png", download.Content.Headers.ContentType!.MediaType);
+            Assert.Equal(scanBytes, await download.Content.ReadAsByteArrayAsync());
+
+            // A principal WITHOUT docslot.medical_history.read (intake-only staff) cannot download the scan → 403.
+            staff = await RoleClientAsync("tenant_staff");
+            staff.Value.Client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+            var denied = await staff.Value.Client.GetAsync($"/api/v1/patients/{factory.PatientId}/medical-history/{historyId}/attachment");
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        }
+        finally
+        {
+            if (batchId is Guid b) await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE import_batch_id=@b", ("b", b));
+            if (staff is { } s) await CleanupUserAsync(s.UserId, s.Email);
+        }
+    }
+
+    [Fact]
+    public async Task Imported_Unverified_Medication_Is_Screened_At_Consultation_Finalize()
+    {
+        // Drug-safety regression: an UNVERIFIED external current-medication (warfarin) must still be screened —
+        // withholding an interaction check on unverified history would endanger the patient (fail-safe over-alert).
+        var client = await DoctorClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var (bookingId, slotId) = await SeedBookingAsync();
+        Guid? batchId = null;
+        try
+        {
+            // Import an unverified paper-Rx current medication: warfarin.
+            var import = await PostImportAsync(client, factory.PatientId,
+                new ImportMedicalHistoryRequest("paper_prescription", "Dr External", null, null,
+                    [new ImportMedicalHistoryRecord("medication", "Warfarin", "5mg OD", null, true, null)]));
+            Assert.Equal(HttpStatusCode.Created, import.StatusCode);
+            batchId = (await import.Content.ReadFromJsonAsync<ImportMedicalHistoryResult>())!.ImportBatchId;
+
+            // Prescribe an interacting drug (aspirin) → the imported (unverified) warfarin must trip an interaction alert.
+            var draft = (await (await client.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId)))
+                .Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+            await client.PatchAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}",
+                new SaveConsultationRequest(null, "Pain", null, "Osteoarthritis",
+                    "[{\"name\":\"Aspirin\",\"dose\":\"150mg\"}]", null, null, 7));
+
+            var fin = await client.PostAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}/finalize", new FinalizeConsultationRequest(null));
+            Assert.Equal(HttpStatusCode.OK, fin.StatusCode);
+            var result = (await fin.Content.ReadFromJsonAsync<FinalizeConsultationResult>())!;
+            Assert.False(result.Finalized);   // blocked by the interaction alert (high severity)
+            var interaction = Assert.Single(result.Alerts, a => a.AlertType == "interaction");
+            Assert.Contains("Aspirin", interaction.MedicationName);
+            Assert.Equal("draft", await ScalarStrAsync("SELECT status FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId)));
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.drug_alerts WHERE prescription_id IN (SELECT prescription_id FROM docslot.prescriptions WHERE booking_id=@b)", ("b", bookingId));
+            if (batchId is Guid b) await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE import_batch_id=@b", ("b", b));
+            await CleanupBookingAsync(bookingId, slotId);
+        }
+    }
+
+    // ---- Unified patient timeline ----------------------------------------------------------------
+
+    [Fact]
+    public async Task Timeline_Merges_All_Categories_With_Strip_From_Bookings_And_Summaries_Without_Drug_Names()
+    {
+        var client = await AuthedClientAsync();   // tenant_owner → all category read perms
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+        // A fresh, consented, isolated patient so the merged counts are exact (not polluted by other tests). Two
+        // bookings — one completed, one cancelled — so the strip proves patientSince=first booking + visitCount excludes cancelled.
+        var patientId = Guid.NewGuid();
+        var phone = $"+9195{Random.Shared.Next(10000000, 99999999)}";
+        var slot1 = Guid.NewGuid(); var slot2 = Guid.NewGuid();
+        var booking1 = Guid.NewGuid(); var booking2 = Guid.NewGuid();
+        await ExecAsync("INSERT INTO docslot.patients (patient_id, phone_number, full_name, consent_given_at, consent_version, is_active, created_at, updated_at) VALUES (@id,@ph,'Timeline Patient',NOW(),'v1',true,NOW(),NOW())", ("id", patientId), ("ph", phone));
+        await ExecAsync("INSERT INTO docslot.patient_tenant_links (link_id, patient_id, tenant_id, first_visit_at, last_visit_at, total_visits) VALUES (gen_random_uuid(),@p,@t,NOW(),NOW(),0)", ("p", patientId), ("t", factory.TenantA));
+        await ExecAsync("INSERT INTO docslot.time_slots (slot_id,tenant_id,doctor_id,slot_date,start_time,end_time,status,current_count,max_count,created_at) VALUES (@id,@t,@d,CURRENT_DATE,'14:00','14:15','booked',1,1,NOW())", ("id", slot1), ("t", factory.TenantA), ("d", factory.DoctorId));
+        await ExecAsync("INSERT INTO docslot.time_slots (slot_id,tenant_id,doctor_id,slot_date,start_time,end_time,status,current_count,max_count,created_at) VALUES (@id,@t,@d,CURRENT_DATE,'15:00','15:15','booked',1,1,NOW())", ("id", slot2), ("t", factory.TenantA), ("d", factory.DoctorId));
+        // Earliest booking dated 2023-02-01 (IST) → patientSince; the later one is cancelled → excluded from visitCount.
+        await ExecAsync("INSERT INTO docslot.bookings (booking_id,tenant_id,slot_id,patient_id,doctor_id,status,booked_via,booked_for,booked_at,updated_at) VALUES (@id,@t,@s,@p,@d,'completed','dashboard','self',TIMESTAMPTZ '2023-02-01 09:00:00+05:30',NOW())", ("id", booking1), ("t", factory.TenantA), ("s", slot1), ("p", patientId), ("d", factory.DoctorId));
+        await ExecAsync("INSERT INTO docslot.bookings (booking_id,tenant_id,slot_id,patient_id,doctor_id,status,booked_via,booked_for,booked_at,updated_at) VALUES (@id,@t,@s,@p,@d,'cancelled','dashboard','self',TIMESTAMPTZ '2023-03-01 09:00:00+05:30',NOW())", ("id", booking2), ("t", factory.TenantA), ("s", slot2), ("p", patientId), ("d", factory.DoctorId));
+
+        try
+        {
+            // Prescription (non-draft) — title = decrypted diagnosis; summary counts meds WITHOUT naming them.
+            const string diagnosis = "Community-acquired pneumonia";
+            var pres = await client.PostAsJsonAsync("/api/v1/prescriptions", new IssuePrescriptionRequest(
+                booking1, patientId, factory.DoctorId, "Cough", "Crackles", diagnosis,
+                "[{\"name\":\"Amoxicillin\"},{\"name\":\"Azithromycin\"}]", "Rest", 5));
+            var presId = (await pres.Content.ReadFromJsonAsync<IssuePrescriptionResult>())!.PrescriptionId;
+
+            // Lab report + attached PHI file → hasAttachment true; critical flagged.
+            var lab = await client.PostAsJsonAsync("/api/v1/lab-reports", new UploadLabReportRequest(
+                booking1, patientId, null, "cbc.pdf", "{\"hb\":\"12\"}", true));
+            var reportId = (await lab.Content.ReadFromJsonAsync<UploadLabReportResult>())!.ReportId;
+            await client.PostAsJsonAsync($"/api/v1/lab-reports/{reportId}/file",
+                new SetLabReportFileRequest("cbc.pdf", "application/pdf", Convert.ToBase64String(Encoding.UTF8.GetBytes("%PDF-1.7 fake"))));
+
+            // Vaccination — clinic record (verified), title = decrypted title.
+            var vax = await client.PostAsJsonAsync($"/api/v1/patients/{patientId}/medical-history",
+                new CreateMedicalHistoryRequest("vaccination", "COVID-19 Vaccine", "Dose 2", null, null, null, null, false));
+            var vaxId = (await vax.Content.ReadFromJsonAsync<CreateMedicalHistoryResult>())!.HistoryId;
+
+            // Document card — a paper-Rx import batch (unverified external): 2 rows (1 allergy + 1 medication),
+            // recorded_date backdated so it sorts LAST.
+            var import = await PostImportAsync(client, patientId,
+                new ImportMedicalHistoryRequest("paper_prescription", "Dr Paper", new DateOnly(2022, 6, 1), null,
+                [
+                    new ImportMedicalHistoryRecord("allergy", "Penicillin", null, "severe", true, null),
+                    new ImportMedicalHistoryRecord("medication", "Warfarin", null, null, true, null),
+                ]));
+            var batchId = (await import.Content.ReadFromJsonAsync<ImportMedicalHistoryResult>())!.ImportBatchId;
+
+            var timeline = (await (await client.GetAsync($"/api/v1/patients/{patientId}/timeline"))
+                .Content.ReadFromJsonAsync<PatientTimelineDto>())!;
+
+            // Strip — from bookings: first booking date (IST) + non-cancelled count.
+            Assert.Equal(new DateOnly(2023, 2, 1), timeline.Patient.PatientSince);
+            Assert.Equal(1, timeline.Patient.VisitCount);      // the cancelled booking is excluded
+
+            // Backend-driven category chips — bilingual + exact counts.
+            var cats = timeline.Categories.ToDictionary(c => c.Key);
+            Assert.Equal(1, cats["prescription"].Count);
+            Assert.Equal(1, cats["lab_report"].Count);
+            Assert.Equal(1, cats["vaccination"].Count);
+            Assert.Equal(1, cats["document"].Count);           // one batch (2 rows grouped)
+            Assert.All(timeline.Categories, c => Assert.False(string.IsNullOrWhiteSpace(c.LabelHi)));
+            Assert.All(timeline.Categories, c => Assert.False(string.IsNullOrWhiteSpace(c.LabelEn)));
+
+            // Prescription card: decrypted diagnosis title; summary is a COUNT with NO drug names; ref + tags.
+            var presItem = timeline.Items.Single(i => i.ItemId == presId);
+            Assert.Equal("prescription", presItem.Category);
+            Assert.Equal(diagnosis, presItem.Title);
+            Assert.Equal("2 medicines", presItem.Summary);
+            Assert.DoesNotContain("Amoxicillin", presItem.Summary!);
+            Assert.DoesNotContain("Azithromycin", presItem.Summary!);
+            // Subtitle is the doctor's stored name VERBATIM (names carry their own honorific —
+            // prepending "Dr." produced "Dr. Dr. …" on real data).
+            Assert.Equal("Dr 03b", presItem.Subtitle);
+            Assert.Equal("prescription", presItem.Ref.Type);
+            Assert.Equal(presId, presItem.Ref.Id);
+            Assert.Contains(presItem.Tags, t => t.StartsWith("PRX-"));
+            Assert.False(presItem.Unverified);
+
+            // Lab card: hasAttachment true (file attached), critical tag, ref.
+            var labItem = timeline.Items.Single(i => i.ItemId == reportId);
+            Assert.True(labItem.HasAttachment);
+            Assert.Contains("critical", labItem.Tags);
+            Assert.Equal("lab_report", labItem.Ref.Type);
+
+            // Vaccination card: decrypted title, clinic → verified.
+            var vaxItem = timeline.Items.Single(i => i.ItemId == vaxId);
+            Assert.Equal("COVID-19 Vaccine", vaxItem.Title);
+            Assert.False(vaxItem.Unverified);
+            Assert.Equal("medical_history", vaxItem.Ref.Type);
+
+            // Document card: grouped batch, unverified (any row unverified), summary counts records + medications.
+            var docItem = timeline.Items.Single(i => i.ItemId == batchId);
+            Assert.Equal("document", docItem.Category);
+            Assert.Equal("Paper prescription", docItem.Title);
+            Assert.Equal("2 records · 1 medication", docItem.Summary);
+            Assert.Contains("Dr Paper", docItem.Subtitle);     // decrypted external prescriber
+            Assert.True(docItem.Unverified);
+            Assert.Equal("medical_history_batch", docItem.Ref.Type);
+            Assert.Equal(batchId, docItem.Ref.Id);
+
+            // Sorted most-recent-first; the backdated document card sorts LAST.
+            var occ = timeline.Items.Select(i => i.OccurredAt).ToList();
+            Assert.Equal(occ.OrderByDescending(x => x).ToList(), occ);
+            Assert.Equal("document", timeline.Items[^1].Category);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE patient_id=@p", ("p", patientId));
+            await ExecAsync("DELETE FROM docslot.lab_reports WHERE patient_id=@p", ("p", patientId));
+            await ExecAsync("DELETE FROM docslot.prescriptions WHERE patient_id=@p", ("p", patientId));
+            await ExecAsync("DELETE FROM docslot.bookings WHERE patient_id=@p", ("p", patientId));
+            await ExecAsync("DELETE FROM docslot.time_slots WHERE slot_id IN (@s1,@s2)", ("s1", slot1), ("s2", slot2));
+            await ExecAsync("DELETE FROM docslot.patient_tenant_links WHERE patient_id=@p", ("p", patientId));
+            await ExecAsync("DELETE FROM docslot.patients WHERE patient_id=@p", ("p", patientId));
+        }
+    }
+
+    [Fact]
+    public async Task Timeline_Omits_Categories_The_Caller_Cannot_Read()
+    {
+        // A doctor-role user normally reads all three; a per-user DENY override on docslot.report.read (deny-wins)
+        // removes lab_report while keeping prescription + medical_history → the lab_report chip + items disappear.
+        var (client, userId, email) = await RoleClientAsync("doctor");
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        await ExecAsync(
+            """
+            INSERT INTO platform.user_permission_overrides (override_id, user_id, permission_id, tenant_id, is_allowed, reason, effective_from, is_active, created_at, updated_at)
+            SELECT gen_random_uuid(), @uid, p.permission_id, @tid, false, 'timeline test: revoke report.read', NOW(), true, NOW(), NOW()
+            FROM platform.permissions p WHERE p.permission_key = 'docslot.report.read'
+            """, ("uid", userId), ("tid", factory.TenantA));
+        try
+        {
+            var timeline = (await (await client.GetAsync($"/api/v1/patients/{factory.PatientId}/timeline"))
+                .Content.ReadFromJsonAsync<PatientTimelineDto>())!;
+            var keys = timeline.Categories.Select(c => c.Key).ToHashSet();
+            Assert.Contains("prescription", keys);
+            Assert.Contains("vaccination", keys);
+            Assert.DoesNotContain("lab_report", keys);         // denied → chip omitted
+            Assert.DoesNotContain(timeline.Items, i => i.Category == "lab_report");
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM platform.user_permission_overrides WHERE user_id=@u", ("u", userId));
+            await CleanupUserAsync(userId, email);
+        }
+    }
+
+    [Fact]
+    public async Task Timeline_Requires_Purpose_A_Read_Permission_And_A_Linked_Patient()
+    {
+        var admin = await AuthedClientAsync();
+
+        // (a) No X-Purpose-Of-Use → 422 (DPDP gate).
+        Assert.Equal(HttpStatusCode.UnprocessableEntity,
+            (await admin.GetAsync($"/api/v1/patients/{factory.PatientId}/timeline")).StatusCode);
+
+        admin.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+        // (b) A patient not linked to the tenant → 404 (no strip/PHI leak).
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await admin.GetAsync($"/api/v1/patients/{Guid.NewGuid()}/timeline")).StatusCode);
+
+        // (c) tenant_staff holds none of prescription/report/medical_history read → 403 at the any-of gate.
+        var (staff, userId, email) = await RoleClientAsync("tenant_staff");
+        staff.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        try
+        {
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await staff.GetAsync($"/api/v1/patients/{factory.PatientId}/timeline")).StatusCode);
+        }
+        finally { await CleanupUserAsync(userId, email); }
+    }
+
+    [Fact]
+    public async Task Timeline_NonConsented_Break_Glass_Grant_For_One_Type_Unlocks_Only_That_Category_Else_403()
+    {
+        // Auditor veto regression: a break-glass grant is resource-type-scoped, so on a non-consented patient a
+        // grant for "prescription" must unlock ONLY the prescription category — never lab reports, vaccination
+        // titles, or external_doctor_name (each of which requires its own type's grant on the sibling endpoints).
+        var client = await AuthedClientAsync();   // tenant_owner → holds all three category read permissions
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "emergency");
+
+        // Seed a prescription AND a vaccination so both the prescription and medical_history categories WOULD have
+        // data if unlocked — the test proves the vaccination stays hidden under a prescription-only grant.
+        var pres = await client.PostAsJsonAsync("/api/v1/prescriptions", new IssuePrescriptionRequest(
+            factory.BookingId, factory.PatientId, factory.DoctorId, null, null, "dx", "[]", null, null));
+        var presId = (await pres.Content.ReadFromJsonAsync<IssuePrescriptionResult>())!.PrescriptionId;
+        var vax = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history",
+            new CreateMedicalHistoryRequest("vaccination", "Hepatitis B (hidden under Rx grant)", null, null, null, null, null, false));
+        var vaxId = (await vax.Content.ReadFromJsonAsync<CreateMedicalHistoryResult>())!.HistoryId;
+
+        await ExecAsync("UPDATE docslot.patients SET consent_given_at=NULL WHERE patient_id=@p", ("p", factory.PatientId));
+        try
+        {
+            // (a) No consent + no grant → the whole timeline is refused.
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await client.GetAsync($"/api/v1/patients/{factory.PatientId}/timeline")).StatusCode);
+
+            // (b) A patient-wide "prescription" break-glass grant unlocks ONLY the prescription category.
+            await SeedGrantAsync(factory.AdminUserId, factory.TenantA, factory.PatientId, "prescription", null, expiresInMinutes: 60);
+            try
+            {
+                var timeline = (await (await client.GetAsync($"/api/v1/patients/{factory.PatientId}/timeline"))
+                    .Content.ReadFromJsonAsync<PatientTimelineDto>())!;
+                var keys = timeline.Categories.Select(c => c.Key).ToHashSet();
+                Assert.Equal(new HashSet<string> { "prescription" }, keys);   // ONLY prescription — no other chip
+                Assert.Contains(timeline.Items, i => i.ItemId == presId);
+                Assert.DoesNotContain(timeline.Items, i => i.Category is "lab_report" or "vaccination" or "document");
+                Assert.DoesNotContain(timeline.Items, i => i.ItemId == vaxId);   // the vaccination stays hidden
+
+                // (c) Purpose-of-use truthfulness: break-glass is attributed ONLY to the type the grant unlocked
+                // (prescription) — never a blanket entry claiming the grant covered lab_report / medical_history.
+                Assert.True(await ScalarIntAsync(
+                    "SELECT COUNT(*)::int FROM platform.purpose_of_use_log WHERE accessed_resource_id=@p AND accessed_resource_type='prescription' AND is_break_glass=true AND break_glass_reason='seeded test grant'",
+                    ("p", factory.PatientId)) >= 1);
+                Assert.Equal(0, await ScalarIntAsync(
+                    "SELECT COUNT(*)::int FROM platform.purpose_of_use_log WHERE accessed_resource_id=@p AND accessed_resource_type IN ('medical_history','lab_report') AND is_break_glass=true AND break_glass_reason='seeded test grant'",
+                    ("p", factory.PatientId)));
+            }
+            finally
+            {
+                await ExecAsync("DELETE FROM platform.break_glass_grants WHERE patient_id=@p AND tenant_id=@t", ("p", factory.PatientId), ("t", factory.TenantA));
+            }
+        }
+        finally
+        {
+            await ExecAsync("UPDATE docslot.patients SET consent_given_at=NOW() WHERE patient_id=@p", ("p", factory.PatientId));
+            await ExecAsync("DELETE FROM platform.purpose_of_use_log WHERE accessed_resource_id=@p", ("p", factory.PatientId));
+            await ExecAsync("DELETE FROM docslot.prescriptions WHERE prescription_id=@id", ("id", presId));
+            await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE history_id=@id", ("id", vaxId));
+        }
+    }
+
+    // ---- Prescription OCR proxy (paper-Rx intake assist, via the AI sibling stub) ------------------
+
+    [Fact]
+    public async Task PrescriptionOcr_HappyPath_Via_Stub_Returns_One_Deterministic_Medication_Record()
+    {
+        var client = await AuthedClientAsync();   // tenant_owner → holds docslot.medical_history.create
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+
+        var imageBytes = Encoding.UTF8.GetBytes("fake-jpeg-bytes [paper Rx scan]");
+        var resp = await client.PostAsJsonAsync("/api/v1/medical-history/extract-prescription",
+            new ExtractPrescriptionRequest(factory.PatientId, "rx.jpg", "image/jpeg", Convert.ToBase64String(imageBytes)));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        var dto = (await resp.Content.ReadFromJsonAsync<PrescriptionExtractionDto>())!;
+        Assert.True(dto.Available);
+        Assert.Equal("stub-dev", dto.Source);                       // honest stub, never a fabricated real engine
+        Assert.Equal($"stub-rx-{factory.PatientId:N}", dto.ExtractionId);
+        var record = Assert.Single(dto.Records);                    // deterministic: exactly one medication record
+        Assert.Equal("medication", record.RecordType);
+        Assert.False(string.IsNullOrWhiteSpace(record.Title));
+    }
+
+    [Fact]
+    public async Task PrescriptionOcr_Requires_Intake_Or_Create_Permission_And_Purpose()
+    {
+        // (a) A tenant_admin holds NEITHER docslot.medical_history.create NOR .intake (both is_dangerous → excluded
+        // from the auto-grant) → 403 at the any-of gate, before the handler runs.
+        var (tadmin, userId, email) = await RoleClientAsync("tenant_admin");
+        tadmin.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        try
+        {
+            var denied = await tadmin.PostAsJsonAsync("/api/v1/medical-history/extract-prescription",
+                new ExtractPrescriptionRequest(factory.PatientId, "rx.jpg", "image/jpeg", Convert.ToBase64String(Encoding.UTF8.GetBytes("x"))));
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        }
+        finally { await CleanupUserAsync(userId, email); }
+
+        // (b) A permitted caller WITHOUT X-Purpose-Of-Use → 422 (the DPDP gate; the AI is never consulted).
+        var client = await AuthedClientAsync();
+        var noPurpose = await client.PostAsJsonAsync("/api/v1/medical-history/extract-prescription",
+            new ExtractPrescriptionRequest(factory.PatientId, "rx.jpg", "image/jpeg", Convert.ToBase64String(Encoding.UTF8.GetBytes("x"))));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, noPurpose.StatusCode);
+    }
+
+    [Fact]
+    public async Task PrescriptionOcr_Response_Is_Not_Cached_By_The_Idempotency_Layer()
+    {
+        // The result is PHI (drug names / raw text) → the command is IDoNotCacheResponse. Prove it: two requests
+        // with the SAME Idempotency-Key but DIFFERENT patients must NOT replay — each returns its own patient's
+        // (stub-derived) extractionId. A cached response would return the FIRST patient's id for the second call.
+        var client = await AuthedClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var key = Guid.NewGuid().ToString();
+
+        // A second patient linked to tenant A (the first is the fixture's consented patient).
+        var patientB = Guid.NewGuid();
+        var phoneB = $"+9194{Random.Shared.Next(10000000, 99999999)}";
+        await ExecAsync("INSERT INTO docslot.patients (patient_id, phone_number, full_name, consent_given_at, consent_version, is_active, created_at, updated_at) VALUES (@id,@ph,'OCR Patient B',NOW(),'v1',true,NOW(),NOW())", ("id", patientB), ("ph", phoneB));
+        await ExecAsync("INSERT INTO docslot.patient_tenant_links (link_id, patient_id, tenant_id, first_visit_at, last_visit_at, total_visits) VALUES (gen_random_uuid(),@p,@t,NOW(),NOW(),0)", ("p", patientB), ("t", factory.TenantA));
+        try
+        {
+            var image = Convert.ToBase64String(Encoding.UTF8.GetBytes("scan"));
+            var a = await SendWithIdemAsync(client, factory.PatientId, image, key);
+            var b = await SendWithIdemAsync(client, patientB, image, key);
+            Assert.Equal(HttpStatusCode.OK, a.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, b.StatusCode);
+            var dtoA = (await a.Content.ReadFromJsonAsync<PrescriptionExtractionDto>())!;
+            var dtoB = (await b.Content.ReadFromJsonAsync<PrescriptionExtractionDto>())!;
+            Assert.Equal($"stub-rx-{factory.PatientId:N}", dtoA.ExtractionId);
+            Assert.Equal($"stub-rx-{patientB:N}", dtoB.ExtractionId);   // NOT replayed from the first call
+            Assert.NotEqual(dtoA.ExtractionId, dtoB.ExtractionId);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.patient_tenant_links WHERE patient_id=@p", ("p", patientB));
+            await ExecAsync("DELETE FROM docslot.patients WHERE patient_id=@p", ("p", patientB));
+        }
+    }
+
+    private static Task<HttpResponseMessage> SendWithIdemAsync(HttpClient client, Guid patientId, string imageBase64, string idemKey)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/medical-history/extract-prescription")
+        {
+            Content = JsonContent.Create(new ExtractPrescriptionRequest(patientId, "rx.jpg", "image/jpeg", imageBase64)),
+        };
+        req.Headers.Add("Idempotency-Key", idemKey);
+        return client.SendAsync(req);
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
+
+    /// <summary>Provisions a fresh platform user holding one system role in tenant A (e.g. tenant_staff for the
+    /// intake-only cases), logs it in, and returns an authenticated client + its id/email for cleanup.</summary>
+    private async Task<(HttpClient Client, Guid UserId, string Email)> RoleClientAsync(string roleKey)
+    {
+        var email = $"paperrx.{roleKey}+{Guid.NewGuid():N}@docslot.test";
+        var userId = Guid.NewGuid();
+        await ExecAsync(
+            """
+            INSERT INTO platform.users (user_id, email, password_hash, full_name, is_active, is_platform_user, created_at, updated_at)
+            VALUES (@id, @email, crypt(@pwd, gen_salt('bf', 10)), 'PaperRx Staff', true, true, NOW(), NOW())
+            """, ("id", userId), ("email", email), ("pwd", ClinicalWebAppFactory.AdminPassword));
+        await ExecAsync(
+            """
+            INSERT INTO platform.user_tenant_roles (user_tenant_role_id, user_id, tenant_id, role_id, is_primary, granted_at)
+            SELECT gen_random_uuid(), @uid, @tid, r.role_id, true, NOW()
+            FROM platform.roles r WHERE r.role_key=@rk AND r.is_system ON CONFLICT DO NOTHING
+            """, ("uid", userId), ("tid", factory.TenantA), ("rk", roleKey));
+
+        var client = factory.CreateClient();
+        var login = await client.PostAsJsonAsync("/api/v1/auth/login",
+            new LoginRequest(email, ClinicalWebAppFactory.AdminPassword, factory.TenantA));
+        login.EnsureSuccessStatusCode();
+        var token = (await login.Content.ReadFromJsonAsync<TokenResponse>())!;
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+        return (client, userId, email);
+    }
+
+    /// <summary>POSTs an import with a FRESH per-request Idempotency-Key (the endpoint requires one). Not a default
+    /// client header — a default would make a later same-endpoint POST (e.g. a second verify) replay the cached response.</summary>
+    private static Task<HttpResponseMessage> PostImportAsync(HttpClient client, Guid patientId, ImportMedicalHistoryRequest body)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/patients/{patientId}/medical-history/import")
+        {
+            Content = JsonContent.Create(body),
+        };
+        req.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+        return client.SendAsync(req);
+    }
+
+    private static async Task CleanupUserAsync(Guid userId, string email)
+    {
+        await ExecAsync("DELETE FROM platform.user_tenant_roles WHERE user_id=@u", ("u", userId));
+        await ExecAsync("DELETE FROM platform.user_sessions WHERE user_id=@u", ("u", userId));
+        await ExecAsync("DELETE FROM platform.login_attempts WHERE email=@e", ("e", email));
+        // Soft-delete (an intake write may have left an audit_log row → never hard-DELETE a user referenced by audit).
+        await ExecAsync("UPDATE platform.users SET deleted_at=NOW(), is_active=false, email=@a WHERE user_id=@u",
+            ("a", $"del+{userId}@paperrx.test"), ("u", userId));
+    }
 
     private async Task<HttpClient> DoctorClientAsync()
     {

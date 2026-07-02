@@ -32,6 +32,10 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
   // The real active tenant's display name (session source of truth). Used by the org switcher in
   // real-API mode instead of the mock ORGS list. (#59)
   const activeTenantName = user?.tenants.find((tn) => tn.tenantId === tenantId)?.displayName;
+  // The signed-in user's active-tenant role names, joined for the profile chip.
+  // Empty → the generic bilingual fallback (keeps hi working). Display only.
+  const roleNames = (user?.roles ?? []).map((r) => r.name).filter(Boolean);
+  const roleLabel = roleNames.length > 0 ? roleNames.join(' · ') : t('app.profileRole');
   const doLogout = useLogout();
 
   const onSignOut = async () => {
@@ -139,7 +143,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
           <Avatar name={user?.fullName ?? 'DocSlot'} size="sm" />
           <div className="min-w-0 flex-1 leading-tight">
             <p className="truncate text-[13px] font-medium text-ink">{user?.fullName ?? '—'}</p>
-            <p className="text-[11px] text-muted">{t('app.profileRole')}</p>
+            {/* Real role names from /me (active-tenant roles). Join multiple with " · ";
+                fall back to the bilingual generic label when the API returns none. */}
+            <p className="truncate text-[11px] text-muted">{roleLabel}</p>
           </div>
           <button
             type="button"

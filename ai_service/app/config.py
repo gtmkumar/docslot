@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     ocr_review_confidence_threshold: float = 0.85
     # Directory where generated sample documents are written.
     samples_dir: str = "samples"
+    # DEV/DEMO ONLY: allow the lab-report endpoint to OCR a caller-supplied local
+    # filesystem path (sourceUrl). Default OFF — a caller-controlled path is an
+    # arbitrary-local-file read (not tenant-scoped) + a file existence/size oracle,
+    # so production must leave this False (the .NET proxy never forwards sourceUrl;
+    # it sends imageBase64). With this off, a request carrying sourceUrl is rejected
+    # (400) and the path is never touched. Sample generation (no sourceUrl) is unaffected.
+    allow_dev_source_paths: bool = False
 
     # --- ML ---
     # Minimum labeled samples required before training a real classifier;

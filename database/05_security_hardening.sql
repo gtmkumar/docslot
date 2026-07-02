@@ -133,6 +133,9 @@ CREATE TABLE platform.encrypted_fields_registry (
 INSERT INTO platform.encrypted_fields_registry (schema_name, table_name, column_name, data_class, pii_category, legal_basis) VALUES
 ('docslot', 'patient_medical_history', 'description', 'medical_history', 'medical', 'consent'),
 ('docslot', 'patient_medical_history', 'title', 'medical_history', 'medical', 'consent'),
+-- Paper-Rx import provenance: the external prescriber's name reveals the patient's care
+-- relationships (who they consulted) — same medical data class as the record itself.
+('docslot', 'patient_medical_history', 'external_doctor_name', 'medical_history', 'medical', 'consent'),
 ('docslot', 'prescriptions', 'diagnosis', 'medical_history', 'medical', 'consent'),
 ('docslot', 'prescriptions', 'medications', 'medical_history', 'medical', 'consent'),
 ('docslot', 'prescriptions', 'examination', 'medical_history', 'medical', 'consent'),

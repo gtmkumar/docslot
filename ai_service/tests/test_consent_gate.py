@@ -60,6 +60,24 @@ def test_extract_requires_patient_link(client: TestClient, auth: dict) -> None:
     assert r.status_code == 422, r.text
 
 
+def test_extract_rejects_sourceurl_when_dev_flag_off(
+    client: TestClient, auth: dict, db: psycopg.Connection, tmp_path: object
+) -> None:
+    # Auditor veto: a caller-supplied filesystem path is a dev-only affordance, refused
+    # (400) unless AI_ALLOW_DEV_SOURCE_PATHS is on (default off). The path is never read/
+    # OCR'd and nothing is persisted; sample generation (no sourceUrl) is unaffected.
+    secret = tmp_path / "arbitrary_local_file.txt"  # type: ignore[operator]
+    secret.write_text("TOP-SECRET-LOCAL-FILE-CONTENTS")
+    r = client.post(
+        EXTRACT,
+        json={"relatedPatientId": PATIENT_CONSENTED, "sourceUrl": str(secret)},
+        headers=auth,
+    )
+    assert r.status_code == 400, r.text
+    assert "TOP-SECRET" not in r.text  # contents never read back
+    assert _extractions(db, PATIENT_CONSENTED) == 0  # nothing persisted
+
+
 # --- Consented access proceeds and writes ENCRYPTED embeddings + a purpose log ---
 def test_index_consented_writes_encrypted(client: TestClient, auth: dict, db: psycopg.Connection) -> None:
     r = client.post(INDEX, json={"patientId": PATIENT_CONSENTED}, headers=auth)

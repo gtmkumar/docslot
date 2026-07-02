@@ -136,15 +136,19 @@ def _seed() -> None:
             ),
         }
         for hid, (pid, rtype, title, desc, sev, icd) in histories.items():
+            # source defaults to 'clinic', which chk_history_clinic_rows_verified
+            # requires a verifier for (and chk_history_verify_pair requires both
+            # verify stamps or neither) — seed these as clinician-verified rows.
             cur.execute(
                 """
                 INSERT INTO docslot.patient_medical_history
                     (history_id, patient_id, tenant_id, record_type, title, description,
-                     severity, icd10_code, is_active, is_critical)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, true, false)
+                     severity, icd10_code, is_active, is_critical,
+                     verified_by_user_id, verified_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, true, false, %s, NOW())
                 ON CONFLICT (history_id) DO NOTHING
                 """,
-                (hid, pid, TENANT_ID, rtype, title, desc, sev, icd),
+                (hid, pid, TENANT_ID, rtype, title, desc, sev, icd, USER_ID),
             )
 
 

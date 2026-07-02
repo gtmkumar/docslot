@@ -12,6 +12,7 @@ import re
 import pytesseract
 from PIL import Image
 
+from . import prescription_parser
 from .config import get_settings
 
 logger = logging.getLogger("ai_service.ocr")
@@ -152,4 +153,32 @@ def extract_lab_report(image_path: str) -> dict:
         "analytes": analytes,
         "abnormal_count": len(abnormal),
         "panel": "CBC",
+    }
+
+
+def extract_prescription(image_path: str) -> dict:
+    """Full prescription pipeline: OCR + best-effort parse.
+
+    The overall confidence blends the OCR word-confidence with the mean per-line
+    parser confidence (handwriting is lossy, so a low blended score is expected —
+    the caller keeps requires_human_review=true regardless). Returns the assembled
+    payload; the parser NEVER throws on unparseable lines.
+    """
+    raw_text, ocr_confidence = run_ocr(image_path)
+    parsed = prescription_parser.parse_prescription(raw_text)
+    records = parsed["records"]
+
+    if isinstance(records, list) and records:
+        line_confs = [float(r["confidence"]) for r in records]
+        mean_line_conf = sum(line_confs) / len(line_confs)
+        overall = round(0.5 * ocr_confidence + 0.5 * mean_line_conf, 3)
+    else:
+        overall = round(0.4 * ocr_confidence, 3)
+
+    return {
+        "raw_text": raw_text,
+        "overall_confidence": overall,
+        "records": records,
+        "external_doctor_name": parsed["external_doctor_name"],
+        "recorded_date": parsed["recorded_date"],
     }

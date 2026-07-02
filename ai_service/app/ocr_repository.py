@@ -22,11 +22,16 @@ DOCUMENT_EXTRACT_PERMISSION = "ai.documents.extract"
 _RESOURCE_TYPE = "lab_report"
 
 
-def _enc_ctx(tenant_id: str, patient_id: str | None, user_id: str | None) -> EncryptionContext:
+def _enc_ctx(
+    tenant_id: str,
+    patient_id: str | None,
+    user_id: str | None,
+    resource_type: str = _RESOURCE_TYPE,
+) -> EncryptionContext:
     return EncryptionContext(
         user_id=user_id,
         tenant_id=tenant_id,
-        resource_type=_RESOURCE_TYPE,
+        resource_type=resource_type,
         resource_id=patient_id,
     )
 
@@ -60,18 +65,25 @@ def insert_extraction(
     overall_confidence: float,
     requires_human_review: bool,
     status: str,
+    source_type: str = "lab_report",
+    resource_type: str = _RESOURCE_TYPE,
     user_id: str | None = None,
 ) -> str:
     """Insert one ai.ai_document_extractions row; return the extraction_id.
 
     raw_ocr_text is PHI and is envelope-ENCRYPTED at rest (encryption_key_id set);
     encryption + the forensic key_usage_log share this row's transaction. The
-    structured extracted_data (panel/analyte values + abnormalCount) stays as
-    queryable JSONB (the list view reads abnormalCount); the free-text PHI lives in
+    structured extracted_data stays as queryable JSONB; the free-text PHI lives in
     raw_ocr_text, which is encrypted. related_patient_id is required by the router.
+
+    source_type distinguishes 'lab_report' from 'prescription' (both share the
+    medical_history encryption key); resource_type only labels the forensic
+    key_usage_log ('lab_report' vs 'medical_history').
     """
     with get_connection() as conn:
-        enc = FieldEncryptor(conn, _enc_ctx(tenant_id, related_patient_id, user_id))
+        enc = FieldEncryptor(
+            conn, _enc_ctx(tenant_id, related_patient_id, user_id, resource_type)
+        )
         raw_payload, key_id = enc.encrypt_text(raw_ocr_text)
         with conn.cursor() as cur:
             cur.execute(
@@ -82,7 +94,7 @@ def insert_extraction(
                     ocr_engine, raw_ocr_text, extraction_model, extracted_data,
                     overall_confidence, requires_human_review, status, encryption_key_id
                 ) VALUES (
-                    %(tenant_id)s, 'lab_report', %(source_url)s, %(mime)s,
+                    %(tenant_id)s, %(source_type)s, %(source_url)s, %(mime)s,
                     %(size)s, %(patient_id)s, %(booking_id)s,
                     %(ocr_engine)s, %(raw)s, %(model)s, %(data)s,
                     %(conf)s, %(review)s, %(status)s, %(key_id)s
@@ -91,6 +103,7 @@ def insert_extraction(
                 """,
                 {
                     "tenant_id": tenant_id,
+                    "source_type": source_type,
                     "source_url": source_url,
                     "mime": source_mime_type,
                     "size": source_size_bytes,
@@ -162,7 +175,13 @@ def list_extractions(tenant_id: str, limit: int) -> list[dict]:
 # (FIRST-CLASS, break-glass-aware). The hash-chained audit_log write below stays
 # best-effort (supplementary to the purpose-of-use record).
 def write_audit_best_effort(
-    *, user_id: str, tenant_id: str, patient_id: str | None, action: str, purpose: str
+    *,
+    user_id: str,
+    tenant_id: str,
+    patient_id: str | None,
+    action: str,
+    purpose: str,
+    resource_type: str = "lab_report",
 ) -> None:
     """Best-effort hash-chained audit write. Never blocks."""
     try:
@@ -173,7 +192,7 @@ def write_audit_best_effort(
                     user_id, tenant_id, action, resource_type, resource_id,
                     purpose, legal_basis, success
                 ) VALUES (
-                    %(user_id)s, %(tenant_id)s, %(action)s, 'lab_report', %(resource_id)s,
+                    %(user_id)s, %(tenant_id)s, %(action)s, %(resource_type)s, %(resource_id)s,
                     %(purpose)s, 'consent', true
                 )
                 """,
@@ -181,6 +200,7 @@ def write_audit_best_effort(
                     "user_id": user_id,
                     "tenant_id": tenant_id,
                     "action": action,
+                    "resource_type": resource_type,
                     "resource_id": patient_id,
                     "purpose": purpose,
                 },

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 RiskBand = Literal["low", "medium", "high"]
 
@@ -111,6 +111,41 @@ class LabReportExtractResponse(BaseModel):
     analytes: list[Analyte]
     abnormalCount: int
     rawTextPreview: str
+
+
+# --- OCR prescription extraction (paper-Rx intake "Extract with AI") ---
+class PrescriptionExtractRequest(BaseModel):
+    # Reject unknown fields (422): a stray caller-supplied 'sourceUrl' (or any other
+    # path-like input) is refused outright, never silently ignored (auditor veto).
+    model_config = ConfigDict(extra="forbid")
+
+    relatedPatientId: str | None = Field(
+        default=None, description="UUID of the patient (required; 422 if absent)."
+    )
+    imageBase64: str | None = Field(
+        default=None, description="Base64-encoded prescription photo (the primary input)."
+    )
+    contentType: str | None = Field(default=None, description="MIME type of the image.")
+    fileName: str | None = Field(default=None, description="Original file name of the image.")
+    # NOTE: no caller-supplied file path. A prescription image is ALWAYS inline
+    # (imageBase64); with neither field the server generates a sample. Nothing
+    # caller-controlled ever resolves to a local filesystem path (auditor veto).
+
+
+class PrescriptionRecord(BaseModel):
+    recordType: Literal["medication"]
+    title: str
+    description: str | None = None
+    confidence: float
+
+
+class PrescriptionExtractResponse(BaseModel):
+    extractionId: str
+    overallConfidence: float
+    externalDoctorName: str | None = None
+    recordedDate: str | None = None
+    records: list[PrescriptionRecord]
+    rawText: str
 
 
 class ExtractionListItem(BaseModel):

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Json;
 using mediq.Application.Abstractions;
 using mediq.Utilities.Exceptions;
@@ -68,6 +69,55 @@ public sealed class HttpAiOcrClient(
         }
     }
 
+    public async Task<PrescriptionExtractionResult?> ExtractPrescriptionAsync(OcrPrescriptionInput input, CancellationToken ct)
+    {
+        try
+        {
+            // The caller supplies the image bytes (front desk holds the physical Rx) → forward them as base64. Same
+            // JWT + X-Purpose-Of-Use forwarding as the lab extract; the AI service owns persistence + the purpose log.
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/ai/v1/extractions/prescription")
+            {
+                Content = JsonContent.Create(new
+                {
+                    relatedPatientId = input.RelatedPatientId.ToString(),
+                    imageBase64 = input.ImageBase64,
+                    contentType = input.ContentType,
+                    fileName = input.FileName,
+                }),
+            };
+            var auth = context.HttpContext?.Request.Headers.Authorization.ToString();
+            if (!string.IsNullOrWhiteSpace(auth))
+                req.Headers.TryAddWithoutValidation("Authorization", auth);
+            if (!string.IsNullOrWhiteSpace(input.DeclaredPurpose))
+                req.Headers.TryAddWithoutValidation("X-Purpose-Of-Use", input.DeclaredPurpose);
+
+            using var resp = await http.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                logger.LogWarning("AI prescription OCR returned {Status}", (int)resp.StatusCode);
+                AiErrorMapper.ThrowIfClientError(resp.StatusCode);   // 4xx = real gate decision → surface, don't mask
+                return null;
+            }
+
+            var dto = await resp.Content.ReadFromJsonAsync<AiPrescriptionExtractResponse>(ct);
+            if (dto is null) return null;
+            return new PrescriptionExtractionResult(
+                dto.ExtractionId ?? "",
+                dto.OverallConfidence,
+                dto.ExternalDoctorName,
+                DateOnly.TryParse(dto.RecordedDate, CultureInfo.InvariantCulture, out var rd) ? rd : null,
+                (dto.Records ?? []).Select(r => new PrescriptionRecordResult(
+                    r.RecordType ?? "medication", r.Title ?? "", r.Description, r.Confidence)).ToList(),
+                dto.RawText,
+                "ai-service-http");
+        }
+        catch (Exception ex) when (ex is not AppExceptionBase and not KeyNotFoundException)
+        {
+            logger.LogWarning(ex, "AI prescription-OCR call failed; extraction unavailable.");   // no PHI in the message
+            return null;
+        }
+    }
+
     public async Task<IReadOnlyList<OcrExtractionSummaryResult>?> ListExtractionsAsync(int limit, CancellationToken ct)
     {
         try
@@ -110,6 +160,13 @@ public sealed class HttpAiOcrClient(
     private sealed record AiExtractionListItem(
         string? ExtractionId, string? SourceType, string? Status, double? OverallConfidence,
         bool RequiresHumanReview, int AbnormalCount, string? CreatedAt);
+
+    // Matches the AI service's PrescriptionExtractResponse schema (camelCase). Unlike the lab response, rawText IS
+    // bound — the intake desk needs the transcription to verify against the scan (still PHI: never cached/logged).
+    private sealed record AiPrescriptionExtractResponse(
+        string? ExtractionId, double? OverallConfidence, string? ExternalDoctorName, string? RecordedDate,
+        List<AiPrescriptionRecord>? Records, string? RawText);
+    private sealed record AiPrescriptionRecord(string? RecordType, string? Title, string? Description, double? Confidence);
 }
 
 /// <summary>
@@ -137,6 +194,21 @@ public sealed class StubAiOcrClient : IAiOcrClient
             Analytes: analytes,
             Source: "stub-dev"));
     }
+
+    public Task<PrescriptionExtractionResult?> ExtractPrescriptionAsync(OcrPrescriptionInput input, CancellationToken ct) =>
+        // Deterministic, clearly-labelled parse — ONE medication record — so the intake flow works end-to-end WITHOUT
+        // the AI service. Never fabricates a plausible real drug; the intake desk verifies before importing.
+        Task.FromResult<PrescriptionExtractionResult?>(new PrescriptionExtractionResult(
+            ExtractionId: $"stub-rx-{input.RelatedPatientId:N}",
+            OverallConfidence: 0.5,
+            ExternalDoctorName: "Dr. Stub",
+            RecordedDate: null,
+            Records: new List<PrescriptionRecordResult>
+            {
+                new("medication", "STUB-MED 500", "1-0-1 · stub parse (verify before import)", 0.5),
+            },
+            RawText: "STUB PRESCRIPTION OCR — one medication record",
+            Source: "stub-dev"));
 
     public Task<IReadOnlyList<OcrExtractionSummaryResult>?> ListExtractionsAsync(int limit, CancellationToken ct) =>
         // One clearly-labelled stub summary so the ops list renders WITHOUT the AI service. Deterministic.

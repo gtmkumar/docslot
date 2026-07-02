@@ -40,6 +40,35 @@ public sealed record OcrExtractionDto(
     IReadOnlyList<AnalyteDto> Analytes,
     string? Source = null);
 
+// ---- OCR (paper-prescription extraction → transcribable draft records) ----------------------------
+
+/// <summary>Request to OCR a CALLER-SUPPLIED paper-prescription image (front desk holds the physical Rx). The
+/// image bytes are base64 in the body (the internal seam; a presigned path is the prod follow-up for large
+/// files). An X-Purpose-Of-Use header is REQUIRED (carried out-of-band). The result feeds the paper-Rx import
+/// flow — intake staff verify/edit the draft records before importing.</summary>
+public sealed record ExtractPrescriptionRequest(
+    Guid PatientId, string FileName, string ContentType, string ContentBase64);
+
+/// <summary>One transcribable draft record OCR'd from a paper prescription. title/description are PHI. Confidence
+/// (0..1) is advisory and per-record.</summary>
+public sealed record PrescriptionOcrRecordDto(
+    string RecordType, string Title, string? Description, double? Confidence);
+
+/// <summary>The paper-prescription OCR result (advisory). <see cref="Available"/> is false ONLY when the AI
+/// service is unreachable/errored (the desk shows "OCR unavailable" rather than fabricating a parse); an AI
+/// authorization/validation failure surfaces as a 4xx, never a masked false. Title/description/rawText are PHI →
+/// this response is never cached (IDoNotCacheResponse) and is purpose-of-use gated. <see cref="Source"/> records
+/// provenance ('ai-service-http' | 'stub-dev').</summary>
+public sealed record PrescriptionExtractionDto(
+    bool Available,
+    string? ExtractionId,
+    double? OverallConfidence,
+    string? ExternalDoctorName,
+    DateOnly? RecordedDate,
+    IReadOnlyList<PrescriptionOcrRecordDto> Records,
+    string? RawText,
+    string? Source = null);
+
 // ---- RAG (ask over a patient's indexed medical history) -------------------------------------------
 
 /// <summary>A natural-language question over a patient's indexed medical history. The question is PHI — it

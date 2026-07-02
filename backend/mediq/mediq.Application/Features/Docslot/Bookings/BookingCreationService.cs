@@ -30,9 +30,12 @@ public sealed class BookingCreationService(
 
     public async Task<CreateBookingResult> CreateAsync(Guid tenantId, CreateBookingRequest req, DateTime now, CancellationToken ct)
     {
-        // Enforce the tenant's configurable booking cutoff (FR-BOOK): the slot must be at least
-        // BookingCutoffHours in the future. Authoritative guard for every channel (staff + WhatsApp + reschedule).
-        await BookingCutoff.EnsureSlotBeyondCutoffAsync(settings, slotHolds, tenantId, req.SlotId, now, ct);
+        // Slot-timing guard (FR-BOOK): no channel books an already-started slot; the tenant's
+        // BookingCutoffHours lead-time applies only to self-service channels on fresh creates —
+        // staff channels + reschedules bypass it (see BookingCutoff).
+        await BookingCutoff.EnsureSlotBeyondCutoffAsync(
+            settings, slotHolds, tenantId, req.SlotId,
+            req.BookedVia, isReschedule: req.RescheduledFromBookingId is not null, now, ct);
 
         // Patient: cross-tenant identity by phone. Resolve or register, then ensure tenant link.
         var patient = await patients.GetByPhoneAsync(req.PatientPhone, ct);

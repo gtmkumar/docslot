@@ -21,6 +21,7 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { istSlot } from '@/lib/format';
+import { toUserError } from '@/lib/backend';
 import { idempotencyKey } from '@/lib/api-client';
 import type { BookingRow } from '@/lib/mock/contracts';
 import { useUI } from '@/stores/ui';
@@ -57,8 +58,27 @@ export const ApprovalQueue = forwardRef<HTMLElement>(function ApprovalQueue(_pro
     // to the same key and the server de-dupes the approve.
     const key = idempotencyKey();
     setDeferred((s) => new Set(s).add(b.id));
+    // Once the timer fires the toast+undo window is gone, so the mutation's own
+    // callbacks are the only feedback left: on failure, surface the error (named
+    // by patient so the user knows which row) and restore the row; on success,
+    // drop it from `deferred` (the refetched list won't carry it as pending).
+    const undefer = () =>
+      setDeferred((s) => {
+        const next = new Set(s);
+        next.delete(b.id);
+        return next;
+      });
     const tm = setTimeout(() => {
-      approve.mutate({ bookingId: b.id, idempotencyKey: key });
+      approve.mutate(
+        { bookingId: b.id, idempotencyKey: key },
+        {
+          onError: (e) => {
+            toast.error(`${b.patient} · ${toUserError(e)}`);
+            undefer();
+          },
+          onSuccess: undefer,
+        },
+      );
       timers.current.delete(b.id);
     }, UNDO_MS);
     timers.current.set(b.id, tm);

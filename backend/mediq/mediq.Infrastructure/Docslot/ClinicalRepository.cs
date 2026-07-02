@@ -240,6 +240,71 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         return rows.Select(r => new PrescriptionRow(r.PrescriptionId, r.PrescriptionNumber, r.PatientId, r.DoctorId, r.DoctorName, r.Status, r.CreatedAt)).ToList();
     }
 
+    public async Task<IReadOnlyList<TimelinePrescriptionRow>> ListTimelinePrescriptionsAsync(Guid tenantId, Guid patientId, CancellationToken ct)
+    {
+        // NON-DRAFT rows only (a draft is not part of the record feed). diagnosis is a plain encrypted-text column;
+        // medications is a jsonb-wrapped envelope read via #>> '{}'. LEFT JOIN docslot.doctors for the plaintext
+        // prescriber name/specialization (directory data, NOT PHI; doctors has no RLS). Enlists the ambient read tx.
+        var conn = (NpgsqlConnection)db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            """
+            SELECT p.prescription_id, p.prescription_number, p.status, p.created_at, p.finalized_at,
+                   p.diagnosis, p.medications #>> '{}', p.doctor_id, d.full_name, d.specialization
+            FROM docslot.prescriptions p
+            LEFT JOIN docslot.doctors d ON d.doctor_id = p.doctor_id AND d.tenant_id = p.tenant_id
+            WHERE p.tenant_id = @p0 AND p.patient_id = @p1 AND p.status <> 'draft'
+            ORDER BY COALESCE(p.finalized_at, p.created_at) DESC
+            """, conn);
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
+        cmd.Parameters.AddWithValue("@p0", tenantId);
+        cmd.Parameters.AddWithValue("@p1", patientId);
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<TimelinePrescriptionRow>();
+        while (await rd.ReadAsync(ct))
+            result.Add(new TimelinePrescriptionRow(
+                rd.GetGuid(0), rd.IsDBNull(1) ? null : rd.GetString(1), rd.GetString(2), rd.GetDateTime(3),
+                rd.IsDBNull(4) ? (DateTime?)null : rd.GetDateTime(4),
+                rd.IsDBNull(5) ? null : rd.GetString(5), rd.GetString(6), rd.GetGuid(7),
+                rd.IsDBNull(8) ? null : rd.GetString(8), rd.IsDBNull(9) ? null : rd.GetString(9)));
+        return result;
+    }
+
+    public async Task<IReadOnlyList<TimelineLabRow>> ListTimelineLabReportsAsync(Guid tenantId, Guid patientId, CancellationToken ct)
+    {
+        var rows = await db.Database.SqlQueryRaw<TimelineLabRowDb>(
+                """
+                SELECT r.report_id AS "ReportId", r.report_number AS "ReportNumber",
+                       COALESCE(tc.test_name, 'Lab Test') AS "TestName", r.status AS "Status",
+                       r.has_critical_findings AS "HasCriticalFindings", r.created_at AS "CreatedAt",
+                       (r.file_url IS NOT NULL) AS "HasFile"
+                FROM docslot.lab_reports r
+                LEFT JOIN docslot.test_catalog tc ON tc.test_id = r.test_id AND tc.tenant_id = r.tenant_id
+                WHERE r.tenant_id = @p0 AND r.patient_id = @p1
+                ORDER BY r.created_at DESC
+                """,
+                Params(("@p0", tenantId), ("@p1", patientId)))
+            .ToListAsync(ct);
+        return rows.Select(r => new TimelineLabRow(r.ReportId, r.ReportNumber, r.TestName, r.Status, r.HasCriticalFindings, r.CreatedAt, r.HasFile)).ToList();
+    }
+
+    public async Task<PatientTimelineStrip> GetPatientTimelineStripAsync(Guid tenantId, Guid patientId, CancellationToken ct)
+    {
+        // Strip derived from bookings: first-ever booking date (Asia/Kolkata — the app's clinical timezone, so
+        // "patient since" never shows the prior UTC day) + the count of NON-CANCELLED bookings. No bookings →
+        // (null, 0). booked_at is timestamptz; the ::date is taken after the AT TIME ZONE conversion.
+        var rows = await db.Database.SqlQueryRaw<StripRow>(
+                """
+                SELECT (MIN(booked_at) AT TIME ZONE 'Asia/Kolkata')::date AS "PatientSince",
+                       COUNT(*) FILTER (WHERE status <> 'cancelled')::int AS "VisitCount"
+                FROM docslot.bookings WHERE tenant_id = @p0 AND patient_id = @p1
+                """,
+                Params(("@p0", tenantId), ("@p1", patientId)))
+            .ToListAsync(ct);
+        var r = rows.FirstOrDefault();
+        return r is null ? new PatientTimelineStrip(null, 0) : new PatientTimelineStrip(r.PatientSince, r.VisitCount);
+    }
+
     // ---- Lab reports -----------------------------------------------------------------------------
 
     public async Task<string?> AddLabReportAsync(LabReport rpt, CancellationToken ct)
@@ -349,61 +414,100 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
 
     // ---- Medical history -------------------------------------------------------------------------
 
+    // Full projection incl. paper-import provenance/verification/attachment columns. Used by the patient-facing
+    // read (list) + the get/verify path. ORDER matches ReadMedicalHistory below.
+    private const string MedicalHistorySelect =
+        """
+        SELECT history_id, patient_id, tenant_id, record_type, title, description,
+               severity, icd10_code, started_date, ended_date, is_active, is_critical, added_at,
+               source, external_doctor_name, recorded_date, verified_by_user_id, verified_at, import_batch_id,
+               attachment_url, attachment_file_name, attachment_mime_type, attachment_size_bytes
+        """;
+
+    private static MedicalHistory ReadMedicalHistory(NpgsqlDataReader rd) =>
+        MedicalHistory.FromRow(
+            rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.GetString(3), rd.GetString(4),
+            rd.IsDBNull(5) ? null : rd.GetString(5),
+            rd.IsDBNull(6) ? null : rd.GetString(6), rd.IsDBNull(7) ? null : rd.GetString(7),
+            rd.IsDBNull(8) ? null : rd.GetFieldValue<DateOnly>(8), rd.IsDBNull(9) ? null : rd.GetFieldValue<DateOnly>(9),
+            rd.GetBoolean(10), rd.GetBoolean(11), rd.GetDateTime(12),
+            rd.IsDBNull(13) ? null : rd.GetString(13), rd.IsDBNull(14) ? null : rd.GetString(14),
+            rd.IsDBNull(15) ? null : rd.GetFieldValue<DateOnly>(15),
+            rd.IsDBNull(16) ? (Guid?)null : rd.GetGuid(16), rd.IsDBNull(17) ? (DateTime?)null : rd.GetDateTime(17),
+            rd.IsDBNull(18) ? (Guid?)null : rd.GetGuid(18),
+            rd.IsDBNull(19) ? null : rd.GetString(19), rd.IsDBNull(20) ? null : rd.GetString(20),
+            rd.IsDBNull(21) ? null : rd.GetString(21), rd.IsDBNull(22) ? (long?)null : rd.GetInt64(22));
+
     public async Task<IReadOnlyList<MedicalHistory>> ListMedicalHistoryAsync(Guid tenantId, Guid patientId, CancellationToken ct)
     {
         var conn = (NpgsqlConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            """
-            SELECT history_id, patient_id, tenant_id, record_type, title, description,
-                   severity, icd10_code, started_date, ended_date, is_active, is_critical, added_at
-            FROM docslot.patient_medical_history WHERE tenant_id = @p0 AND patient_id = @p1 AND is_active = true
-            ORDER BY added_at DESC
-            """, conn);
+            MedicalHistorySelect +
+            " FROM docslot.patient_medical_history WHERE tenant_id = @p0 AND patient_id = @p1 AND is_active = true ORDER BY added_at DESC", conn);
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
         cmd.Parameters.AddWithValue("@p0", tenantId);
         cmd.Parameters.AddWithValue("@p1", patientId);
         await using var rd = await cmd.ExecuteReaderAsync(ct);
         var result = new List<MedicalHistory>();
         while (await rd.ReadAsync(ct))
-            result.Add(MedicalHistory.FromRow(
-                rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.GetString(3), rd.GetString(4),
-                rd.IsDBNull(5) ? null : rd.GetString(5),
-                rd.IsDBNull(6) ? null : rd.GetString(6), rd.IsDBNull(7) ? null : rd.GetString(7),
-                rd.IsDBNull(8) ? null : rd.GetFieldValue<DateOnly>(8), rd.IsDBNull(9) ? null : rd.GetFieldValue<DateOnly>(9),
-                rd.GetBoolean(10), rd.GetBoolean(11), rd.GetDateTime(12)));
+            result.Add(ReadMedicalHistory(rd));
         return result;
     }
 
     public async Task<Guid> AddMedicalHistoryAsync(MedicalHistory h, CancellationToken ct)
     {
         // Runs in the command's tenant-scoped UoW tx (app.tenant_id set) → RLS WITH CHECK admits the in-tenant row.
-        await db.Database.ExecuteSqlRawAsync(
-            """
-            INSERT INTO docslot.patient_medical_history
-                (history_id, patient_id, tenant_id, record_type, title, description, severity, icd10_code,
-                 started_date, ended_date, is_active, is_critical, added_by_user_id, added_at)
-            VALUES (@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13)
-            """,
-            new NpgsqlParameter("@p0", h.HistoryId), new NpgsqlParameter("@p1", h.PatientId),
-            new NpgsqlParameter("@p2", h.TenantId), new NpgsqlParameter("@p3", h.RecordType),
-            new NpgsqlParameter("@p4", h.TitleEnc), new NpgsqlParameter("@p5", (object?)h.DescriptionEnc ?? DBNull.Value),
-            new NpgsqlParameter("@p6", (object?)h.Severity ?? DBNull.Value), new NpgsqlParameter("@p7", (object?)h.Icd10Code ?? DBNull.Value),
-            new NpgsqlParameter("@p8", (object?)h.StartedDate ?? DBNull.Value), new NpgsqlParameter("@p9", (object?)h.EndedDate ?? DBNull.Value),
-            new NpgsqlParameter("@p10", h.IsActive), new NpgsqlParameter("@p11", h.IsCritical),
-            new NpgsqlParameter("@p12", (object?)h.AddedByUserId ?? DBNull.Value), new NpgsqlParameter("@p13", h.AddedAt));
+        await db.Database.ExecuteSqlRawAsync(InsertMedicalHistorySql, InsertMedicalHistoryParams(h, "@p"));
         return h.HistoryId;
     }
+
+    public async Task<IReadOnlyList<Guid>> AddMedicalHistoryBatchAsync(IReadOnlyList<MedicalHistory> rows, CancellationToken ct)
+    {
+        // One INSERT per row, all inside the ONE command UoW tx → the whole batch commits or rolls back atomically.
+        // Every row already carries the shared import_batch_id + attachment pointer (set by the handler). RLS WITH
+        // CHECK admits them (app.tenant_id set for the tx); each is UNVERIFIED (schema chk_history_verify_pair holds).
+        foreach (var h in rows)
+            await db.Database.ExecuteSqlRawAsync(InsertMedicalHistorySql, InsertMedicalHistoryParams(h, "@p"));
+        return rows.Select(r => r.HistoryId).ToList();
+    }
+
+    // Shared INSERT (single-record create + batch import) — covers the paper-import columns. A clinic row carries
+    // source='clinic' + verified_by/at (chk_history_clinic_rows_verified); an imported row is external + unverified.
+    private const string InsertMedicalHistorySql =
+        """
+        INSERT INTO docslot.patient_medical_history
+            (history_id, patient_id, tenant_id, record_type, title, description, severity, icd10_code,
+             started_date, ended_date, is_active, is_critical, added_by_user_id, added_at,
+             source, external_doctor_name, recorded_date, verified_by_user_id, verified_at, import_batch_id,
+             attachment_url, attachment_file_name, attachment_mime_type, attachment_size_bytes)
+        VALUES (@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13,
+                @p14,@p15,@p16,@p17,@p18,@p19,@p20,@p21,@p22,@p23)
+        """;
+
+    private static NpgsqlParameter[] InsertMedicalHistoryParams(MedicalHistory h, string prefix) =>
+    [
+        new($"{prefix}0", h.HistoryId), new($"{prefix}1", h.PatientId), new($"{prefix}2", h.TenantId),
+        new($"{prefix}3", h.RecordType), new($"{prefix}4", h.TitleEnc),
+        new($"{prefix}5", (object?)h.DescriptionEnc ?? DBNull.Value),
+        new($"{prefix}6", (object?)h.Severity ?? DBNull.Value), new($"{prefix}7", (object?)h.Icd10Code ?? DBNull.Value),
+        new($"{prefix}8", (object?)h.StartedDate ?? DBNull.Value), new($"{prefix}9", (object?)h.EndedDate ?? DBNull.Value),
+        new($"{prefix}10", h.IsActive), new($"{prefix}11", h.IsCritical),
+        new($"{prefix}12", (object?)h.AddedByUserId ?? DBNull.Value), new($"{prefix}13", h.AddedAt),
+        new($"{prefix}14", h.Source), new($"{prefix}15", (object?)h.ExternalDoctorNameEnc ?? DBNull.Value),
+        new($"{prefix}16", (object?)h.RecordedDate ?? DBNull.Value),
+        new($"{prefix}17", (object?)h.VerifiedByUserId ?? DBNull.Value), new($"{prefix}18", (object?)h.VerifiedAt ?? DBNull.Value),
+        new($"{prefix}19", (object?)h.ImportBatchId ?? DBNull.Value),
+        new($"{prefix}20", (object?)h.AttachmentUrl ?? DBNull.Value), new($"{prefix}21", (object?)h.AttachmentFileName ?? DBNull.Value),
+        new($"{prefix}22", (object?)h.AttachmentMimeType ?? DBNull.Value), new($"{prefix}23", (object?)h.AttachmentSizeBytes ?? DBNull.Value),
+    ];
 
     public async Task<MedicalHistory?> GetMedicalHistoryAsync(Guid historyId, Guid tenantId, CancellationToken ct)
     {
         var conn = (NpgsqlConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            """
-            SELECT history_id, patient_id, tenant_id, record_type, title, description,
-                   severity, icd10_code, started_date, ended_date, is_active, is_critical, added_at
-            FROM docslot.patient_medical_history WHERE history_id = @p0 AND tenant_id = @p1
-            """, conn);
+            MedicalHistorySelect + " FROM docslot.patient_medical_history WHERE history_id = @p0 AND tenant_id = @p1", conn);
         // Enlist the ambient tenant-scoped tx (this read runs inside the Update COMMAND's UoW tx) so app.tenant_id
         // is in scope for RLS — the explicit house pattern (AttributionRepository, break-glass GetActiveGrantAsync).
         cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
@@ -411,12 +515,23 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         cmd.Parameters.AddWithValue("@p1", tenantId);
         await using var rd = await cmd.ExecuteReaderAsync(ct);
         if (!await rd.ReadAsync(ct)) return null;
-        return MedicalHistory.FromRow(
-            rd.GetGuid(0), rd.GetGuid(1), rd.GetGuid(2), rd.GetString(3), rd.GetString(4),
-            rd.IsDBNull(5) ? null : rd.GetString(5),
-            rd.IsDBNull(6) ? null : rd.GetString(6), rd.IsDBNull(7) ? null : rd.GetString(7),
-            rd.IsDBNull(8) ? null : rd.GetFieldValue<DateOnly>(8), rd.IsDBNull(9) ? null : rd.GetFieldValue<DateOnly>(9),
-            rd.GetBoolean(10), rd.GetBoolean(11), rd.GetDateTime(12));
+        return ReadMedicalHistory(rd);
+    }
+
+    public async Task<bool> VerifyMedicalHistoryAsync(Guid historyId, Guid tenantId, Guid verifiedByUserId, DateTime verifiedAt, CancellationToken ct)
+    {
+        // Single-winner conditional flip: stamps the verifier pair ONLY on an as-yet-unverified EXTERNAL row in
+        // the tenant. A clinic row (already verified) or an already-verified import matches nothing → false, so a
+        // concurrent double-verify writes exactly one audit row at the handler. Never re-stamps.
+        var affected = await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE docslot.patient_medical_history
+               SET verified_by_user_id = @p2, verified_at = @p3
+             WHERE history_id = @p0 AND tenant_id = @p1 AND source <> 'clinic' AND verified_by_user_id IS NULL
+            """,
+            new NpgsqlParameter("@p0", historyId), new NpgsqlParameter("@p1", tenantId),
+            new NpgsqlParameter("@p2", verifiedByUserId), new NpgsqlParameter("@p3", verifiedAt));
+        return affected > 0;
     }
 
     public async Task<bool> UpdateMedicalHistoryAsync(
@@ -631,4 +746,6 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
     private sealed record AmendedRow(string Status);
     private sealed record LinkedRow(string? CareContextId);
     private sealed record ConsentRow(Guid PatientId, string? Phone, bool ClinicalConsentActive, bool AbdmConsentActive, DateTime? AbdmConsentExpiresAt);
+    private sealed record StripRow(DateOnly? PatientSince, int VisitCount);
+    private sealed record TimelineLabRowDb(Guid ReportId, string? ReportNumber, string TestName, string Status, bool HasCriticalFindings, DateTime CreatedAt, bool HasFile);
 }

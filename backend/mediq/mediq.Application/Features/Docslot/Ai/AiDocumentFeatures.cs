@@ -90,6 +90,71 @@ public sealed class ExtractLabReportCommandHandler(
     }
 }
 
+// ---- OCR: extract transcribable draft records from a paper-prescription image ---------------------
+
+public sealed record ExtractPrescriptionCommand(Guid TenantId, ExtractPrescriptionRequest Request, string? DeclaredPurpose)
+    : ICommand<PrescriptionExtractionDto>, ISelfManagedTransaction, IDoNotCacheResponse;
+
+public sealed class ExtractPrescriptionValidator : AbstractValidator<ExtractPrescriptionCommand>
+{
+    // Bound the inline (base64-in-JSON) image so one request can't buffer an unbounded body (DoS) — the same cap
+    // as the paper-import attachment (~28M base64 chars ≈ a 20 MB image).
+    internal const int MaxBase64Length = 28_000_000;
+
+    public ExtractPrescriptionValidator()
+    {
+        RuleFor(x => x.TenantId).NotEmpty();
+        RuleFor(x => x.Request.PatientId).NotEmpty()
+            .WithMessage("patientId is required — a prescription OCR is a patient-bound intake action.");
+        RuleFor(x => x.Request.FileName).NotEmpty();
+        RuleFor(x => x.Request.ContentType).NotEmpty()
+            .Must(ct => ct is not null && ct.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            .WithMessage("contentType must be an image/* type (a scanned/photographed prescription).");
+        RuleFor(x => x.Request.ContentBase64).NotEmpty()
+            .Must(s => string.IsNullOrEmpty(s) || s.Length <= MaxBase64Length)
+            .WithMessage("Image too large for the inline upload (max ~20 MB); use the object-store upload path for larger files.");
+        // DPDP: the OCR is patient-bound → X-Purpose-Of-Use is REQUIRED (mirrors the lab extract; forwarded to the AI).
+        RuleFor(x => x.DeclaredPurpose).NotEmpty()
+            .WithMessage("A declared purpose-of-use (X-Purpose-Of-Use header) is required to run prescription OCR (DPDP).");
+    }
+}
+
+public sealed class ExtractPrescriptionCommandHandler(
+    IAiOcrClient ocr, IPatientRepository patients, IUnitOfWork uow, ICurrentUserContext ctx)
+    : ICommandHandler<ExtractPrescriptionCommand, PrescriptionExtractionDto>
+{
+    public async Task<PrescriptionExtractionDto> Handle(ExtractPrescriptionCommand command, CancellationToken ct)
+    {
+        _ = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
+        var req = command.Request;
+
+        // ── Phase 1 — authorize in an OWN committed tenant scope, then release the pooled connection BEFORE the AI
+        //    hop. Tenant isolation (defense-in-depth; mirrors the lab extract + the paper-import guard): the patient
+        //    must be linked to the caller's tenant → else 404. NO consent gate: the caller supplies the image bytes
+        //    (the front desk holds the physical Rx), so this processes a caller-supplied document, not stored patient
+        //    PHI — the same reason the paper-Rx IMPORT (the intake flow this feeds) does not gate on consent.
+        await using (var scope = await uow.BeginTenantScopeAsync(command.TenantId, ct))
+        {
+            if (!await patients.IsLinkedToTenantAsync(req.PatientId, command.TenantId, ct))
+                throw new KeyNotFoundException("Patient not found in this tenant.");
+            await scope.CommitAsync(ct);
+        }
+
+        // ── Phase 2 — call the AI service OUTSIDE any DB tx. The adapter forwards the caller JWT + declared purpose;
+        //    the AI service owns persistence + the purpose-of-use log.
+        var result = await ocr.ExtractPrescriptionAsync(
+            new OcrPrescriptionInput(req.PatientId, req.ContentBase64, req.ContentType, req.FileName, command.DeclaredPurpose!), ct);
+
+        if (result is null)
+            return new PrescriptionExtractionDto(Available: false, null, null, null, null, [], null);
+
+        return new PrescriptionExtractionDto(
+            Available: true, result.ExtractionId, result.OverallConfidence, result.ExternalDoctorName, result.RecordedDate,
+            result.Records.Select(r => new PrescriptionOcrRecordDto(r.RecordType, r.Title, r.Description, r.Confidence)).ToList(),
+            result.RawText, result.Source);
+    }
+}
+
 // ---- RAG: ask a question over a patient's indexed medical history (read-only) ----------------------
 
 public sealed record AskRagCommand(Guid TenantId, Guid PatientId, RagAskRequest Request, string? DeclaredPurpose)

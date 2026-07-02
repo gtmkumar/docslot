@@ -165,7 +165,11 @@ public sealed class LabReport
         };
 }
 
-/// <summary>Patient medical history (maps to <c>docslot.patient_medical_history</c>) — PHI. title/description encrypted. RLS by tenant_id.</summary>
+/// <summary>Patient medical history (maps to <c>docslot.patient_medical_history</c>) — PHI. title/description/
+/// external_doctor_name encrypted. RLS by tenant_id. <c>source</c> distinguishes a clinic-authored record
+/// (verified at creation by definition) from an imported paper-prescription / patient-reported one (drafted
+/// UNVERIFIED by front-desk intake, later verified by a clinician). Imported rows share an
+/// <c>ImportBatchId</c> + the same scanned-document attachment pointer (a PHI blob-store key).</summary>
 public sealed class MedicalHistory
 {
     public Guid HistoryId { get; private set; }
@@ -183,9 +187,26 @@ public sealed class MedicalHistory
     public Guid? AddedByUserId { get; private set; }
     public DateTime AddedAt { get; private set; }
 
+    // Provenance + verification (paper-prescription import). 'clinic' rows are verified at creation (schema
+    // CHECK chk_history_clinic_rows_verified); external rows land unverified until a clinician verifies.
+    public string Source { get; private set; } = "clinic";          // clinic | paper_prescription | patient_reported
+    public string? ExternalDoctorNameEnc { get; private set; }      // encrypted envelope (registry)
+    public DateOnly? RecordedDate { get; private set; }             // date written on the source document
+    public Guid? VerifiedByUserId { get; private set; }
+    public DateTime? VerifiedAt { get; private set; }
+    public Guid? ImportBatchId { get; private set; }                // rows imported from ONE document share this
+
+    // Scanned source-document attachment (photo of the paper Rx): PHI blob-store key (encrypted envelope) + metadata.
+    public string? AttachmentUrl { get; private set; }
+    public string? AttachmentFileName { get; private set; }
+    public string? AttachmentMimeType { get; private set; }
+    public long? AttachmentSizeBytes { get; private set; }
+
     private MedicalHistory() { }
 
-    /// <summary>New record. title/description arrive ALREADY ENCRYPTED (the handler encrypts before calling).</summary>
+    /// <summary>New CLINIC record. title/description arrive ALREADY ENCRYPTED (the handler encrypts before
+    /// calling). A clinic-authored record is verified at creation by definition — the signer/timestamp are the
+    /// authenticated caller + now, so the schema's clinic-rows-verified CHECK holds.</summary>
     public static MedicalHistory Create(
         Guid patientId, Guid tenantId, string recordType, string titleEnc, string? descEnc,
         string? severity, string? icd10Code, DateOnly? startedDate, DateOnly? endedDate,
@@ -197,17 +218,47 @@ public sealed class MedicalHistory
             TitleEnc = titleEnc, DescriptionEnc = descEnc, Severity = severity, Icd10Code = icd10Code,
             StartedDate = startedDate, EndedDate = endedDate, IsActive = true, IsCritical = isCritical,
             AddedByUserId = addedByUserId, AddedAt = nowUtc,
+            Source = "clinic", VerifiedByUserId = addedByUserId, VerifiedAt = nowUtc,
+        };
+
+    /// <summary>An IMPORTED external record (paper prescription / patient-reported). Lands UNVERIFIED
+    /// (verified_by/at NULL) — a clinician verifies later. title/description/externalDoctorName arrive
+    /// ALREADY ENCRYPTED. All rows of one import share <paramref name="importBatchId"/> + the same
+    /// attachment pointer.</summary>
+    public static MedicalHistory ImportExternal(
+        Guid patientId, Guid tenantId, string source, string recordType, string titleEnc, string? descEnc,
+        string? severity, DateOnly? startedDate, bool isCritical, string? externalDoctorNameEnc,
+        DateOnly? recordedDate, Guid importBatchId, string? attachmentUrl, string? attachmentFileName,
+        string? attachmentMimeType, long? attachmentSizeBytes, Guid addedByUserId, DateTime nowUtc)
+        => new()
+        {
+            HistoryId = Guid.CreateVersion7(),
+            PatientId = patientId, TenantId = tenantId, RecordType = recordType,
+            TitleEnc = titleEnc, DescriptionEnc = descEnc, Severity = severity,
+            StartedDate = startedDate, EndedDate = null, IsActive = true, IsCritical = isCritical,
+            AddedByUserId = addedByUserId, AddedAt = nowUtc,
+            Source = source, ExternalDoctorNameEnc = externalDoctorNameEnc, RecordedDate = recordedDate,
+            ImportBatchId = importBatchId, AttachmentUrl = attachmentUrl, AttachmentFileName = attachmentFileName,
+            AttachmentMimeType = attachmentMimeType, AttachmentSizeBytes = attachmentSizeBytes,
         };
 
     public static MedicalHistory FromRow(
         Guid id, Guid patientId, Guid tenantId, string recordType, string titleEnc, string? descEnc,
         string? severity, string? icd10Code, DateOnly? startedDate, DateOnly? endedDate,
-        bool isActive, bool isCritical, DateTime addedAt)
+        bool isActive, bool isCritical, DateTime addedAt,
+        string? source = null, string? externalDoctorNameEnc = null, DateOnly? recordedDate = null,
+        Guid? verifiedByUserId = null, DateTime? verifiedAt = null, Guid? importBatchId = null,
+        string? attachmentUrl = null, string? attachmentFileName = null, string? attachmentMimeType = null,
+        long? attachmentSizeBytes = null)
         => new()
         {
             HistoryId = id, PatientId = patientId, TenantId = tenantId, RecordType = recordType,
             TitleEnc = titleEnc, DescriptionEnc = descEnc, Severity = severity, Icd10Code = icd10Code,
             StartedDate = startedDate, EndedDate = endedDate, IsActive = isActive, IsCritical = isCritical, AddedAt = addedAt,
+            Source = source ?? "clinic", ExternalDoctorNameEnc = externalDoctorNameEnc, RecordedDate = recordedDate,
+            VerifiedByUserId = verifiedByUserId, VerifiedAt = verifiedAt, ImportBatchId = importBatchId,
+            AttachmentUrl = attachmentUrl, AttachmentFileName = attachmentFileName,
+            AttachmentMimeType = attachmentMimeType, AttachmentSizeBytes = attachmentSizeBytes,
         };
 }
 

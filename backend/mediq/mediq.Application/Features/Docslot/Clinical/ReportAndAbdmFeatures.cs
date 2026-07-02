@@ -15,6 +15,7 @@ internal static class ClinicalFields
     public static readonly FieldRef ReportResults = new("docslot", "lab_reports", "structured_results");
     public static readonly FieldRef HistoryTitle = new("docslot", "patient_medical_history", "title");
     public static readonly FieldRef HistoryDescription = new("docslot", "patient_medical_history", "description");
+    public static readonly FieldRef HistoryExternalDoctorName = new("docslot", "patient_medical_history", "external_doctor_name");
     public static readonly FieldRef FhirBundle = new("docslot", "abdm_health_records", "fhir_bundle");
 }
 
@@ -370,9 +371,16 @@ public sealed class ListMedicalHistoryQueryHandler(
         {
             var title = await encryption.DecryptAsync(ClinicalFields.HistoryTitle, h.TitleEnc, encCtx, ct);
             var desc = string.IsNullOrEmpty(h.DescriptionEnc) ? null : await encryption.DecryptAsync(ClinicalFields.HistoryDescription, h.DescriptionEnc, encCtx, ct);
+            // external_doctor_name is encrypted at rest → decrypt (this read is permission + purpose + consent gated).
+            var externalDoctor = string.IsNullOrEmpty(h.ExternalDoctorNameEnc)
+                ? null
+                : await encryption.DecryptAsync(ClinicalFields.HistoryExternalDoctorName, h.ExternalDoctorNameEnc, encCtx, ct);
             result.Add(new MedicalHistoryDto(h.HistoryId, h.RecordType, title, desc,
                 h.Severity, h.Icd10Code, h.StartedDate, h.EndedDate,
-                h.IsActive, h.IsCritical, new DateTimeOffset(DateTime.SpecifyKind(h.AddedAt, DateTimeKind.Utc))));
+                h.IsActive, h.IsCritical, new DateTimeOffset(DateTime.SpecifyKind(h.AddedAt, DateTimeKind.Utc)),
+                h.Source, externalDoctor, h.RecordedDate,
+                h.VerifiedAt is null ? null : new DateTimeOffset(DateTime.SpecifyKind(h.VerifiedAt.Value, DateTimeKind.Utc)),
+                h.ImportBatchId, h.AttachmentFileName, h.AttachmentMimeType));
         }
         return result;
     }

@@ -79,9 +79,27 @@ public sealed class MedicalHistoryConfiguration : IEntityTypeConfiguration<Medic
         b.Property(x => x.RecordType).HasColumnName("record_type");
         b.Property(x => x.TitleEnc).HasColumnName("title");
         b.Property(x => x.DescriptionEnc).HasColumnName("description");
+        b.Property(x => x.Severity).HasColumnName("severity");
+        b.Property(x => x.Icd10Code).HasColumnName("icd10_code");
+        b.Property(x => x.StartedDate).HasColumnName("started_date");
+        b.Property(x => x.EndedDate).HasColumnName("ended_date");
         b.Property(x => x.IsActive).HasColumnName("is_active");
         b.Property(x => x.IsCritical).HasColumnName("is_critical");
+        b.Property(x => x.AddedByUserId).HasColumnName("added_by_user_id");
         b.Property(x => x.AddedAt).HasColumnName("added_at");
+        // Paper-prescription import: provenance, encrypted external prescriber, verification pair, batch id,
+        // and the scanned-document attachment (blob key + metadata). The repository does raw SQL I/O; EF only
+        // needs valid mappings for these columns.
+        b.Property(x => x.Source).HasColumnName("source");
+        b.Property(x => x.ExternalDoctorNameEnc).HasColumnName("external_doctor_name");
+        b.Property(x => x.RecordedDate).HasColumnName("recorded_date");
+        b.Property(x => x.VerifiedByUserId).HasColumnName("verified_by_user_id");
+        b.Property(x => x.VerifiedAt).HasColumnName("verified_at");
+        b.Property(x => x.ImportBatchId).HasColumnName("import_batch_id");
+        b.Property(x => x.AttachmentUrl).HasColumnName("attachment_url");
+        b.Property(x => x.AttachmentFileName).HasColumnName("attachment_file_name");
+        b.Property(x => x.AttachmentMimeType).HasColumnName("attachment_mime_type");
+        b.Property(x => x.AttachmentSizeBytes).HasColumnName("attachment_size_bytes");
     }
 }
 

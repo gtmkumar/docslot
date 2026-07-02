@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, HeartPulse, ShieldCheck } from 'lucide-react';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { listMedicalHistory } from '@/lib/backend';
-import type { PurposeOfUse } from '@/lib/mock/contracts';
+import { isUnverifiedExternal, type PurposeOfUse } from '@/lib/mock/contracts';
 
 const DEVA = /[ऀ-ॿ]/;
 
@@ -56,13 +56,22 @@ export function SafetyStrip({ patientId, purpose }: { patientId: string; purpose
             {t('consult.safety.allergies')}
           </span>
           <ul className="flex flex-wrap gap-1.5">
-            {allergies.map((a) => (
-              <li key={a.historyId}>
-                <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium ${a.isCritical ? 'bg-danger text-bg' : 'bg-warn-soft text-warn'} ${DEVA.test(a.title) ? 'deva' : ''}`}>
-                  {a.title}
-                </span>
-              </li>
-            ))}
+            {allergies.map((a) => {
+              // Unverified external (paper-Rx / patient-reported) allergies aren't
+              // clinician-confirmed — flag with a dashed outline + tooltip, kept
+              // COMPACT so the strip doesn't bloat.
+              const unverified = isUnverifiedExternal(a);
+              return (
+                <li key={a.historyId}>
+                  <span
+                    title={unverified ? t('clinical.history.external.unverifiedTooltip') : undefined}
+                    className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium ${a.isCritical ? 'bg-danger text-bg' : 'bg-warn-soft text-warn'} ${unverified ? 'border border-dashed border-current' : ''} ${DEVA.test(a.title) ? 'deva' : ''}`}
+                  >
+                    {a.title}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       ) : null}
@@ -74,13 +83,19 @@ export function SafetyStrip({ patientId, purpose }: { patientId: string; purpose
             {t('consult.safety.chronic')}
           </span>
           <ul className="flex flex-wrap gap-1.5">
-            {chronic.map((c) => (
-              <li key={c.historyId}>
-                <span className={`inline-flex items-center rounded-full bg-surface-sunk px-2.5 py-1 text-[12px] font-medium text-ink ${DEVA.test(c.title) ? 'deva' : ''}`}>
-                  {c.title}
-                </span>
-              </li>
-            ))}
+            {chronic.map((c) => {
+              const unverified = isUnverifiedExternal(c);
+              return (
+                <li key={c.historyId}>
+                  <span
+                    title={unverified ? t('clinical.history.external.unverifiedTooltip') : undefined}
+                    className={`inline-flex items-center rounded-full bg-surface-sunk px-2.5 py-1 text-[12px] font-medium text-ink ${unverified ? 'border border-dashed border-muted-2' : ''} ${DEVA.test(c.title) ? 'deva' : ''}`}
+                  >
+                    {c.title}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       ) : null}

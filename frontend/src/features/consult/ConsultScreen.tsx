@@ -38,7 +38,7 @@ import { shortDate } from '@/lib/format';
 import { DOCTORS } from '@/lib/data';
 import { usePermissions } from '@/lib/permissions';
 import { useSession } from '@/stores/session';
-import type { DrugAlert, PurposeOfUse, RxMedication } from '@/lib/mock/contracts';
+import type { DrugAlert, PurposeOfUse, RxMedication, StructuredMedication } from '@/lib/mock/contracts';
 import { useConsultation, useConsultBooking, useFinalizeConsultation, useSaveConsultation } from './api';
 import { FORMULARY, TEMPLATES, fromFormulary, type QuickTemplate } from './constants';
 import { EMPTY_FORM, draftToForm, formToSave, toStructured, type ConsultForm } from './model';
@@ -53,6 +53,22 @@ import { RxPreview } from './components/RxPreview';
 import { DIAGNOSES, INVESTIGATIONS } from './constants';
 
 const mergeUnique = (cur: string[], add: string[]) => Array.from(new Set([...cur, ...add]));
+
+/** Append incoming meds, skipping any whose name (case-insensitive) is already in
+ *  the draft — so applying a template / repeating a past Rx never creates duplicate
+ *  medication lines. */
+function mergeMeds(cur: StructuredMedication[], add: StructuredMedication[]): StructuredMedication[] {
+  const have = new Set(cur.map((m) => m.name.trim().toLowerCase()));
+  const next = [...cur];
+  for (const m of add) {
+    const key = m.name.trim().toLowerCase();
+    if (key && !have.has(key)) {
+      have.add(key);
+      next.push(m);
+    }
+  }
+  return next;
+}
 
 interface FinalizeState {
   phase: 'idle' | 'blocked' | 'done';
@@ -128,6 +144,9 @@ function Composer({ bookingId, purpose }: { bookingId: string; purpose: PurposeO
   const hydratedRef = useRef(false);
   const lastSavedSig = useRef('');
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  // Repeat-into-Rx feedback: scroll to + briefly ring the medications section.
+  const medsRef = useRef<HTMLDivElement>(null);
+  const [flashMeds, setFlashMeds] = useState(false);
 
   // Hydrate the form ONCE from the loaded draft (subsequent edits are the source of
   // truth; autosave owns writes back). Guard the initial save so hydration itself
@@ -164,7 +183,12 @@ function Composer({ bookingId, purpose }: { bookingId: string; purpose: PurposeO
       }
       const res = await finalize.mutateAsync({ overrideReason: reason, idempotencyKey: idempotencyKey() });
       if (res.finalized) {
-        if (patientId) void qc.invalidateQueries({ queryKey: ['clinical', 'prescriptions', patientId] });
+        if (patientId) {
+          void qc.invalidateQueries({ queryKey: ['clinical', 'prescriptions', patientId] });
+          // The just-signed Rx is a new timeline item — refresh the patient's
+          // unified timeline so it appears without a remount.
+          void qc.invalidateQueries({ queryKey: ['clinical', 'timeline', patientId] });
+        }
         return { phase: 'done', alerts: [], prescriptionNumber: res.prescriptionNumber };
       }
       return { phase: 'blocked', alerts: res.alerts, prescriptionNumber: null };
@@ -216,7 +240,7 @@ function Composer({ bookingId, purpose }: { bookingId: string; purpose: PurposeO
     setForm((f) => ({
       ...f,
       diagnoses: mergeUnique(f.diagnoses, tpl.diagnoses),
-      medications: [...f.medications, ...tpl.medItemIds.map((id) => FORMULARY.find((x) => x.id === id)).filter(Boolean).map((x) => fromFormulary(x!))],
+      medications: mergeMeds(f.medications, tpl.medItemIds.map((id) => FORMULARY.find((x) => x.id === id)).filter(Boolean).map((x) => fromFormulary(x!))),
       investigations: mergeUnique(f.investigations, tpl.investigations ?? []),
       adviceChips: mergeUnique(f.adviceChips, tpl.advice),
       followUpInDays: tpl.followUpInDays,
@@ -225,12 +249,18 @@ function Composer({ bookingId, purpose }: { bookingId: string; purpose: PurposeO
   };
 
   const repeatFromHistory = (diagnosis: string | null, meds: RxMedication[]) => {
+    if (meds.length === 0) return; // nothing to copy (button is also disabled)
     setForm((f) => ({
       ...f,
       diagnoses: diagnosis ? mergeUnique(f.diagnoses, diagnosis.split(',').map((s) => s.trim()).filter(Boolean)) : f.diagnoses,
-      medications: [...f.medications, ...meds.map(toStructured)],
+      medications: mergeMeds(f.medications, meds.map(toStructured)),
     }));
+    // The setForm above changes the autosave signature → the debounced PATCH fires.
     toast.success(t('consult.history.repeated'));
+    // Feedback: bring the medications section into view + briefly highlight it.
+    setFlashMeds(true);
+    window.setTimeout(() => setFlashMeds(false), 1200);
+    requestAnimationFrame(() => medsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
   };
 
   const hasContent = form.diagnoses.length > 0 || form.medications.length > 0;
@@ -276,7 +306,7 @@ function Composer({ bookingId, purpose }: { bookingId: string; purpose: PurposeO
         {/* History rail — past visits + labs */}
         {patientId ? (
           <Card className="p-4">
-            <HistoryRail patientId={patientId} purpose={purpose} onRepeat={repeatFromHistory} />
+            <HistoryRail patientId={patientId} purpose={purpose} onRepeat={repeatFromHistory} excludeId={draftQ.data.consultationId} />
           </Card>
         ) : null}
 
@@ -295,9 +325,11 @@ function Composer({ bookingId, purpose }: { bookingId: string; purpose: PurposeO
           />
         </Section>
 
-        <Section title={t('consult.section.medications')} count={form.medications.length}>
-          <MedicationsEditor value={form.medications} onChange={(v) => setForm((f) => ({ ...f, medications: v }))} disabled={readOnly} />
-        </Section>
+        <div ref={medsRef} className={`rounded-[var(--radius)] transition-shadow duration-[var(--dur-base)] ${flashMeds ? 'ring-2 ring-primary' : ''}`}>
+          <Section title={t('consult.section.medications')} count={form.medications.length}>
+            <MedicationsEditor value={form.medications} onChange={(v) => setForm((f) => ({ ...f, medications: v }))} disabled={readOnly} />
+          </Section>
+        </div>
 
         <Section title={t('consult.section.investigations')} subtitle={t('consult.section.investigationsSub')}>
           <ChipTypeahead
