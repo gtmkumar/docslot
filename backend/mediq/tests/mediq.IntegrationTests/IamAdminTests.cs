@@ -54,6 +54,20 @@ public sealed class IamAdminTests(IamAdminWebAppFactory factory) : IClassFixture
     }
 
     [Fact]
+    public async Task Super_GetBuiltinRoleMatrix_IsEditable()
+    {
+        // A super_admin actor gets editable=true on a SYSTEM role — the flag mirrors the DB rule
+        // (grant/revoke_role_permission allow super_admin on built-ins) so the matrix UI can unlock.
+        var client = await AuthedClientAsync(factory.SuperAdminEmail);
+        var ownerRoleId = await IamAdminWebAppFactory.SystemRoleIdAsync("tenant_owner");
+
+        var matrix = await GetMatrixAsync(client, ownerRoleId);
+
+        Assert.True(matrix.IsSystem);
+        Assert.True(matrix.Editable);
+    }
+
+    [Fact]
     public async Task GetMatrix_UnknownRole_Returns404()
     {
         var client = await AuthedClientAsync(factory.OwnerEmail);

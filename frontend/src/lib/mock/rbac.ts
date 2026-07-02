@@ -840,7 +840,9 @@ export function getRoleMatrix(roleId: string): Promise<RoleMatrix> {
       description: null,
       scope: role.scope,
       isSystem: role.isSystem,
-      // System roles are read-only; custom (tenant-scoped) roles are editable.
+      // System roles are read-only; custom (tenant-scoped) roles are editable. Live parity:
+      // the real API also returns editable=true on system roles for a SUPER_ADMIN actor
+      // (matrix unlocks behind an edit-with-care banner) — the mock persona is never super.
       editable: !role.isSystem,
       grantedCount: grantedTotal,
       totalCount: total,

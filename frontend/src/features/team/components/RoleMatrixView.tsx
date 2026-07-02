@@ -5,6 +5,9 @@
 //
 //  - Built-in / non-editable role  → the grid is READ-ONLY and a Duplicate CTA
 //    (when `onDuplicate` is provided) clones it into an editable role.
+//  - Built-in role, super_admin actor → the backend returns editable=true (it
+//    mirrors the DB rule) and the grid unlocks behind an EDIT-WITH-CARE banner:
+//    a system-role change applies to everyone holding it in EVERY tenant.
 //  - Editable (custom) role        → cells are live: ON → POST grant, OFF →
 //    DELETE revoke, applied OPTIMISTICALLY via useOptimistic and reconciled on
 //    settle (a 403 rolls the matrix back and surfaces a toast via toUserError).
@@ -16,11 +19,11 @@
 // Effect tile (matrix.scope), and the full permission key rendered per cell.
 //
 // Toggle gates on tenant.roles.assign (in-memory can()); the DB is the real
-// boundary and re-checks, so built-in roles stay read-only regardless.
+// boundary and re-checks — matrix.editable is display metadata that mirrors it.
 
-import { useOptimistic, useState, useTransition } from 'react';
+import { useMemo, useOptimistic, useState, useTransition } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, Check, Copy, Lock, ShieldAlert, Users } from 'lucide-react';
+import { AlertCircle, Check, Copy, Lock, Search, ShieldAlert, Users, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -97,8 +100,11 @@ function MatrixBody({
   const toggle = useToggleRolePermission();
   const [, startTransition] = useTransition();
 
-  const editable = matrix.editable && !matrix.isSystem && canToggle;
+  // Trust the backend's editable flag — it already encodes "custom role, or system role
+  // with a super_admin actor" (the same rule the DB definer functions enforce on write).
+  const editable = matrix.editable && canToggle;
   const showDuplicate = (matrix.isSystem || !matrix.editable) && canToggle && Boolean(onDuplicate);
+  const [filter, setFilter] = useState('');
 
   // Optimistic overlay of cell states, keyed by permissionId. The base comes from
   // the (already-fetched) matrix; useOptimistic applies in-flight flips on top so
@@ -199,6 +205,12 @@ function MatrixBody({
           <Lock size={13} aria-hidden="true" />
           {matrix.isSystem ? t('team.matrix.readOnlySystem') : t('team.matrix.readOnlyPerm')}
         </p>
+      ) : matrix.isSystem ? (
+        // super_admin editing a BUILT-IN role: every tick lands on all tenants at once.
+        <p className="flex items-start gap-1.5 rounded-[var(--radius-sm)] border border-warn bg-warn-soft px-3 py-2 text-[12px] text-warn">
+          <ShieldAlert size={13} className="mt-px shrink-0" aria-hidden="true" />
+          {t('team.matrix.systemEditWarn')}
+        </p>
       ) : (
         // Editable role: each tick is saved immediately — there is no submit button.
         <p className="flex items-center gap-1.5 rounded-[var(--radius-sm)] bg-primary-soft px-3 py-2 text-[12px] text-primary">
@@ -207,21 +219,102 @@ function MatrixBody({
         </p>
       )}
 
-      {matrix.modules.length === 0 ? (
-        <EmptyState title={t('team.matrix.noModules')} />
-      ) : (
-        <div className="flex flex-col gap-3">
-          {matrix.modules.map((mod) => (
-            <ModuleSection
-              key={mod.resourceKey}
-              mod={mod}
-              optimistic={optimistic}
-              editable={editable}
-              onToggle={runToggle}
-            />
-          ))}
-        </div>
-      )}
+      <FilterBox value={filter} onChange={setFilter} />
+
+      <FilteredModules
+        matrix={matrix}
+        filter={filter}
+        optimistic={optimistic}
+        editable={editable}
+        onToggle={runToggle}
+        onClear={() => setFilter('')}
+      />
+    </div>
+  );
+}
+
+function FilterBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="relative">
+      <Search
+        size={14}
+        aria-hidden="true"
+        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-2"
+      />
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={t('team.matrix.filterPlaceholder')}
+        aria-label={t('team.matrix.filterPlaceholder')}
+        className={[
+          'w-full rounded-[var(--radius-sm)] border border-line bg-surface py-2 pl-9 pr-9 text-[13px] text-ink',
+          'placeholder:text-muted-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+        ].join(' ')}
+      />
+      {value ? (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          aria-label={t('team.matrix.clearFilter')}
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted hover:text-ink"
+        >
+          <X size={13} aria-hidden="true" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function FilteredModules({
+  matrix,
+  filter,
+  optimistic,
+  editable,
+  onToggle,
+  onClear,
+}: {
+  matrix: RoleMatrix;
+  filter: string;
+  optimistic: Map<string, boolean>;
+  editable: boolean;
+  onToggle: (permissionId: string, nextGranted: boolean) => void;
+  onClear: () => void;
+}) {
+  const { t } = useTranslation();
+
+  // Match against module name + each cell's action name / permission key, so
+  // "prescription", "sign" or "docslot.report.read" all narrow the grid.
+  const modules = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return matrix.modules;
+    return matrix.modules
+      .map((mod) => {
+        if (mod.name.toLowerCase().includes(q)) return mod;
+        const cells = mod.cells.filter(
+          (c) => c.actionName.toLowerCase().includes(q) || c.permissionKey.toLowerCase().includes(q),
+        );
+        return cells.length > 0 ? { ...mod, cells } : null;
+      })
+      .filter((m): m is NonNullable<typeof m> => m !== null);
+  }, [matrix.modules, filter]);
+
+  if (matrix.modules.length === 0) return <EmptyState title={t('team.matrix.noModules')} />;
+  if (modules.length === 0) {
+    return (
+      <EmptyState
+        title={t('team.matrix.noFilterMatches')}
+        actionLabel={t('team.matrix.clearFilter')}
+        onAction={onClear}
+      />
+    );
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      {modules.map((mod) => (
+        <ModuleSection key={mod.resourceKey} mod={mod} optimistic={optimistic} editable={editable} onToggle={onToggle} />
+      ))}
     </div>
   );
 }

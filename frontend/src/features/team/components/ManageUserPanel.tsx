@@ -480,6 +480,9 @@ function OverridesSection({ userId }: { userId: string }) {
   const forbidden = isError && error instanceof ApiError && error.status === 403;
   const { data: registry } = usePermissionRegistry();
   const setOverride = useSetOverride();
+  // The DB escalation guard checks the actor's platform.overrides.grant IN THIS
+  // TENANT — a null tenantId fails that check for every non-super-admin actor.
+  const tenantId = useSession((s) => s.tenantId);
 
   const [adding, setAdding] = useState(false);
   const [permissionKey, setPermissionKey] = useState('');
@@ -500,14 +503,20 @@ function OverridesSection({ userId }: { userId: string }) {
   const onSave = async () => {
     setReasonTouched(true);
     if (!permissionKey || reasonMissing) return; // reason is MANDATORY
-    await setOverride.mutateAsync({
-      userId,
-      permissionKey,
-      isAllowed,
-      reason: reason.trim(),
-      expiresAt: expiresAt(),
-      idempotencyKey: idempotencyKey(),
-    });
+    try {
+      await setOverride.mutateAsync({
+        userId,
+        permissionKey,
+        isAllowed,
+        reason: reason.trim(),
+        tenantId,
+        expiresAt: expiresAt(),
+        idempotencyKey: idempotencyKey(),
+      });
+    } catch (e) {
+      toast.error(toUserError(e));
+      return; // keep the form open so nothing typed is lost
+    }
     toast.success(t('team.override.saved'));
     setAdding(false);
     setPermissionKey('');

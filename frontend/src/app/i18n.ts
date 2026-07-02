@@ -891,6 +891,11 @@ export const en = {
       readOnlySystem: 'Built-in role — permissions are read-only. Duplicate it to customise.',
       readOnlyPerm: 'You can view this role but not change its permissions.',
       autoSaves: 'Tick a permission to grant it — changes save automatically, no submit needed.',
+      systemEditWarn:
+        'Built-in role — changes apply to everyone holding this role in every clinic on the platform, and save immediately. Edit with care.',
+      filterPlaceholder: 'Filter permissions…',
+      clearFilter: 'Clear filter',
+      noFilterMatches: 'No permissions match your filter.',
       notLicensed: 'Not licensed',
       noModules: 'No modules to show for this role.',
       dangerous: 'Sensitive permission',
@@ -3151,6 +3156,11 @@ export const hi: typeof en = {
       readOnlySystem: 'अंतर्निहित भूमिका — अनुमतियाँ केवल-पढ़ने योग्य हैं। अनुकूलित करने के लिए इसकी प्रतिलिपि बनाएँ।',
       readOnlyPerm: 'आप इस भूमिका को देख सकते हैं लेकिन इसकी अनुमतियाँ बदल नहीं सकते।',
       autoSaves: 'अनुमति देने के लिए टिक करें — परिवर्तन स्वतः सहेजे जाते हैं, सबमिट की आवश्यकता नहीं।',
+      systemEditWarn:
+        'अंतर्निहित भूमिका — बदलाव प्लेटफ़ॉर्म के हर क्लिनिक में इस भूमिका वाले सभी लोगों पर लागू होंगे, और तुरंत सहेजे जाते हैं। सावधानी से बदलें।',
+      filterPlaceholder: 'अनुमतियाँ खोजें…',
+      clearFilter: 'फ़िल्टर साफ़ करें',
+      noFilterMatches: 'आपके फ़िल्टर से कोई अनुमति मेल नहीं खाती।',
       notLicensed: 'लाइसेंस नहीं',
       noModules: 'इस भूमिका के लिए दिखाने हेतु कोई मॉड्यूल नहीं।',
       dangerous: 'संवेदनशील अनुमति',

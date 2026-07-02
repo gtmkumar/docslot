@@ -114,9 +114,13 @@ public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac,
             .OrderBy(m => m.DisplayOrder).ThenBy(m => m.Name)
             .ToList();
 
+        // A system role is editable ONLY by a super_admin actor — the same rule platform.grant_role_permission /
+        // revoke_role_permission enforce, so this display flag never promises a write the DB would refuse.
+        var superActor = await ActorIsSuperAdminAsync(ct);
+
         return new RoleMatrixDto(
             role.RoleId, role.RoleKey, role.Name, role.Description, role.Scope, role.IsSystem,
-            Editable: !role.IsSystem,
+            Editable: !role.IsSystem || superActor,
             GrantedCount: modules.Sum(m => m.GrantedCount),
             TotalCount: modules.Sum(m => m.TotalCount),
             Modules: modules);
@@ -166,6 +170,18 @@ public sealed class IamReadService(PlatformDbContext db, IRbacQueryService rbac,
     }
 
     private sealed record VisibilityRow(bool CanSee);
+
+    /// <summary>Server-trusted super_admin check for the AUTHENTICATED actor (<c>platform.is_super_admin</c> on
+    /// the validated JWT user id — never a client-supplied value). Null/anonymous → false.</summary>
+    private async Task<bool> ActorIsSuperAdminAsync(CancellationToken ct)
+    {
+        if (ctx.UserId is not Guid actorId) return false;
+        var rows = await db.Database.SqlQueryRaw<VisibilityRow>(
+                "SELECT COALESCE(platform.is_super_admin(@u::uuid), false) AS \"CanSee\"",
+                new NpgsqlParameter("@u", actorId))
+            .ToListAsync(ct);
+        return rows.FirstOrDefault()?.CanSee ?? false;
+    }
 
     public async Task<IReadOnlyList<UserPermissionOverrideDto>> ListUserOverridesAsync(Guid userId, Guid? tenantId, CancellationToken ct) =>
         // Only CURRENTLY-EFFECTIVE overrides (active, started, not expired). Plain request-tx read → the
