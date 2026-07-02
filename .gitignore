@@ -172,3 +172,5 @@ temp/
 
 # QA screenshot artifacts (regenerable)
 frontend/qa/shots/
+*.mp4
+*.png
