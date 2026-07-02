@@ -1,9 +1,11 @@
 // Prescriptions tab. The LIST carries no clinical content (PRX number, doctor,
 // status, date) — clinical detail is fetched only when a row is opened (with the
-// declared purpose). "Issue prescription" gates on docslot.prescription.create.
+// declared purpose). "New prescription" gates on docslot.prescription.create and
+// routes to the consultation composer for the patient's active booking (a
+// prescription must bind a REAL booking — the parent resolves it).
 
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Plus } from 'lucide-react';
+import { ChevronRight, Stethoscope } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -14,7 +16,15 @@ import { useUI } from '@/stores/ui';
 import { usePrescriptions } from '../api';
 import type { PurposeOfUse } from '@/lib/mock/contracts';
 
-export function PrescriptionsTab({ patientId, purpose }: { patientId: string; purpose: PurposeOfUse }) {
+export function PrescriptionsTab({
+  patientId,
+  purpose,
+  onNewPrescription,
+}: {
+  patientId: string;
+  purpose: PurposeOfUse;
+  onNewPrescription: () => void;
+}) {
   const { t } = useTranslation();
   const { can } = usePermissions();
   const { data, isLoading, isError, refetch } = usePrescriptions(patientId, purpose);
@@ -24,9 +34,9 @@ export function PrescriptionsTab({ patientId, purpose }: { patientId: string; pu
     <div className="flex flex-col gap-4">
       {can('docslot.prescription.create') ? (
         <div className="flex justify-end">
-          <Button variant="primary" size="sm" onClick={() => openPanel({ type: 'issuePrescription', patientId })}>
-            <Plus size={14} aria-hidden="true" />
-            {t('clinical.rx.issue')}
+          <Button variant="primary" size="sm" onClick={onNewPrescription}>
+            <Stethoscope size={14} aria-hidden="true" />
+            {t('clinical.rx.new')}
           </Button>
         </div>
       ) : null}

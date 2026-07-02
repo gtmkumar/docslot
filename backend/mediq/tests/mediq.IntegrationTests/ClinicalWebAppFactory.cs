@@ -27,6 +27,12 @@ public sealed class ClinicalWebAppFactory : WebApplicationFactory<Program>, IAsy
     public string AdminEmail { get; } = $"slice03b.admin+{Guid.NewGuid():N}@docslot.test";
     public string PatientPhone { get; } = $"+9196{Random.Shared.Next(10000000, 99999999)}";
 
+    // A DOCTOR test user (platform.users) linked to the fixture doctor row via docslot.doctors.user_id, holding
+    // tenant_owner (→ docslot.prescription.create/read). Finalize derives the author from this link; the admin
+    // above is deliberately NOT doctor-linked, so it is the "non-doctor with prescription.create" case.
+    public Guid DoctorUserId { get; } = Guid.NewGuid();
+    public string DoctorEmail { get; } = $"slice03b.doctor+{Guid.NewGuid():N}@docslot.test";
+
     // Local-filesystem blob root for the test API, so the blob test can read the stored bytes off disk and
     // prove the PHI artifact is ciphertext at rest. Cleaned up in DisposeAsync.
     public string BlobRoot { get; } = Path.Combine(Path.GetTempPath(), $"docslot-blobtest-{Guid.NewGuid():N}");
@@ -79,9 +85,24 @@ public sealed class ClinicalWebAppFactory : WebApplicationFactory<Program>, IAsy
             FROM platform.roles r WHERE r.role_key='doctor' AND r.is_system ON CONFLICT DO NOTHING
             """, ("uid", AdminUserId), ("tid", TenantA));
 
-        // Facility + doctor + slot + booking in tenant A.
+        // Doctor test user: platform user + tenant_owner in tenant A (holds docslot.prescription.create/read).
+        await Exec(conn,
+            """
+            INSERT INTO platform.users (user_id, email, password_hash, full_name, is_active, is_platform_user, created_at, updated_at)
+            VALUES (@id, @email, crypt(@pwd, gen_salt('bf', 10)), 'Slice03b Doctor', true, true, NOW(), NOW())
+            ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, deleted_at = NULL
+            """,
+            ("id", DoctorUserId), ("email", DoctorEmail), ("pwd", AdminPassword));
+        await Exec(conn, """
+            INSERT INTO platform.user_tenant_roles (user_tenant_role_id, user_id, tenant_id, role_id, is_primary, granted_at)
+            SELECT gen_random_uuid(), @uid, @tid, r.role_id, true, NOW()
+            FROM platform.roles r WHERE r.role_key='tenant_owner' AND r.is_system ON CONFLICT DO NOTHING
+            """, ("uid", DoctorUserId), ("tid", TenantA));
+
+        // Facility + doctor + slot + booking in tenant A. The doctor row is LINKED to the doctor user via user_id,
+        // so finalize can derive the server-side author from the authenticated caller.
         await Exec(conn, "INSERT INTO docslot.healthcare_facilities (facility_id, tenant_id, facility_type, created_at, updated_at) VALUES (gen_random_uuid(), @t, 'hospital', NOW(), NOW()) ON CONFLICT (tenant_id) DO NOTHING", ("t", TenantA));
-        await Exec(conn, "INSERT INTO docslot.doctors (doctor_id, tenant_id, full_name, is_active, is_accepting_new_patients, created_at, updated_at) VALUES (@id, @t, 'Dr 03b', true, true, NOW(), NOW()) ON CONFLICT (doctor_id) DO NOTHING", ("id", DoctorId), ("t", TenantA));
+        await Exec(conn, "INSERT INTO docslot.doctors (doctor_id, tenant_id, user_id, full_name, is_active, is_accepting_new_patients, created_at, updated_at) VALUES (@id, @t, @uid, 'Dr 03b', true, true, NOW(), NOW()) ON CONFLICT (doctor_id) DO NOTHING", ("id", DoctorId), ("t", TenantA), ("uid", DoctorUserId));
         await Exec(conn, "INSERT INTO docslot.time_slots (slot_id, tenant_id, doctor_id, slot_date, start_time, end_time, status, current_count, max_count, created_at) VALUES (@id, @t, @doc, CURRENT_DATE, '09:00','09:15','booked',1,1, NOW()) ON CONFLICT DO NOTHING", ("id", SlotId), ("t", TenantA), ("doc", DoctorId));
 
         // Consented patient linked to BOTH tenants (so the cross-tenant RLS test uses the same patient).
@@ -134,10 +155,14 @@ public sealed class ClinicalWebAppFactory : WebApplicationFactory<Program>, IAsy
             await Exec(conn, "DELETE FROM platform.purpose_of_use_log WHERE tenant_id=@t", ("t", t));
         }
         await Exec(conn, "DELETE FROM docslot.patients WHERE patient_id=@p", ("p", PatientId));
-        await Exec(conn, "DELETE FROM platform.user_tenant_roles WHERE user_id=@u", ("u", AdminUserId));
-        await Exec(conn, "DELETE FROM platform.user_sessions WHERE user_id=@u", ("u", AdminUserId));
-        await Exec(conn, "DELETE FROM platform.login_attempts WHERE email=@e", ("e", AdminEmail));
-        await Exec(conn, "UPDATE platform.users SET deleted_at=NOW(), is_active=false, email=@a WHERE user_id=@u", ("a", $"del+{AdminUserId}@s03b.test"), ("u", AdminUserId));
+        foreach (var (uid, email) in new[] { (AdminUserId, AdminEmail), (DoctorUserId, DoctorEmail) })
+        {
+            await Exec(conn, "DELETE FROM platform.user_tenant_roles WHERE user_id=@u", ("u", uid));
+            await Exec(conn, "DELETE FROM platform.user_sessions WHERE user_id=@u", ("u", uid));
+            await Exec(conn, "DELETE FROM platform.login_attempts WHERE email=@e", ("e", email));
+            // Soft-delete (these users wrote audit_log rows → never hard-DELETE a user referenced by audit).
+            await Exec(conn, "UPDATE platform.users SET deleted_at=NOW(), is_active=false, email=@a WHERE user_id=@u", ("a", $"del+{uid}@s03b.test"), ("u", uid));
+        }
         foreach (var t in new[] { TenantA, TenantB })
             await Exec(conn, "UPDATE platform.tenants SET deleted_at=NOW(), status='archived' WHERE tenant_id=@t", ("t", t));
         if (Directory.Exists(BlobRoot)) Directory.Delete(BlobRoot, recursive: true);

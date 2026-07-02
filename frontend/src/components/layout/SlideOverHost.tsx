@@ -54,7 +54,6 @@ const DeletionCertificatePanel = lazy(() => import('@/features/security/componen
 const ReportBreachPanel = lazy(() => import('@/features/security/components/ReportBreachPanel').then((m) => ({ default: m.ReportBreachPanel })));
 const BreakGlassPanel = lazy(() => import('@/features/security/components/BreakGlassPanel').then((m) => ({ default: m.BreakGlassPanel })));
 const PrescriptionDetailPanel = lazy(() => import('@/features/patients/components/PrescriptionDetailPanel').then((m) => ({ default: m.PrescriptionDetailPanel })));
-const IssuePrescriptionPanel = lazy(() => import('@/features/patients/components/IssuePrescriptionPanel').then((m) => ({ default: m.IssuePrescriptionPanel })));
 const LabReportDetailPanel = lazy(() => import('@/features/patients/components/LabReportDetailPanel').then((m) => ({ default: m.LabReportDetailPanel })));
 const UploadReportPanel = lazy(() => import('@/features/patients/components/UploadReportPanel').then((m) => ({ default: m.UploadReportPanel })));
 const AbdmDetailPanel = lazy(() => import('@/features/patients/components/AbdmDetailPanel').then((m) => ({ default: m.AbdmDetailPanel })));
@@ -86,7 +85,6 @@ type TransientPanelType =
   | 'invitationToken'
   | 'deletionCertificate'
   | 'prescriptionDetail'
-  | 'issuePrescription'
   | 'labReportDetail'
   | 'uploadReport'
   | 'abdmDetail'
@@ -99,7 +97,7 @@ type TransientPanelType =
 type UrlPanelType = Exclude<PanelType, TransientPanelType>;
 const TRANSIENT_SET = new Set<PanelType>([
   'clientSecret', 'invitationToken', 'deletionCertificate',
-  'prescriptionDetail', 'issuePrescription', 'labReportDetail', 'uploadReport', 'abdmDetail',
+  'prescriptionDetail', 'labReportDetail', 'uploadReport', 'abdmDetail',
   // Medical-history create/edit + the clinical break-glass carry PHI and/or a
   // declared purpose-of-use — never URL-encoded or restored from a refresh.
   'createHistory', 'editHistory', 'clinicalBreakGlass',
@@ -306,8 +304,6 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <BreakGlassPanel open onClose={closePanel} />;
     case 'prescriptionDetail':
       return <PrescriptionDetailPanel prescriptionId={panel.prescriptionId} patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
-    case 'issuePrescription':
-      return <IssuePrescriptionPanel patientId={panel.patientId} open onClose={closePanel} />;
     case 'labReportDetail':
       return <LabReportDetailPanel reportId={panel.reportId} patientId={panel.patientId} purpose={panel.purpose} open onClose={closePanel} />;
     case 'uploadReport':

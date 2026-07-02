@@ -73,6 +73,9 @@ import {
   AbdmRecordDetailSchema,
   AbdmRecordListItemSchema,
   BreakGlassResultSchema,
+  ConsultationDraftSchema,
+  FinalizeConsultationResultSchema,
+  RxMedicationSchema,
   CreateMedicalHistoryResultSchema,
   IssuePrescriptionResultSchema,
   LabReportDetailSchema,
@@ -179,6 +182,9 @@ import {
   type BreakGlassResult,
   type CreateMedicalHistoryRequest,
   type CreateMedicalHistoryResult,
+  type ConsultationDraft,
+  type SaveConsultationRequest,
+  type FinalizeConsultationResult,
   type IssuePrescriptionRequest,
   type IssuePrescriptionResult,
   type LabReportDetail,
@@ -438,6 +444,17 @@ function asConsentStatus(value: number | string | null | undefined): PatientCons
   return parsed?.success ? parsed.data : 'not_required';
 }
 
+/** Wire gender token → the queue row's single-letter code, or null when absent/
+ *  unknown so the subline omits it gracefully. NO PHI beyond the demographic code. */
+function asGenderInitial(value: number | string | null | undefined): 'F' | 'M' | 'O' | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim().toLowerCase();
+  if (v === 'female' || v === 'f') return 'F';
+  if (v === 'male' || v === 'm') return 'M';
+  if (v === 'other' || v === 'o') return 'O';
+  return null;
+}
+
 export async function listBookings(): Promise<BookingRow[]> {
   const raw = await apiFetch<unknown[]>('/bookings');
   const dtos = BookingListItemDtoSchema.array().parse(raw);
@@ -456,6 +473,9 @@ export async function listBookings(): Promise<BookingRow[]> {
       source: asString(d.source, BOOKING_SOURCE_FALLBACK),
       note: d.note ?? '',
       createdAgo: d.createdAt,
+      // Demographics for the queue row subline; masked phone remains the only PHI.
+      age: d.age ?? null,
+      gender: asGenderInitial(d.gender),
       bookedByType: asBookedByType(d.bookedByType),
       behalfRelation: asBehalfRelation(d.behalfRelation),
       patientConsentStatus: asConsentStatus(d.patientConsentStatus),
@@ -2599,6 +2619,75 @@ export async function issuePrescription(
     },
   });
   return IssuePrescriptionResultSchema.parse(raw);
+}
+
+// ── Consultation composer (Phase A) ───────────────────────────────────────────
+// One consultation record per booking, autosaved as a draft then finalized (the
+// doctor's signing act — author server-derived). All three carry the declared
+// X-Purpose-Of-Use (get-or-create + finalize are patient-bound); the two POSTs
+// carry an Idempotency-Key. The draft's medicationsJson (a string) is parsed to the
+// structured array at this seam, exactly like getPrescription.
+
+function parseConsultationDraft(raw: unknown): ConsultationDraft {
+  const r = raw as Record<string, unknown>;
+  const meds =
+    typeof r.medicationsJson === 'string' && r.medicationsJson.trim()
+      ? (JSON.parse(r.medicationsJson) as unknown[])
+      : ((r.medications as unknown[]) ?? []);
+  return ConsultationDraftSchema.parse({
+    ...r,
+    medications: meds.map((m) => RxMedicationSchema.parse(m)),
+  });
+}
+
+/** POST /consultations { bookingId } → get-or-create the draft (idempotent per
+ *  booking). Carries X-Purpose-Of-Use + Idempotency-Key. */
+export async function getOrCreateConsultation(
+  bookingId: string,
+  purpose: string | undefined,
+  idempotencyKey: string,
+): Promise<ConsultationDraft> {
+  const raw = await apiFetch<unknown>('/consultations', {
+    method: 'POST',
+    purposeOfUse: purpose,
+    idempotency: idempotencyKey,
+    body: { bookingId },
+  });
+  return parseConsultationDraft(raw);
+}
+
+/** PATCH /consultations/{id} → 204 No Content (autosave; no PHI echoed). The
+ *  structured medications are serialised to medicationsJson on the wire. */
+export async function saveConsultation(consultationId: string, req: SaveConsultationRequest): Promise<void> {
+  await apiFetch<unknown>(`/consultations/${consultationId}`, {
+    method: 'PATCH',
+    body: {
+      vitals: req.vitals,
+      chiefComplaints: req.chiefComplaints,
+      examination: req.examination,
+      diagnosis: req.diagnosis,
+      medicationsJson: req.medicationsJson,
+      investigations: req.investigations,
+      advice: req.advice,
+      followUpInDays: req.followUpInDays,
+    },
+  });
+}
+
+/** POST /consultations/{id}/finalize { overrideReason } → FinalizeConsultationResult.
+ *  finalized:false means blocked by unoverridden high/critical drug alerts. Carries
+ *  an Idempotency-Key. */
+export async function finalizeConsultation(
+  consultationId: string,
+  req: { overrideReason: string | null },
+  idempotencyKey: string,
+): Promise<FinalizeConsultationResult> {
+  const raw = await apiFetch<unknown>(`/consultations/${consultationId}/finalize`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: { overrideReason: req.overrideReason ?? null },
+  });
+  return FinalizeConsultationResultSchema.parse(raw);
 }
 
 // ── Lab reports ───────────────────────────────────────────────────────────────

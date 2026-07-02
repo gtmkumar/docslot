@@ -25,6 +25,18 @@ public sealed class Prescription
     public int? FollowUpInDays { get; private set; }
     public string Status { get; private set; } = "draft";
 
+    // Consultation intake — UNENCRYPTED standard PHI (deliberately NOT in encrypted_fields_registry).
+    // vitals is a JSONB object ({"bp":...}); investigations a JSONB array of ordered-test strings. Both are
+    // stored/carried as the raw JSON text (the Application (de)serializes to the typed DTOs).
+    public string Vitals { get; private set; } = "{}";
+    public string Investigations { get; private set; } = "[]";
+
+    // Author/signer separation (consultation flow): who prepped the draft vs who signed (the doctor). Finalize
+    // is the doctor's legal act (MCI) — finalized_by is derived server-side from the authenticated user.
+    public Guid? DraftedByUserId { get; private set; }
+    public Guid? FinalizedByUserId { get; private set; }
+    public DateTime? FinalizedAt { get; private set; }
+
     // Amendment lineage: an amendment is a new row that supersedes the issued original
     // (which is marked 'amended'). NULL on an original (non-amendment) prescription.
     public Guid? SupersedesPrescriptionId { get; private set; }
@@ -35,10 +47,12 @@ public sealed class Prescription
 
     private Prescription() { }
 
+    /// <summary>Issues a finalized prescription directly (legacy single-shot path). Sets the signer to the
+    /// authenticated caller so the schema's "signed rows have a signer" CHECK holds.</summary>
     public static Prescription Issue(
         Guid bookingId, Guid patientId, Guid doctorId, Guid tenantId,
         string? chiefComplaintsEnc, string? examinationEnc, string? diagnosisEnc, string medicationsEnc,
-        string? advice, int? followUpInDays, DateTime nowUtc)
+        string? advice, int? followUpInDays, Guid finalizedByUserId, DateTime nowUtc)
         => new()
         {
             PrescriptionId = Guid.CreateVersion7(),
@@ -46,7 +60,8 @@ public sealed class Prescription
             ChiefComplaintsEnc = chiefComplaintsEnc, ExaminationEnc = examinationEnc,
             DiagnosisEnc = diagnosisEnc, MedicationsEnc = medicationsEnc,
             Advice = advice, FollowUpInDays = followUpInDays,
-            Status = "finalized", CreatedAt = nowUtc, UpdatedAt = nowUtc,
+            Status = "finalized", FinalizedByUserId = finalizedByUserId, FinalizedAt = nowUtc,
+            CreatedAt = nowUtc, UpdatedAt = nowUtc,
         };
 
     /// <summary>Amends an issued prescription: a NEW row that SUPERSEDES the original (which the caller
@@ -55,7 +70,8 @@ public sealed class Prescription
     public static Prescription Amend(
         Guid bookingId, Guid patientId, Guid doctorId, Guid tenantId,
         string? chiefComplaintsEnc, string? examinationEnc, string? diagnosisEnc, string medicationsEnc,
-        string? advice, int? followUpInDays, Guid supersedesPrescriptionId, string amendmentReason, DateTime nowUtc)
+        string? advice, int? followUpInDays, Guid supersedesPrescriptionId, string amendmentReason,
+        Guid finalizedByUserId, DateTime nowUtc)
         => new()
         {
             PrescriptionId = Guid.CreateVersion7(),
@@ -63,7 +79,23 @@ public sealed class Prescription
             ChiefComplaintsEnc = chiefComplaintsEnc, ExaminationEnc = examinationEnc,
             DiagnosisEnc = diagnosisEnc, MedicationsEnc = medicationsEnc,
             Advice = advice, FollowUpInDays = followUpInDays,
-            Status = "finalized", SupersedesPrescriptionId = supersedesPrescriptionId, AmendmentReason = amendmentReason,
+            Status = "finalized", FinalizedByUserId = finalizedByUserId, FinalizedAt = nowUtc,
+            SupersedesPrescriptionId = supersedesPrescriptionId, AmendmentReason = amendmentReason,
+            CreatedAt = nowUtc, UpdatedAt = nowUtc,
+        };
+
+    /// <summary>Creates the consultation DRAFT for a booking (status='draft', no signer yet). medicationsEnc is
+    /// the ciphertext of an empty array (medications is NOT NULL jsonb and the read path always decrypts it);
+    /// vitals/chief complaints are filled by intake staff and clinical sections by the doctor via UpdateDraft.
+    /// drafted_by records the preparer (audit separation from the eventual signer).</summary>
+    public static Prescription Draft(
+        Guid bookingId, Guid patientId, Guid doctorId, Guid tenantId, string emptyMedicationsEnc,
+        Guid draftedByUserId, DateTime nowUtc)
+        => new()
+        {
+            PrescriptionId = Guid.CreateVersion7(),
+            BookingId = bookingId, PatientId = patientId, DoctorId = doctorId, TenantId = tenantId,
+            MedicationsEnc = emptyMedicationsEnc, Status = "draft", DraftedByUserId = draftedByUserId,
             CreatedAt = nowUtc, UpdatedAt = nowUtc,
         };
 
@@ -71,13 +103,16 @@ public sealed class Prescription
     public static Prescription FromRow(
         Guid id, string? number, Guid bookingId, Guid patientId, Guid doctorId, Guid tenantId,
         string? chiefEnc, string? examEnc, string? diagEnc, string medsEnc, string? advice, int? followUp, string status,
-        Guid? supersedesId, string? amendmentReason, DateTime createdAt)
+        Guid? supersedesId, string? amendmentReason, DateTime createdAt,
+        string vitals, string investigations, Guid? draftedByUserId, Guid? finalizedByUserId, DateTime? finalizedAt)
         => new()
         {
             PrescriptionId = id, PrescriptionNumber = number, BookingId = bookingId, PatientId = patientId,
             DoctorId = doctorId, TenantId = tenantId, ChiefComplaintsEnc = chiefEnc, ExaminationEnc = examEnc,
             DiagnosisEnc = diagEnc, MedicationsEnc = medsEnc, Advice = advice, FollowUpInDays = followUp,
             Status = status, SupersedesPrescriptionId = supersedesId, AmendmentReason = amendmentReason,
+            Vitals = vitals, Investigations = investigations, DraftedByUserId = draftedByUserId,
+            FinalizedByUserId = finalizedByUserId, FinalizedAt = finalizedAt,
             CreatedAt = createdAt, UpdatedAt = createdAt,
         };
 }

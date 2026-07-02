@@ -64,6 +64,40 @@ public sealed class ClinicalController(
     public async Task<ActionResult<IReadOnlyList<DrugAlertDto>>> GetDrugAlerts(Guid prescriptionId, CancellationToken ct)
         => Ok(await queries.Query(new GetPrescriptionDrugAlertsQuery(RequireTenant(), prescriptionId, Purpose()), ct));
 
+    // ---- Consultations (draft → finalize composer) -----------------------------------------------
+
+    // Phase A gates all three on docslot.prescription.create (the doctor-level permission). Phase B relaxes
+    // create + patch to docslot.prescription.draft so intake staff can record vitals + chief complaint.
+
+    /// <summary>Get-or-create the draft consultation for a booking (idempotent per booking). Returns DECRYPTED
+    /// PHI → X-Purpose-Of-Use + consent/break-glass gated, never cached.</summary>
+    [HttpPost("consultations")]
+    [RequirePermission("docslot.prescription.create")]
+    [ProducesResponseType<ConsultationDraftDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ConsultationDraftDto>> CreateConsultation([FromBody] CreateConsultationRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new CreateConsultationDraftCommand(RequireTenant(), request.BookingId, Purpose()), ct));
+
+    /// <summary>Autosave draft fields (encrypts clinical fields; vitals/investigations stored plain). 204 (no PHI
+    /// in the response). 409 if the consultation is no longer a draft.</summary>
+    [HttpPatch("consultations/{id:guid}")]
+    [RequirePermission("docslot.prescription.create")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> SaveConsultation(Guid id, [FromBody] SaveConsultationRequest request, CancellationToken ct)
+    {
+        await commands.Send(new SaveConsultationCommand(RequireTenant(), id, request), ct);
+        return NoContent();
+    }
+
+    /// <summary>The doctor's signing act (draft → finalized). The author is server-derived from the caller's
+    /// docslot.doctors row (403 if not a doctor). Unoverridden high/critical drug alerts block signing until an
+    /// overrideReason is supplied (finalized:false + alerts). Never cached (alerts carry medication names).</summary>
+    [HttpPost("consultations/{id:guid}/finalize")]
+    [RequirePermission("docslot.prescription.create")]
+    [ProducesResponseType<FinalizeConsultationResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<FinalizeConsultationResult>> FinalizeConsultation(
+        Guid id, [FromBody] FinalizeConsultationRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new FinalizeConsultationCommand(RequireTenant(), id, request), ct));
+
     // ---- Lab reports -----------------------------------------------------------------------------
 
     [HttpPost("lab-reports")]

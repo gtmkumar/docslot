@@ -29,6 +29,39 @@ public interface IClinicalRepository
     /// single-winner guard for a concurrent amend.</summary>
     Task<bool> MarkPrescriptionSupersededAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct);
 
+    // ---- Consultation draft → finalize (Phase A) -------------------------------------------------
+
+    /// <summary>The current draft (status='draft') for a booking in the tenant, or null. There is at most one
+    /// (partial unique index <c>uq_prescriptions_booking_draft</c>) — the get side of get-or-create.</summary>
+    Task<PrescriptionDetail?> GetDraftByBookingAsync(Guid bookingId, Guid tenantId, CancellationToken ct);
+
+    /// <summary>The active, non-deleted <c>docslot.doctors.doctor_id</c> linked to <paramref name="userId"/> in
+    /// the tenant, or null — the server-derived prescriber identity for finalize (never trust the draft's
+    /// provisional doctor_id). Null ⇒ the caller is not a registered doctor in this tenant.</summary>
+    Task<Guid?> GetDoctorByUserIdAsync(Guid userId, Guid tenantId, CancellationToken ct);
+
+    /// <summary>Saves provided draft fields (encrypted args are ciphertext; vitals/investigations are plaintext
+    /// JSON). A null argument LEAVES the stored column unchanged (COALESCE) so a partial autosave never wipes
+    /// other fields. Pinned to (prescription_id, tenant_id, status='draft'); false if no draft row matched.</summary>
+    Task<bool> UpdateDraftAsync(
+        Guid prescriptionId, Guid tenantId, string? chiefComplaintsEnc, string? examinationEnc,
+        string? diagnosisEnc, string? medicationsEnc, string? vitalsJson, string? investigationsJson,
+        string? advice, int? followUpInDays, DateTime nowUtc, CancellationToken ct);
+
+    /// <summary>Single-winner sign transition draft → finalized: sets the server-derived doctor_id + signer +
+    /// finalized_at, conditional on status='draft'. Returns false if it was no longer a draft (concurrent sign).</summary>
+    Task<bool> FinalizeAsync(
+        Guid prescriptionId, Guid tenantId, Guid doctorId, Guid finalizedByUserId, DateTime finalizedAt, CancellationToken ct);
+
+    /// <summary>The prescription's UNOVERRIDDEN drug alerts (tenant-scoped via the prescription join + RLS),
+    /// severity-ordered. Feeds the finalize gate (high/critical block signing unless overridden).</summary>
+    Task<IReadOnlyList<DrugAlert>> ListUnoverriddenAlertsAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct);
+
+    /// <summary>Marks the prescription's unoverridden high/critical alerts overridden (records who/why/when).
+    /// Never DELETEs an alert row. Returns the count marked.</summary>
+    Task<int> MarkAlertsOverriddenAsync(
+        Guid prescriptionId, Guid tenantId, Guid overriddenByUserId, string reason, DateTime nowUtc, CancellationToken ct);
+
     Task<string?> AddLabReportAsync(LabReport report, CancellationToken ct);               // returns report_number
     /// <summary>Detail read: the entity PLUS the joined test name (plaintext catalog data, NOT PHI).
     /// Callers that only need the entity (file upload/download) unwrap <c>.Report</c>.</summary>

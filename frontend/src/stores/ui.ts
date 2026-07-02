@@ -85,7 +85,6 @@ export type Panel =
   // Detail panels carry the patientId too, so a consent-denied (403) read can open
   // the contextual break-glass for the right patient + resource.
   | { type: 'prescriptionDetail'; prescriptionId: string; patientId: string; purpose: PurposeOfUse }
-  | { type: 'issuePrescription'; patientId: string }
   | { type: 'labReportDetail'; reportId: string; patientId: string; purpose: PurposeOfUse }
   | { type: 'uploadReport'; patientId: string }
   | { type: 'abdmDetail'; recordId: string; patientId: string; purpose: PurposeOfUse }

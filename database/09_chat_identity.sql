@@ -283,6 +283,31 @@ COMMENT ON FUNCTION docslot.run_partner_nudge_sweep IS
 
 GRANT EXECUTE ON FUNCTION docslot.run_partner_nudge_sweep(INT, INTERVAL) TO docslot_app;
 
+-- ---------------------------------------------------------------------------------------------------
+-- Proactive no-show prediction backfill (slice 16) — RLS-less worker access via SECURITY DEFINER.
+-- Lives HERE (not 03 with its mark_noshow_predicted pair) because its SQL body reads
+-- bookings.patient_consent_status — a column THIS file adds — and LANGUAGE sql bodies are
+-- validated at CREATE time, so it must run after the ALTER above. Exposes ONLY non-PHI booking
+-- metadata (ids + lead-time / slot-hour / on-behalf features) — NEVER patient identity or PHI.
+-- Pinned search_path (no mutable-search-path injection).
+-- ---------------------------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION docslot.list_due_noshow_bookings(p_window_hours INT, p_limit INT)
+RETURNS TABLE(booking_id UUID, tenant_id UUID, lead_time_days INT, slot_hour INT, is_behalf BOOLEAN)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, docslot, platform AS $$
+    SELECT b.booking_id, b.tenant_id,
+           GREATEST(0, (s.slot_date - (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date))::int AS lead_time_days,
+           EXTRACT(hour FROM s.start_time)::int AS slot_hour,
+           (b.patient_consent_status <> 'not_required') AS is_behalf
+    FROM docslot.bookings b
+    JOIN docslot.time_slots s ON s.slot_id = b.slot_id
+    WHERE b.status IN ('pending', 'confirmed')
+      AND b.no_show_predicted_at IS NULL
+      AND ((s.slot_date + s.start_time) AT TIME ZONE 'Asia/Kolkata')
+            BETWEEN NOW() AND NOW() + make_interval(hours => GREATEST(1, p_window_hours))
+    ORDER BY s.slot_date, s.start_time
+    LIMIT GREATEST(1, p_limit);
+$$;
+
 -- ============================================================================
 -- END OF CHAT IDENTITY SCHEMA
 -- ============================================================================

@@ -1,8 +1,11 @@
 @import 'tailwindcss';
 
 /* ============================================================================
-   DocSlot design tokens — canonical design DNA (ADR-008), ported verbatim from
-   the Claude Design prototype. Base tokens live as CSS variables so they can be
+   DocSlot design tokens — canonical design DNA (ADR-008). The canonical source
+   of truth for every colour + font token below is docs/font-color.md; the values
+   here are ported verbatim from it. Never hardcode a hex/font in components —
+   always reference a token. `npm run lint:tokens` (scripts/check-design-tokens.mjs)
+   enforces zero-drift in CI. Base tokens live as CSS variables so they can be
    re-themed at runtime (light/dark via [data-theme], density via [data-density]).
    @theme inline (below) aliases them into Tailwind color/font utilities so that
    `bg-surface`, `text-ink`, `border-line`, `font-mono`, etc. resolve to the same
@@ -254,5 +257,28 @@ textarea {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---- print: isolate the Rx letterhead ----
+   Print / "Save PDF" from the consultation composer prints ONLY the prescription
+   preview (marked .rx-print). Everything else is hidden; the preview expands to the
+   full page. Shared by window.print() from the composer's Print + Save PDF actions. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .rx-print,
+  .rx-print * {
+    visibility: visible;
+  }
+  .rx-print {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    width: 100%;
+    max-width: 100%;
+    border: 0;
+    box-shadow: none;
   }
 }

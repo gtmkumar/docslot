@@ -1,8 +1,36 @@
 using mediq.Application.Abstractions;
 using mediq.Application.Cqrs;
 using mediq.SharedDataModel.Docslot.Dashboard.Dtos;
+using mediq.Utilities.Exceptions;
 
 namespace mediq.Application.Features.Docslot.Queries;
+
+/// <summary>
+/// Resolves the booking READ scope from the caller's resolved permission set (Phase D §6). A tenant-wide reader
+/// (<c>docslot.booking.read</c>, reception) sees everything; a self-scoped caller (<c>docslot.booking.read_self</c>,
+/// a doctor) is confined to their own <c>docslot.doctors</c> row — the SAME identity derivation as consultation
+/// finalize. Scope derives ONLY from the token/permissions, never a client-supplied doctorId (no widening).
+/// </summary>
+internal static class BookingReadScope
+{
+    public const string TenantWide = "docslot.booking.read";
+    public const string SelfOnly = "docslot.booking.read_self";
+
+    /// <summary>Returns the doctor_id to confine the read to, or null for a tenant-wide reader. Throws
+    /// ForbiddenException if the caller holds neither key, or holds only read_self with no doctor profile.</summary>
+    public static async Task<Guid?> ResolveDoctorFilterAsync(
+        IPermissionContext perms, ICurrentUserContext ctx, IClinicalRepository clinical, Guid tenantId, CancellationToken ct)
+    {
+        if (perms.Has(TenantWide)) return null;   // reception — unchanged, full tenant view
+        if (perms.Has(SelfOnly))
+        {
+            var userId = ctx.UserId ?? throw new ForbiddenException("No authenticated user.");
+            return await clinical.GetDoctorByUserIdAsync(userId, tenantId, ct)
+                ?? throw new ForbiddenException("No active doctor profile for this user; cannot list self-scoped bookings.");
+        }
+        throw new ForbiddenException("Missing booking read permission.");
+    }
+}
 
 // ---- Dashboard summary ---------------------------------------------------------------------------
 
@@ -31,21 +59,35 @@ public sealed class GetAnalyticsQueryHandler(IAnalyticsReadService reads)
 public sealed record ListBookingsQuery(BookingListFilter Filter)
     : IQuery<(IReadOnlyList<BookingListItemDto> Items, int Total)>;
 
-public sealed class ListBookingsQueryHandler(IBookingReadService reads)
+public sealed class ListBookingsQueryHandler(
+    IBookingReadService reads, IPermissionContext perms, ICurrentUserContext ctx, IClinicalRepository clinical)
     : IQueryHandler<ListBookingsQuery, (IReadOnlyList<BookingListItemDto> Items, int Total)>
 {
-    public Task<(IReadOnlyList<BookingListItemDto> Items, int Total)> Handle(ListBookingsQuery q, CancellationToken ct)
-        => reads.ListAsync(q.Filter, ct);
+    public async Task<(IReadOnlyList<BookingListItemDto> Items, int Total)> Handle(ListBookingsQuery q, CancellationToken ct)
+    {
+        var doctorFilter = await BookingReadScope.ResolveDoctorFilterAsync(perms, ctx, clinical, q.Filter.TenantId, ct);
+        // Self-scoped caller: FORCE the doctor filter (overriding any client-supplied doctorId — no widening).
+        var filter = doctorFilter is { } docId ? q.Filter with { DoctorId = docId } : q.Filter;
+        return await reads.ListAsync(filter, ct);
+    }
 }
 
 public sealed record GetBookingQuery(Guid TenantId, Guid BookingId) : IQuery<BookingListItemDto>;
 
-public sealed class GetBookingQueryHandler(IBookingReadService reads)
+public sealed class GetBookingQueryHandler(
+    IBookingReadService reads, IPermissionContext perms, ICurrentUserContext ctx, IClinicalRepository clinical)
     : IQueryHandler<GetBookingQuery, BookingListItemDto>
 {
     public async Task<BookingListItemDto> Handle(GetBookingQuery q, CancellationToken ct)
-        => await reads.GetItemAsync(q.TenantId, q.BookingId, ct)
-           ?? throw new KeyNotFoundException("Booking not found.");
+    {
+        var doctorFilter = await BookingReadScope.ResolveDoctorFilterAsync(perms, ctx, clinical, q.TenantId, ct);
+        var item = await reads.GetItemAsync(q.TenantId, q.BookingId, ct)
+            ?? throw new KeyNotFoundException("Booking not found.");
+        // Self-scoped caller: a booking belonging to another doctor is out of scope → 404 (no existence leak).
+        if (doctorFilter is { } docId && item.DoctorId != docId)
+            throw new KeyNotFoundException("Booking not found.");
+        return item;
+    }
 }
 
 // ---- Booking no-show risk (AI sibling-service advisory) ------------------------------------------

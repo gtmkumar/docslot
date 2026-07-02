@@ -24,7 +24,6 @@ import {
   getLabReport,
   getPatientConsent,
   getPrescription,
-  issuePrescription,
   listAbdmRecords,
   listLabReports,
   listMedicalHistory,
@@ -37,7 +36,6 @@ import {
 import type {
   BreakGlassRequest,
   CreateMedicalHistoryRequest,
-  IssuePrescriptionRequest,
   UpdateMedicalHistoryRequest,
   UploadLabReportRequest,
 } from '@/lib/mock/contracts';
@@ -95,15 +93,6 @@ export function usePrescription(prescriptionId: string | undefined, purpose: str
     queryFn: () => getPrescription(prescriptionId ?? '', purpose),
     enabled: Boolean(prescriptionId) && Boolean(purpose),
     retry: false, // a consent 403 shouldn't be retried — surface it so break-glass can offer
-  });
-}
-
-export function useIssuePrescription(patientId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ idempotencyKey, ...req }: IssuePrescriptionRequest & { idempotencyKey: string }) =>
-      issuePrescription(req, idempotencyKey),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['clinical', 'prescriptions', patientId] }),
   });
 }
 

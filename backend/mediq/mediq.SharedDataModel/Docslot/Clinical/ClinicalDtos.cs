@@ -48,7 +48,12 @@ public sealed record PrescriptionDto(
     int? FollowUpInDays,
     string Status,
     Guid? SupersedesPrescriptionId, // amendment lineage (NULL = original); status='amended' = superseded
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    // Additive (consultation flow) — safe for existing consumers: vitals (unencrypted standard PHI) + the
+    // server-derived signer identity/timestamp. Null on legacy rows that predate the consultation columns.
+    VitalsDto? Vitals = null,
+    Guid? FinalizedByUserId = null,
+    DateTimeOffset? FinalizedAt = null);
 
 public sealed record PrescriptionListItemDto(
     Guid PrescriptionId, string? PrescriptionNumber, Guid DoctorId, string? DoctorName, string Status, DateTimeOffset CreatedAt);

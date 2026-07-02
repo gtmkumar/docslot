@@ -71,9 +71,12 @@ public sealed class IssuePrescriptionCommandHandler(
         var chiefEnc = await EncOrNull(req.ChiefComplaints, PrescriptionFields.ChiefComplaints, command.TenantId, encCtx, ct);
         var medsEnc = await encryption.EncryptAsync(PrescriptionFields.Medications, command.TenantId, req.MedicationsJson, encCtx, ct);
 
+        // The signer is the authenticated caller — the schema CHECK (chk_prescriptions_signed_rows_have_signer)
+        // requires a signer on any finalized row; the legacy single-shot Issue signs as the caller.
+        var signerUserId = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
         var prescription = Prescription.Issue(
             req.BookingId, req.PatientId, req.DoctorId, command.TenantId,
-            chiefEnc, examinationEnc, diagnosisEnc, medsEnc, req.Advice, req.FollowUpInDays, clock.UtcNow);
+            chiefEnc, examinationEnc, diagnosisEnc, medsEnc, req.Advice, req.FollowUpInDays, signerUserId, clock.UtcNow);
 
         var number = await clinical.AddPrescriptionAsync(prescription, ct);
 
@@ -150,10 +153,11 @@ public sealed class AmendPrescriptionCommandHandler(
         var chiefEnc = await EncOrNull(req.ChiefComplaints, PrescriptionFields.ChiefComplaints, command.TenantId, encCtx, ct);
         var medsEnc = await encryption.EncryptAsync(PrescriptionFields.Medications, command.TenantId, req.MedicationsJson, encCtx, ct);
 
+        var signerUserId = ctx.UserId ?? throw new UnauthorizedAccessException("No authenticated user.");
         var amendment = Prescription.Amend(
             original.BookingId, original.PatientId, original.DoctorId, command.TenantId,
             chiefEnc, examinationEnc, diagnosisEnc, medsEnc, req.Advice, req.FollowUpInDays,
-            original.PrescriptionId, req.AmendmentReason, clock.UtcNow);
+            original.PrescriptionId, req.AmendmentReason, signerUserId, clock.UtcNow);
 
         var number = await clinical.AddPrescriptionAsync(amendment, ct);
 
@@ -230,7 +234,9 @@ public sealed class GetPrescriptionQueryHandler(
             await DecOrNull(p.DiagnosisEnc, PrescriptionFields.Diagnosis, encCtx, ct),
             await encryption.DecryptAsync(PrescriptionFields.Medications, p.MedicationsEnc, encCtx, ct),
             p.Advice, p.FollowUpInDays, p.Status, p.SupersedesPrescriptionId,
-            new DateTimeOffset(DateTime.SpecifyKind(p.CreatedAt, DateTimeKind.Utc)));
+            new DateTimeOffset(DateTime.SpecifyKind(p.CreatedAt, DateTimeKind.Utc)),
+            ConsultationJson.ParseVitals(p.Vitals), p.FinalizedByUserId,
+            p.FinalizedAt is DateTime f ? new DateTimeOffset(DateTime.SpecifyKind(f, DateTimeKind.Utc)) : null);
     }
 
     private async Task<string?> DecOrNull(string? envelope, FieldRef field, EncryptionContext c, CancellationToken ct)

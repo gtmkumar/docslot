@@ -12,12 +12,14 @@
 //  - All clinical content here is CLEARLY SYNTHETIC (fake names/values).
 
 import { maskPhone } from '@/lib/format';
-import { DOCTORS, PATIENTS } from '@/lib/data';
+import { BOOKINGS, DOCTORS, PATIENTS } from '@/lib/data';
 import {
   AbdmRecordDetailSchema,
   AbdmRecordListItemSchema,
   BreakGlassResultSchema,
+  ConsultationDraftSchema,
   CreateMedicalHistoryResultSchema,
+  FinalizeConsultationResultSchema,
   IssuePrescriptionResultSchema,
   LabReportDetailSchema,
   LabReportListItemSchema,
@@ -26,13 +28,17 @@ import {
   PrescriptionDetailSchema,
   PrescriptionListItemSchema,
   PushAbdmRecordResultSchema,
+  RxMedicationSchema,
   UploadLabReportResultSchema,
   type AbdmRecordDetail,
   type AbdmRecordListItem,
   type BreakGlassRequest,
   type BreakGlassResult,
+  type ConsultationDraft,
   type CreateMedicalHistoryRequest,
   type CreateMedicalHistoryResult,
+  type DrugAlert,
+  type FinalizeConsultationResult,
   type IssuePrescriptionRequest,
   type IssuePrescriptionResult,
   type LabReportDetail,
@@ -42,6 +48,8 @@ import {
   type PrescriptionDetail,
   type PrescriptionListItem,
   type PushAbdmRecordResult,
+  type RxMedication,
+  type SaveConsultationRequest,
   type UpdateMedicalHistoryRequest,
   type UploadLabReportRequest,
   type UploadLabReportResult,
@@ -204,6 +212,194 @@ export function issuePrescription(req: IssuePrescriptionRequest, idempotencyKey:
   });
 }
 
+// ── Consultation composer (Phase A) ──────────────────────────────────────────
+// Stateful in-memory drafts keyed by bookingId (get-or-create per booking). The
+// draft is purpose-gated on read (like every clinical read). Finalize mints a PRX
+// number and runs a lightweight allergy check against the patient's medical
+// history — a penicillin-class order for a penicillin-allergic patient (p1 = Riya
+// Kapoor, seeded above) raises a HIGH-severity alert that BLOCKS finalize until an
+// override reason is supplied, so the override path is demoable flag-off.
+
+interface DraftState {
+  consultationId: string;
+  prescriptionNumber: string | null;
+  bookingId: string;
+  patientId: string;
+  patientName: string;
+  status: 'draft' | 'finalized';
+  vitals: { bp: string | null; pulseBpm: number | null; tempF: number | null; spo2: number | null; weightKg: number | null };
+  chiefComplaints: string | null;
+  examination: string | null;
+  diagnosis: string | null;
+  medications: RxMedication[];
+  investigations: string[];
+  advice: string | null;
+  followUpInDays: number | null;
+  updatedAt: string;
+}
+
+const DRAFTS = new Map<string, DraftState>();
+let rxSeq = 700;
+
+/** Resolve the patient behind a booking (mock: match the seed patient by phone,
+ *  falling back to name). Returns a synthetic identity if the booking is unknown so
+ *  the composer still opens. */
+function patientForBooking(bookingId: string): { patientId: string; patientName: string } {
+  const b = BOOKINGS.find((x) => x.id === bookingId);
+  if (!b) return { patientId: `pt-${bookingId}`, patientName: 'Patient' };
+  const p = PATIENTS.find((x) => x.phone === b.phone) ?? PATIENTS.find((x) => x.name === b.patient);
+  return { patientId: p?.id ?? `pt-${bookingId}`, patientName: b.patient };
+}
+
+function toDraft(d: DraftState): ConsultationDraft {
+  return ConsultationDraftSchema.parse({
+    consultationId: d.consultationId,
+    prescriptionNumber: d.prescriptionNumber,
+    bookingId: d.bookingId,
+    patientId: d.patientId,
+    patientName: d.patientName,
+    status: d.status,
+    vitals: d.vitals,
+    chiefComplaints: d.chiefComplaints,
+    examination: d.examination,
+    diagnosis: d.diagnosis,
+    // Mirror the real seam: the wire carries medicationsJson (a string); the seam
+    // parses it into the structured array the UI consumes.
+    medications: d.medications,
+    investigations: d.investigations,
+    advice: d.advice,
+    followUpInDays: d.followUpInDays,
+    updatedAt: d.updatedAt,
+  });
+}
+
+export function getOrCreateConsultation(
+  bookingId: string,
+  purpose: string | undefined,
+  idempotencyKey: string,
+): Promise<ConsultationDraft> {
+  requirePurpose(purpose);
+  void idempotencyKey; // get-or-create is naturally idempotent by bookingId
+  let d = DRAFTS.get(bookingId);
+  if (!d) {
+    const { patientId, patientName } = patientForBooking(bookingId);
+    d = {
+      consultationId: crypto.randomUUID(),
+      prescriptionNumber: null,
+      bookingId,
+      patientId,
+      patientName,
+      status: 'draft',
+      vitals: { bp: null, pulseBpm: null, tempF: null, spo2: null, weightKg: null },
+      chiefComplaints: null,
+      examination: null,
+      diagnosis: null,
+      medications: [],
+      investigations: [],
+      advice: null,
+      followUpInDays: null,
+      updatedAt: new Date().toISOString(),
+    };
+    DRAFTS.set(bookingId, d);
+  }
+  return delay(toDraft(d));
+}
+
+/** Find a draft by its consultationId (the PATCH/finalize routes key on it). */
+function draftById(consultationId: string): DraftState | undefined {
+  for (const d of DRAFTS.values()) if (d.consultationId === consultationId) return d;
+  return undefined;
+}
+
+/** PATCH autosave — patches only the provided fields; returns 204 (no PHI echoed). */
+export function saveConsultation(consultationId: string, req: SaveConsultationRequest): Promise<void> {
+  const d = draftById(consultationId);
+  if (!d) return Promise.reject(new Error('Consultation not found'));
+  if (req.vitals !== undefined) d.vitals = req.vitals;
+  if (req.chiefComplaints !== undefined) d.chiefComplaints = req.chiefComplaints;
+  if (req.examination !== undefined) d.examination = req.examination;
+  if (req.diagnosis !== undefined) d.diagnosis = req.diagnosis;
+  if (req.medicationsJson !== undefined) {
+    const parsed = req.medicationsJson.trim() ? (JSON.parse(req.medicationsJson) as unknown[]) : [];
+    d.medications = parsed.map((m) => RxMedicationSchema.parse(m));
+  }
+  if (req.investigations !== undefined) d.investigations = req.investigations;
+  if (req.advice !== undefined) d.advice = req.advice;
+  if (req.followUpInDays !== undefined) d.followUpInDays = req.followUpInDays;
+  d.updatedAt = new Date().toISOString();
+  return delay(undefined);
+}
+
+// Penicillin-class drug names/generics that collide with a penicillin allergy.
+const PENICILLIN_CLASS = /penicillin|amoxicillin|amoxil|augmentin|ampicillin|clavulan/i;
+
+/** Lightweight allergy screen: for each ordered medication, if the patient has an
+ *  active penicillin allergy and the drug is penicillin-class, raise a HIGH alert. */
+function screenDrugAlerts(patientId: string, medications: RxMedication[]): DrugAlert[] {
+  const allergies = (HISTORY[patientId] ?? []).filter(
+    (h) => h.isActive && h.recordType === 'allergy' && /penicillin/i.test(h.title),
+  );
+  if (allergies.length === 0) return [];
+  const alerts: DrugAlert[] = [];
+  for (const med of medications) {
+    if (PENICILLIN_CLASS.test(med.name)) {
+      alerts.push({
+        alertId: crypto.randomUUID(),
+        alertType: 'allergy',
+        severity: 'high',
+        medicationName: med.name,
+        description: `Patient has a documented penicillin allergy — ${med.name} is a penicillin-class antibiotic.`,
+        overridden: false,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
+  return alerts;
+}
+
+/** Finalize (draft → finalized) — the doctor's signing act. Runs the allergy
+ *  screen; unoverridden high/critical alerts BLOCK (finalized:false + alerts) until
+ *  an override reason is supplied. On success mints PRX-YYYY-MM-NNNNN. Idempotent:
+ *  a finalized draft returns its existing result. */
+export function finalizeConsultation(
+  consultationId: string,
+  req: { overrideReason: string | null },
+  idempotencyKey: string,
+): Promise<FinalizeConsultationResult> {
+  void idempotencyKey;
+  const d = draftById(consultationId);
+  if (!d) return Promise.reject(new Error('Consultation not found'));
+  if (d.status === 'finalized') {
+    return delay(
+      FinalizeConsultationResultSchema.parse({
+        finalized: true,
+        prescriptionId: d.consultationId,
+        prescriptionNumber: d.prescriptionNumber,
+        alerts: [],
+      }),
+    );
+  }
+  const alerts = screenDrugAlerts(d.patientId, d.medications);
+  const blocking = alerts.filter((a) => a.severity === 'high' || a.severity === 'critical');
+  const hasReason = Boolean(req.overrideReason && req.overrideReason.trim().length > 0);
+  if (blocking.length > 0 && !hasReason) {
+    return delay(FinalizeConsultationResultSchema.parse({ finalized: false, prescriptionId: null, prescriptionNumber: null, alerts }));
+  }
+  const now = new Date();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  d.prescriptionNumber = `PRX-${now.getFullYear()}-${mm}-${String(++rxSeq).padStart(5, '0')}`;
+  d.status = 'finalized';
+  d.updatedAt = now.toISOString();
+  return delay(
+    FinalizeConsultationResultSchema.parse({
+      finalized: true,
+      prescriptionId: d.consultationId,
+      prescriptionNumber: d.prescriptionNumber,
+      alerts: alerts.map((a) => ({ ...a, overridden: true })),
+    }),
+  );
+}
+
 // ── Lab reports ──────────────────────────────────────────────────────────────
 interface SeedReport {
   reportId: string;
@@ -304,6 +500,13 @@ const HISTORY: Record<string, MedicalHistory[]> = {
     { historyId: 'h-1', recordType: 'chronic_condition', title: 'Hypertension', description: 'Diagnosed 2024; on Telmisartan', severity: 'moderate', icd10Code: 'I10', startedDate: '2024-02-14', endedDate: null, isActive: true, isCritical: false, addedAt: iso(420) },
     { historyId: 'h-2', recordType: 'allergy', title: 'Penicillin allergy', description: 'Rash on exposure', severity: 'severe', icd10Code: 'Z88.0', startedDate: null, endedDate: null, isActive: true, isCritical: true, addedAt: iso(900) },
     { historyId: 'h-3', recordType: 'surgery', title: 'Appendectomy', description: 'Laparoscopic, uneventful', severity: null, icd10Code: 'K35.80', startedDate: '2021-07-03', endedDate: '2021-07-05', isActive: false, isCritical: false, addedAt: iso(1800) },
+  ],
+  // p5 (Pooja Singh) has a CONFIRMED booking today (B-2837) + a critical penicillin
+  // allergy — so the composer's blocked-finalize + override path is demoable straight
+  // from the queue's "Prescribe" action (add Augmentin 625 → finalize → blocked).
+  p5: [
+    { historyId: 'h-5a', recordType: 'allergy', title: 'Penicillin allergy', description: 'Anaphylaxis reported previously', severity: 'critical', icd10Code: 'Z88.0', startedDate: null, endedDate: null, isActive: true, isCritical: true, addedAt: iso(700) },
+    { historyId: 'h-5b', recordType: 'chronic_condition', title: 'Osteoarthritis (knee)', description: 'Bilateral, on review', severity: 'moderate', icd10Code: 'M17.0', startedDate: '2023-09-01', endedDate: null, isActive: true, isCritical: false, addedAt: iso(300) },
   ],
 };
 

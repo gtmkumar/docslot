@@ -52,6 +52,9 @@ const BookingsScreen = lazy(() =>
 const CalendarScreen = lazy(() =>
   import('@/features/calendar/CalendarScreen').then((m) => ({ default: m.CalendarScreen })),
 );
+const ConsultScreen = lazy(() =>
+  import('@/features/consult/ConsultScreen').then((m) => ({ default: m.ConsultScreen })),
+);
 const DoctorsScreen = lazy(() =>
   import('@/features/doctors/DoctorsScreen').then((m) => ({ default: m.DoctorsScreen })),
 );
@@ -146,6 +149,14 @@ const patientRecordsRoute = createRoute({
   path: '/patients/$patientId/records',
   component: PatientRecordsScreen,
 });
+// Consultation composer — full-screen two-pane focus route (plan §5). The param is
+// a booking id (not PHI); the declared purpose-of-use + clinical content are never
+// URL-encoded (state only), like the other clinical surfaces.
+const consultRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/consult/$bookingId',
+  component: ConsultScreen,
+});
 const analyticsRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/analytics',
@@ -210,6 +221,7 @@ const routeTree = rootRoute.addChildren([
     doctorsRoute,
     patientsRoute,
     patientRecordsRoute,
+    consultRoute,
     analyticsRoute,
     aiOpsRoute,
     teamRoute,

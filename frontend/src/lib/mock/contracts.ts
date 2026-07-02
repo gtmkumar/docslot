@@ -131,6 +131,12 @@ export const BookingRowSchema = z.object({
   source: BookingSourceSchema,
   note: z.string(),
   createdAgo: z.string(),
+  // Patient demographics for the reception-queue row subline ("31F · +91 ····· ·····").
+  // PHI: age/gender are low-sensitivity demographics — the raw phone is NEVER carried
+  // (maskedPhone only, above). Nullable/defaulted so a pre-existing row (mock or a
+  // pre-Phase live payload) parses unchanged and the subline degrades gracefully.
+  age: z.number().int().nonnegative().nullable().default(null),
+  gender: z.enum(['F', 'M', 'O']).nullable().default(null),
   // Behalf / consent (Phase 1, read-only). Optional with safe defaults so a
   // pre-Phase-1 row (or the mock, which omits them) still parses — a `self`
   // booking with no consent requirement.
@@ -1587,6 +1593,161 @@ export const IssuePrescriptionResultSchema = z.object({
   prescriptionNumber: z.string().nullable(),
 });
 export type IssuePrescriptionResult = z.infer<typeof IssuePrescriptionResultSchema>;
+
+// ---- Consultation composer (Phase A) ────────────────────────────────────────
+// The doctor prescription-writing experience. ONE consultation record per booking
+// (get-or-create), autosaved as a draft, then FINALIZED (draft → finalized) — the
+// doctor's legal signing act. The author is server-derived (never client-asserted).
+// PHI: vitals + clinical fields are purpose-of-use gated on read (same gate as
+// other clinical content); the draft is never logged / URL-encoded.
+
+/** Vitals — standard clinical PHI, stored unencrypted like diagnosis/advice. Every
+ *  field is nullable (a partial intake is valid). `bp` is a free string ("120/80"). */
+export const VitalsSchema = z.object({
+  bp: z.string().nullable().default(null),
+  pulseBpm: z.number().nullable().default(null),
+  tempF: z.number().nullable().default(null),
+  spo2: z.number().nullable().default(null),
+  weightKg: z.number().nullable().default(null),
+});
+export type Vitals = z.infer<typeof VitalsSchema>;
+
+/** Food timing for a structured medication line. Mirrors the SQL CHECK. */
+export const MedTimingSchema = z.enum(['after_food', 'before_food', 'empty_stomach', 'anytime']);
+export type MedTiming = z.infer<typeof MedTimingSchema>;
+
+/** A structured medication line — the shape the composer, preview and WhatsApp
+ *  reminder copy all consume. `dose` is a morning-noon-night triple (0/1/2…);
+ *  `sos` (as-needed) and `weekly` are flags that override the triple for display.
+ *  strength ("650 mg") / form ("tab") / durationDays / instructions are optional. */
+export const StructuredMedicationSchema = z.object({
+  name: z.string(),
+  strength: z.string().nullable().default(null),
+  form: z.string().nullable().default(null),
+  dose: z.object({
+    morning: z.number().nonnegative().default(0),
+    noon: z.number().nonnegative().default(0),
+    night: z.number().nonnegative().default(0),
+  }),
+  sos: z.boolean().default(false),
+  weekly: z.boolean().default(false),
+  timing: MedTimingSchema.default('anytime'),
+  durationDays: z.number().int().positive().nullable().default(null),
+  instructions: z.string().nullable().default(null),
+});
+export type StructuredMedication = z.infer<typeof StructuredMedicationSchema>;
+
+/** A medication line as it appears on the wire: the NEW structured shape, or the
+ *  LEGACY free-text {name,dose,frequency,duration} as a graceful fallback (older
+ *  prescriptions parse + display unchanged). zod tries structured first (its `dose`
+ *  is an object); a legacy row's string `dose` fails that and falls to the legacy
+ *  branch. Consumers render either via {@link formatMedicationLine}. */
+export const RxMedicationSchema = z.union([StructuredMedicationSchema, MedicationSchema]);
+export type RxMedication = z.infer<typeof RxMedicationSchema>;
+
+/** True for the legacy free-text medication shape (has a `frequency` string). */
+export function isLegacyMedication(med: RxMedication): med is Medication {
+  return 'frequency' in med && typeof (med as Medication).frequency === 'string';
+}
+
+/** The dose token for a structured line: "1-0-1", or "SOS" / "Weekly" when those
+ *  flags are set. `t` maps the flag labels through i18n so it stays bilingual. */
+export function formatDose(med: StructuredMedication, t: (key: string) => string): string {
+  if (med.sos) return t('consult.dose.sos');
+  if (med.weekly) return t('consult.dose.weekly');
+  return `${med.dose.morning}-${med.dose.noon}-${med.dose.night}`;
+}
+
+/** Human display for a medication line — powers the Rx preview and the reminder
+ *  copy. e.g. "1-0-1 · After food · 5 days" / "SOS · If vomiting". `t` supplies the
+ *  bilingual timing/duration labels (never baked-in English). Legacy rows render as
+ *  "dose · frequency · duration". */
+export function formatMedicationLine(
+  med: RxMedication,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  if (isLegacyMedication(med)) {
+    return [med.dose, med.frequency, med.duration].filter(Boolean).join(' · ');
+  }
+  const parts: string[] = [formatDose(med, t)];
+  parts.push(t(`consult.timing.${med.timing}`));
+  if (med.durationDays != null) parts.push(t('consult.durationValue', { count: med.durationDays }));
+  if (med.instructions && med.instructions.trim()) parts.push(med.instructions.trim());
+  return parts.filter(Boolean).join(' · ');
+}
+
+/** Consultation lifecycle. `draft` is editable/autosaved; `finalized` is signed. */
+export const ConsultationStatusSchema = z.enum(['draft', 'finalized']);
+export type ConsultationStatus = z.infer<typeof ConsultationStatusSchema>;
+
+/** `POST /api/v1/consultations` (get-or-create per booking) result, and what
+ *  finalize/autosave-load return. `medicationsJson` (a string on the wire) is
+ *  parsed to the `medications` array AT THE SEAM (like PrescriptionDetail), so the
+ *  UI only ever sees the structured array. patientName lets the composer header +
+ *  Rx preview render without a second lookup. */
+export const ConsultationDraftSchema = z.object({
+  consultationId: z.string(),
+  prescriptionNumber: z.string().nullable(),
+  bookingId: z.string(),
+  patientId: z.string(),
+  patientName: z.string(),
+  status: ConsultationStatusSchema,
+  vitals: VitalsSchema,
+  chiefComplaints: z.string().nullable(),
+  examination: z.string().nullable(),
+  diagnosis: z.string().nullable(),
+  medications: z.array(RxMedicationSchema),
+  investigations: z.array(z.string()),
+  advice: z.string().nullable(),
+  followUpInDays: z.number().nullable(),
+  updatedAt: z.string(),
+});
+export type ConsultationDraft = z.infer<typeof ConsultationDraftSchema>;
+
+/** `PATCH /api/v1/consultations/{id}` body (autosave). Every field optional — a
+ *  partial save patches only what changed. `medicationsJson` is the serialised
+ *  structured-medications array (parsed back at the seam). Returns 204 (no PHI
+ *  echoed). */
+export const SaveConsultationRequestSchema = z.object({
+  vitals: VitalsSchema.optional(),
+  chiefComplaints: z.string().nullable().optional(),
+  examination: z.string().nullable().optional(),
+  diagnosis: z.string().nullable().optional(),
+  medicationsJson: z.string().optional(),
+  investigations: z.array(z.string()).optional(),
+  advice: z.string().nullable().optional(),
+  followUpInDays: z.number().nullable().optional(),
+});
+export type SaveConsultationRequest = z.infer<typeof SaveConsultationRequestSchema>;
+
+/** A drug-safety alert raised at finalize (interaction / allergy / duplicate).
+ *  `severity` ∈ low/moderate/high/critical; high+critical BLOCK finalize until
+ *  overridden with a reason. Mirrors the drug-alert contract. */
+export const DrugAlertSeveritySchema = z.enum(['low', 'moderate', 'high', 'critical']);
+export type DrugAlertSeverity = z.infer<typeof DrugAlertSeveritySchema>;
+
+export const DrugAlertSchema = z.object({
+  alertId: z.string(),
+  alertType: z.string(),
+  severity: DrugAlertSeveritySchema,
+  medicationName: z.string(),
+  description: z.string(),
+  overridden: z.boolean(),
+  createdAt: z.string(),
+});
+export type DrugAlert = z.infer<typeof DrugAlertSchema>;
+
+/** `POST /api/v1/consultations/{id}/finalize` result. `finalized:false` means the
+ *  sign was BLOCKED by unoverridden high/critical alerts — surface them inline,
+ *  collect an override reason, and retry finalize with it. On success `finalized`
+ *  is true and the PRX number is minted. */
+export const FinalizeConsultationResultSchema = z.object({
+  finalized: z.boolean(),
+  prescriptionId: z.string().nullable().default(null),
+  prescriptionNumber: z.string().nullable().default(null),
+  alerts: z.array(DrugAlertSchema).default([]),
+});
+export type FinalizeConsultationResult = z.infer<typeof FinalizeConsultationResultSchema>;
 
 // ---- Lab reports ------------------------------------------------------------
 /** List row — NO clinical content. (No backend list endpoint yet — flagged.) */

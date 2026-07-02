@@ -2,6 +2,7 @@
 
 - [Frontend Contract Surface](project_contract-surface.md) — mock adapter signatures + menu/permission/badge/summary shapes the backend must mirror.
 - [Foundation Patterns](project_foundation-patterns.md) — where the slide-over/permission/i18n/nav seams live and how to extend them in later waves.
+- [Design-token drift guard](project_design-token-guard.md) — `npm run lint:tokens` enforces docs/font-color.md: what it flags, comment/anchor false-positive handling, allowlist.
 - [Auth & RBAC Admin](project_auth-rbac.md) — Slice 01 frontend: session store, route guard, Team & Roles surface + which permission keys gate which actions.
 - [Developer / API Platform Portal](project_developer-portal.md) — Slice 02 frontend: API clients/scopes/webhooks/logs, secret-shown-once UX, gating + flags.
 - [Security & Compliance Console](project_security-console.md) — Slice 05 frontend: audit chain, DPDP export/erasure, breaches, break-glass, keys; irreversible-erasure UX + no-PHI rules.
@@ -19,3 +20,4 @@
 - [Branch/Dept SCOPE](project_branch-scope.md) — #90: People SCOPE column + All-branches filter + N-branches stat + manage-panel scope control; display-only (never confers perms), POST /branches unwired.
 - [Security policy](project_security-policy.md) — #91: Security tab (2FA/password-session/access + IP allow-list) above #87 sessions; 3 perm planes, passthrough+Omit gotcha, N-of-M-2FA is client-derived, honesty labels, new ui/Toggle.
 - [Export + Bulk import](project_export-bulk-import.md) — #95: People-tab Export (authed CSV blob, new lib/download util) + Bulk-import slide-over (client-side RFC-4180 parse → per-row provision); new panel type needs router z.enum too.
+- [Consult composer](project_consult-composer.md) — Phase A /consult/$bookingId doctor Rx composer: fixed 3-endpoint contract, structured-meds union, useActionState finalize+alerts, autosave, history rail, shared PurposeGate, IssuePrescriptionPanel removed.

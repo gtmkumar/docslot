@@ -96,7 +96,7 @@ Ctrl+F a table name (`platform.users`). Notation: `PK`, `FK→table`, `NOT NULL`
 - `docslot.patient_medical_history` — 15 columns
 - `docslot.patient_tenant_links` — 8 columns
 - `docslot.patients` — 30 columns
-- `docslot.prescriptions` — 20 columns
+- `docslot.prescriptions` — 26 columns
 - `docslot.procedure_catalog` — 24 columns
 - `docslot.processed_messages` — 2 columns
 - `docslot.reviews` — 14 columns
@@ -1558,7 +1558,7 @@ _Source: `database/03_docslot.sql` · 30 columns_
 
 ### `docslot.prescriptions`
 
-_Source: `database/03_docslot.sql` · 20 columns_
+_Source: `database/03_docslot.sql` · 26 columns_
 
 | # | Column | Type | Constraints |
 |---|--------|------|-------------|
@@ -1575,13 +1575,21 @@ _Source: `database/03_docslot.sql` · 20 columns_
 | 11 | `investigations` | `JSONB` | default |
 | 12 | `advice` | `TEXT` | — |
 | 13 | `follow_up_in_days` | `INT` | — |
-| 14 | `pdf_url` | `TEXT` | — |
-| 15 | `file_name` | `VARCHAR(200)` | — |
-| 16 | `status` | `VARCHAR(20)` | NOT NULL, default |
-| 17 | `delivered_at` | `TIMESTAMPTZ` | — |
-| 18 | `delivery_message_id` | `VARCHAR(100)` | — |
-| 19 | `created_at` | `TIMESTAMPTZ` | NOT NULL, default |
-| 20 | `updated_at` | `TIMESTAMPTZ` | NOT NULL, default |
+| 14 | `vitals` | `JSONB` | NOT NULL, default `{}` — intake vitals (BP/pulse/temp/SpO₂/weight); PHI, purpose-gated, deliberately unencrypted |
+| 15 | `drafted_by_user_id` | `UUID` | FK→platform.users — who prepped the draft |
+| 16 | `finalized_by_user_id` | `UUID` | FK→platform.users — who signed (server-derived doctor) |
+| 17 | `finalized_at` | `TIMESTAMPTZ` | — |
+| 18 | `pdf_url` | `TEXT` | — |
+| 19 | `file_name` | `VARCHAR(200)` | — |
+| 20 | `status` | `VARCHAR(20)` | NOT NULL, default; CHECK signed rows (finalized/delivered/amended) carry `finalized_by_user_id` + `finalized_at` |
+| 21 | `delivered_at` | `TIMESTAMPTZ` | — |
+| 22 | `delivery_message_id` | `VARCHAR(100)` | — |
+| 23 | `supersedes_prescription_id` | `UUID` | FK→docslot.prescriptions — amendment lineage (NULL = original) |
+| 24 | `amendment_reason` | `TEXT` | — |
+| 25 | `created_at` | `TIMESTAMPTZ` | NOT NULL, default |
+| 26 | `updated_at` | `TIMESTAMPTZ` | NOT NULL, default |
+
+Partial unique index `uq_prescriptions_booking_draft` — at most one `status='draft'` consultation row per booking (draft get-or-create is idempotent).
 
 ### `docslot.procedure_catalog`
 

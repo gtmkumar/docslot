@@ -29,6 +29,13 @@ public sealed class PrescriptionConfiguration : IEntityTypeConfiguration<Prescri
         b.Property(x => x.Advice).HasColumnName("advice");
         b.Property(x => x.FollowUpInDays).HasColumnName("follow_up_in_days");
         b.Property(x => x.Status).HasColumnName("status");
+        // Consultation columns (repo does the raw I/O; EF only needs valid mappings). vitals/investigations are
+        // plaintext JSONB carried as the raw JSON text.
+        b.Property(x => x.Vitals).HasColumnName("vitals").HasColumnType("jsonb");
+        b.Property(x => x.Investigations).HasColumnName("investigations").HasColumnType("jsonb");
+        b.Property(x => x.DraftedByUserId).HasColumnName("drafted_by_user_id");
+        b.Property(x => x.FinalizedByUserId).HasColumnName("finalized_by_user_id");
+        b.Property(x => x.FinalizedAt).HasColumnName("finalized_at");
         b.Property(x => x.SupersedesPrescriptionId).HasColumnName("supersedes_prescription_id");
         b.Property(x => x.AmendmentReason).HasColumnName("amendment_reason");
         b.Property(x => x.CreatedAt).HasColumnName("created_at");

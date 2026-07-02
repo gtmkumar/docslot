@@ -11,4 +11,5 @@
 - [Webhook delivery drain](webhook-delivery-drain.md) — Phase-4 durable async webhooks; webhook tables NOT RLS so no DEFINER; secret encrypted+registered; unconditional subscription-health bump defect.
 - [Forwarded-headers trust model](forwarded-headers-trust-model.md) — edge XFF/per-IP limiter trust; .NET 10 KnownIPNetworks/KnownNetworks are one synced backing list; default-deny is spoof-proof.
 - [Owner-rights view RLS bypass in IAM reads](owner-rights-view-rls-bypass-iam-reads.md) — views bypass RLS; effective-permissions/effective-access reads leak cross-tenant via ?tenantId; plain-table overrides read is safe.
+- [Consultation draft→finalize composer](consultation-draft-finalize.md) — Phase-A Rx composer; vitals unencrypted PHI, signer CHECK, server-derived doctor, one-draft/booking index; PASS.
 - [Last-active-admin anti-bricking guard](last-admin-guard-antibricking.md) — permission-based guard in set_tenant_user_active + revoke_role_assignment; super_admin bypasses it; #79 test pins the blocking branch via a non-member global-override actor.

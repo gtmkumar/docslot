@@ -46,6 +46,12 @@ export default defineConfig({
   // runs elsewhere.
   server: {
     port: 5173,
+    // Fail loudly if 5173 is already taken instead of silently drifting to a new
+    // port (5174, 5199, …). A drifted port leaves stale browser tabs pointed at a
+    // dead server → "Failed to fetch dynamically imported module" on every lazy
+    // route. strictPort forces a clean "port in use" error so you kill the old
+    // server (or free the port) rather than chasing a phantom second instance.
+    strictPort: true,
     proxy: {
       '/api': {
         target: process.env.VITE_API_PROXY ?? 'http://localhost:5054',

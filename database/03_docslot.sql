@@ -394,22 +394,9 @@ CREATE INDEX idx_bookings_noshow_due ON docslot.bookings(status)
 -- short-TTL, per-tenant SERVICE token and calls the AI no-show endpoint; on success it marks the booking
 -- (mark fn) so it is never re-predicted. Pinned search_path (no mutable-search-path injection).
 -- ---------------------------------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION docslot.list_due_noshow_bookings(p_window_hours INT, p_limit INT)
-RETURNS TABLE(booking_id UUID, tenant_id UUID, lead_time_days INT, slot_hour INT, is_behalf BOOLEAN)
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, docslot, platform AS $$
-    SELECT b.booking_id, b.tenant_id,
-           GREATEST(0, (s.slot_date - (b.booked_at AT TIME ZONE 'Asia/Kolkata')::date))::int AS lead_time_days,
-           EXTRACT(hour FROM s.start_time)::int AS slot_hour,
-           (b.patient_consent_status <> 'not_required') AS is_behalf
-    FROM docslot.bookings b
-    JOIN docslot.time_slots s ON s.slot_id = b.slot_id
-    WHERE b.status IN ('pending', 'confirmed')
-      AND b.no_show_predicted_at IS NULL
-      AND ((s.slot_date + s.start_time) AT TIME ZONE 'Asia/Kolkata')
-            BETWEEN NOW() AND NOW() + make_interval(hours => GREATEST(1, p_window_hours))
-    ORDER BY s.slot_date, s.start_time
-    LIMIT GREATEST(1, p_limit);
-$$;
+-- NOTE: docslot.list_due_noshow_bookings (the list/features fn of this pair) lives in
+-- 09_chat_identity.sql — its SQL body reads bookings.patient_consent_status, a column
+-- 09 adds, and LANGUAGE sql bodies are validated at CREATE time, so it must run after 09.
 
 CREATE OR REPLACE FUNCTION docslot.mark_noshow_predicted(p_booking_id UUID)
 RETURNS VOID
@@ -565,6 +552,18 @@ CREATE TABLE docslot.prescriptions (
     advice              TEXT,
     follow_up_in_days   INT,
 
+    -- Consultation intake vitals: {"bp":"120/80","pulseBpm":78,"tempF":98.6,"spo2":98,"weightKg":68}.
+    -- Standard clinical PHI: purpose-of-use gated on read like diagnosis/advice, but intentionally
+    -- NOT in platform.encrypted_fields_registry (product decision — see docs/PRESCRIPTION_CONSULTATION_PLAN.md).
+    vitals              JSONB NOT NULL DEFAULT '{}',
+
+    -- Author/signer separation (consultation flow): who prepped the draft vs who signed.
+    -- Finalize is the doctor's legal act (MCI) — finalized_by is derived server-side from the
+    -- authenticated user, never asserted by the client.
+    drafted_by_user_id   UUID REFERENCES platform.users(user_id),
+    finalized_by_user_id UUID REFERENCES platform.users(user_id),
+    finalized_at         TIMESTAMPTZ,
+
     -- Generated artifacts
     pdf_url             TEXT,
     file_name           VARCHAR(200),
@@ -584,8 +583,19 @@ CREATE TABLE docslot.prescriptions (
     amendment_reason    TEXT,                                   -- why this amendment was issued (NULL for originals)
 
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Signed rows carry a signer: every issued state (finalized/delivered/amended) must record
+    -- who signed and when — enforced in the schema, not just code (MCI: only a doctor prescribes).
+    CONSTRAINT chk_prescriptions_signed_rows_have_signer CHECK (
+        status NOT IN ('finalized', 'delivered', 'amended')
+        OR (finalized_by_user_id IS NOT NULL AND finalized_at IS NOT NULL)
+    )
 );
+
+-- One live consultation draft per booking — makes draft get-or-create idempotent per booking.
+CREATE UNIQUE INDEX uq_prescriptions_booking_draft ON docslot.prescriptions(booking_id)
+    WHERE status = 'draft';
 
 CREATE INDEX idx_prescriptions_supersedes ON docslot.prescriptions(supersedes_prescription_id)
     WHERE supersedes_prescription_id IS NOT NULL;
@@ -952,7 +962,12 @@ WHERE r.role_key = 'doctor'
     'docslot.booking.read_self', 'docslot.booking.complete',
     'docslot.patient.read',
     -- Doctors are the clinical writers — full medical-history CRUD.
-    'docslot.medical_history.read', 'docslot.medical_history.create', 'docslot.medical_history.update'
+    'docslot.medical_history.read', 'docslot.medical_history.create', 'docslot.medical_history.update',
+    -- Prescribing is the doctor's legal act (MCI): issue/finalize + amend + read.
+    -- (Phase B adds docslot.prescription.draft for intake staff — see docs/PRESCRIPTION_CONSULTATION_PLAN.md §2.)
+    'docslot.prescription.create', 'docslot.prescription.read', 'docslot.prescription.amend',
+    -- Doctors review lab reports while consulting (read-only; upload/deliver stay with lab staff).
+    'docslot.report.read'
   );
 
 -- ============================================================================

@@ -52,6 +52,7 @@ public static class ApiServiceExtensions
     {
         services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
+        services.AddScoped<IAuthorizationHandler, AnyPermissionAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, ScopeAuthorizationHandler>();
         services.AddAuthorization();
         return services;

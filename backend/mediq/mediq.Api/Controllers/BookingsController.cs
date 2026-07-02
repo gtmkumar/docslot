@@ -29,8 +29,10 @@ public sealed class BookingsController(
     public async Task<ActionResult<DashboardSummaryDto>> Summary(CancellationToken ct)
         => Ok(await queries.Query(new GetDashboardSummaryQuery(RequireTenant()), ct));
 
+    // Any-of gate: tenant-wide readers (reception) OR self-scoped doctors (booking.read_self). The handler
+    // confines a read_self caller to their own docslot.doctors row (Phase D §6) — reception is unchanged.
     [HttpGet("bookings")]
-    [RequirePermission("docslot.booking.read")]
+    [RequireAnyPermission("docslot.booking.read", "docslot.booking.read_self")]
     [ProducesResponseType<IReadOnlyList<BookingListItemDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<BookingListItemDto>>> List(
         [FromQuery] string? status, [FromQuery] DateOnly? date, [FromQuery] Guid? doctorId,
@@ -42,8 +44,10 @@ public sealed class BookingsController(
         return Ok(items);
     }
 
+    // Any-of gate (consult screen needs the detail): tenant-wide OR self-scoped. The handler 404s a self-scoped
+    // caller on a booking that isn't their own doctor's (no existence leak).
     [HttpGet("bookings/{bookingId:guid}")]
-    [RequirePermission("docslot.booking.read")]
+    [RequireAnyPermission("docslot.booking.read", "docslot.booking.read_self")]
     [ProducesResponseType<BookingListItemDto>(StatusCodes.Status200OK)]
     public async Task<ActionResult<BookingListItemDto>> Get(Guid bookingId, CancellationToken ct)
         => Ok(await queries.Query(new GetBookingQuery(RequireTenant(), bookingId), ct));

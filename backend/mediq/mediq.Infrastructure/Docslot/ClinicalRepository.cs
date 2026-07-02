@@ -44,14 +44,19 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
 
     public async Task<string?> AddPrescriptionAsync(Prescription p, CancellationToken ct)
     {
-        // medications is jsonb → wrap the envelope string as a json string with to_jsonb.
+        // medications is jsonb → wrap the envelope string as a json string with to_jsonb; vitals (object) and
+        // investigations (array) are plaintext JSONB cast from their raw JSON text. The BEFORE-INSERT trigger
+        // assigns prescription_number (drafts included).
         var rows = await db.Database.SqlQueryRaw<NumberRow>(
                 """
                 INSERT INTO docslot.prescriptions
                     (prescription_id, booking_id, patient_id, doctor_id, tenant_id,
                      chief_complaints, examination, diagnosis, medications, advice, follow_up_in_days, status,
-                     supersedes_prescription_id, amendment_reason, created_at, updated_at)
-                VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, to_jsonb(@p8::text), @p9, @p10, @p11, @p13, @p14, @p12, @p12)
+                     supersedes_prescription_id, amendment_reason,
+                     vitals, investigations, drafted_by_user_id, finalized_by_user_id, finalized_at,
+                     created_at, updated_at)
+                VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, to_jsonb(@p8::text), @p9, @p10, @p11, @p13, @p14,
+                        @p15::jsonb, @p16::jsonb, @p17, @p18, @p19, @p12, @p12)
                 RETURNING prescription_number AS "Number"
                 """,
                 Params(
@@ -61,30 +66,42 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
                     ("@p9", (object?)p.Advice ?? DBNull.Value), ("@p10", (object?)p.FollowUpInDays ?? DBNull.Value),
                     ("@p11", p.Status), ("@p12", p.CreatedAt),
                     ("@p13", (object?)p.SupersedesPrescriptionId ?? DBNull.Value),
-                    ("@p14", (object?)p.AmendmentReason ?? DBNull.Value)))
+                    ("@p14", (object?)p.AmendmentReason ?? DBNull.Value),
+                    ("@p15", p.Vitals), ("@p16", p.Investigations),
+                    ("@p17", (object?)p.DraftedByUserId ?? DBNull.Value),
+                    ("@p18", (object?)p.FinalizedByUserId ?? DBNull.Value),
+                    ("@p19", (object?)p.FinalizedAt ?? DBNull.Value)))
             .ToListAsync(ct);
         return rows.FirstOrDefault()?.Number;
     }
 
-    public async Task<PrescriptionDetail?> GetPrescriptionAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct)
+    public Task<PrescriptionDetail?> GetPrescriptionAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct)
+        => ReadPrescriptionAsync("p.prescription_id = @p0 AND p.tenant_id = @p1", ct, ("@p0", prescriptionId), ("@p1", tenantId));
+
+    public Task<PrescriptionDetail?> GetDraftByBookingAsync(Guid bookingId, Guid tenantId, CancellationToken ct)
+        => ReadPrescriptionAsync("p.booking_id = @p0 AND p.tenant_id = @p1 AND p.status = 'draft'", ct, ("@p0", bookingId), ("@p1", tenantId));
+
+    private async Task<PrescriptionDetail?> ReadPrescriptionAsync(string where, CancellationToken ct, params (string Name, object Value)[] ps)
     {
-        // Read via a direct reader (unambiguous for jsonb #>> text columns; avoids EF record-mapping pitfalls).
+        // Read via a direct reader (unambiguous for jsonb #>> / ::text columns; avoids EF record-mapping pitfalls).
         // LEFT JOIN docslot.doctors for the (plaintext, non-PHI) doctor name; docslot.doctors is not RLS-enabled.
+        // vitals (object) / investigations (array) read as ::text (their whole-object JSON); medications is a
+        // json string envelope read via #>> '{}'.
         var conn = (NpgsqlConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            """
+            $$"""
             SELECT p.prescription_id, p.prescription_number, p.booking_id, p.patient_id, p.doctor_id, p.tenant_id,
                    p.chief_complaints, p.examination, p.diagnosis, p.medications #>> '{}', p.advice, p.follow_up_in_days,
                    p.status, p.supersedes_prescription_id, p.amendment_reason, p.created_at,
+                   p.vitals::text, p.investigations::text, p.drafted_by_user_id, p.finalized_by_user_id, p.finalized_at,
                    d.full_name
             FROM docslot.prescriptions p
             LEFT JOIN docslot.doctors d ON d.doctor_id = p.doctor_id AND d.tenant_id = p.tenant_id
-            WHERE p.prescription_id = @p0 AND p.tenant_id = @p1
+            WHERE {{where}}
             """, conn);
-        cmd.Parameters.AddWithValue("@p0", prescriptionId);
-        cmd.Parameters.AddWithValue("@p1", tenantId);
-        // Enlist the ambient scope (read-scope query tx OR the amend command's UoW tx) so this raw
+        foreach (var (n, v) in ps) cmd.Parameters.AddWithValue(n, v);
+        // Enlist the ambient scope (read-scope query tx OR the command's UoW tx) so this raw
         // reader runs in the request's transaction (house pattern; mirrors GetMedicalHistoryAsync).
         cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
         await using var rd = await cmd.ExecuteReaderAsync(ct);
@@ -94,9 +111,101 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
             rd.IsDBNull(6) ? null : rd.GetString(6), rd.IsDBNull(7) ? null : rd.GetString(7), rd.IsDBNull(8) ? null : rd.GetString(8),
             rd.GetString(9), rd.IsDBNull(10) ? null : rd.GetString(10), rd.IsDBNull(11) ? null : rd.GetInt32(11),
             rd.GetString(12), rd.IsDBNull(13) ? (Guid?)null : rd.GetGuid(13), rd.IsDBNull(14) ? null : rd.GetString(14),
-            rd.GetDateTime(15));
-        var doctorName = rd.IsDBNull(16) ? null : rd.GetString(16);
+            rd.GetDateTime(15),
+            rd.IsDBNull(16) ? "{}" : rd.GetString(16), rd.IsDBNull(17) ? "[]" : rd.GetString(17),
+            rd.IsDBNull(18) ? (Guid?)null : rd.GetGuid(18), rd.IsDBNull(19) ? (Guid?)null : rd.GetGuid(19),
+            rd.IsDBNull(20) ? (DateTime?)null : rd.GetDateTime(20));
+        var doctorName = rd.IsDBNull(21) ? null : rd.GetString(21);
         return new PrescriptionDetail(prescription, doctorName);
+    }
+
+    public async Task<Guid?> GetDoctorByUserIdAsync(Guid userId, Guid tenantId, CancellationToken ct)
+    {
+        // docslot.doctors has no RLS + user_id/tenant_id scoping is explicit here (mirrors DoctorBelongsToTenantAsync).
+        var conn = (NpgsqlConnection)db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT doctor_id FROM docslot.doctors WHERE user_id = @p0 AND tenant_id = @p1 AND deleted_at IS NULL AND is_active LIMIT 1", conn);
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
+        cmd.Parameters.AddWithValue("@p0", userId);
+        cmd.Parameters.AddWithValue("@p1", tenantId);
+        var result = await cmd.ExecuteScalarAsync(ct);
+        return result is Guid g ? g : (Guid?)null;
+    }
+
+    public async Task<bool> UpdateDraftAsync(
+        Guid prescriptionId, Guid tenantId, string? chiefComplaintsEnc, string? examinationEnc,
+        string? diagnosisEnc, string? medicationsEnc, string? vitalsJson, string? investigationsJson,
+        string? advice, int? followUpInDays, DateTime nowUtc, CancellationToken ct)
+    {
+        // Conditional UPDATE pinned to (prescription_id, tenant_id, status='draft'). COALESCE per field so a
+        // null argument (field not sent) leaves the stored value untouched — a partial autosave never wipes.
+        var affected = await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE docslot.prescriptions
+               SET chief_complaints  = COALESCE(@p2::text, chief_complaints),
+                   examination       = COALESCE(@p3::text, examination),
+                   diagnosis         = COALESCE(@p4::text, diagnosis),
+                   medications       = CASE WHEN @p5::text IS NULL THEN medications ELSE to_jsonb(@p5::text) END,
+                   vitals            = COALESCE(@p6::jsonb, vitals),
+                   investigations    = COALESCE(@p7::jsonb, investigations),
+                   advice            = COALESCE(@p8::text, advice),
+                   follow_up_in_days = COALESCE(@p9::int, follow_up_in_days),
+                   updated_at        = @p10
+             WHERE prescription_id = @p0 AND tenant_id = @p1 AND status = 'draft'
+            """,
+            new NpgsqlParameter("@p0", prescriptionId), new NpgsqlParameter("@p1", tenantId),
+            new NpgsqlParameter("@p2", (object?)chiefComplaintsEnc ?? DBNull.Value),
+            new NpgsqlParameter("@p3", (object?)examinationEnc ?? DBNull.Value),
+            new NpgsqlParameter("@p4", (object?)diagnosisEnc ?? DBNull.Value),
+            new NpgsqlParameter("@p5", (object?)medicationsEnc ?? DBNull.Value),
+            new NpgsqlParameter("@p6", (object?)vitalsJson ?? DBNull.Value),
+            new NpgsqlParameter("@p7", (object?)investigationsJson ?? DBNull.Value),
+            new NpgsqlParameter("@p8", (object?)advice ?? DBNull.Value),
+            new NpgsqlParameter("@p9", (object?)followUpInDays ?? DBNull.Value),
+            new NpgsqlParameter("@p10", nowUtc));
+        return affected > 0;
+    }
+
+    public async Task<bool> FinalizeAsync(
+        Guid prescriptionId, Guid tenantId, Guid doctorId, Guid finalizedByUserId, DateTime finalizedAt, CancellationToken ct)
+    {
+        // Single-winner sign transition (only a draft can be signed). doctor_id is the server-derived prescriber
+        // (never the draft's provisional value). Runs in the command's UoW tx.
+        var rows = await db.Database.SqlQueryRaw<AmendedRow>(
+                """
+                UPDATE docslot.prescriptions
+                SET status = 'finalized', doctor_id = @p2, finalized_by_user_id = @p3, finalized_at = @p4, updated_at = @p4
+                WHERE prescription_id = @p0 AND tenant_id = @p1 AND status = 'draft'
+                RETURNING status AS "Status"
+                """,
+                Params(("@p0", prescriptionId), ("@p1", tenantId), ("@p2", doctorId), ("@p3", finalizedByUserId), ("@p4", finalizedAt)))
+            .ToListAsync(ct);
+        return rows.Count > 0;
+    }
+
+    public async Task<IReadOnlyList<DrugAlert>> ListUnoverriddenAlertsAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct)
+    {
+        var all = await ListDrugAlertsAsync(prescriptionId, tenantId, ct);
+        return all.Where(a => !a.Overridden).ToList();
+    }
+
+    public async Task<int> MarkAlertsOverriddenAsync(
+        Guid prescriptionId, Guid tenantId, Guid overriddenByUserId, string reason, DateTime nowUtc, CancellationToken ct)
+    {
+        // Mark the still-unoverridden high/critical (blocking) alerts overridden — never DELETE a row. Tenant scope
+        // via the prescription EXISTS predicate (drug_alerts has no tenant_id); RLS enforces it too.
+        return await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE docslot.drug_alerts da
+               SET overridden = true, overridden_by_user_id = @p2, override_reason = @p3, overridden_at = @p4
+             WHERE da.prescription_id = @p0 AND da.overridden = false AND da.severity IN ('high', 'critical')
+               AND EXISTS (SELECT 1 FROM docslot.prescriptions p
+                           WHERE p.prescription_id = da.prescription_id AND p.tenant_id = @p1)
+            """,
+            new NpgsqlParameter("@p0", prescriptionId), new NpgsqlParameter("@p1", tenantId),
+            new NpgsqlParameter("@p2", overriddenByUserId), new NpgsqlParameter("@p3", reason),
+            new NpgsqlParameter("@p4", nowUtc));
     }
 
     public async Task<bool> MarkPrescriptionSupersededAsync(Guid prescriptionId, Guid tenantId, CancellationToken ct)

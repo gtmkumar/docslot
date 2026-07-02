@@ -26,8 +26,6 @@ public sealed class DrugSafetyScreeningService(
     IClock clock)
     : IDrugSafetyScreeningService
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
-
     public async Task<int> ScreenPrescriptionAsync(
         Guid prescriptionId, Guid patientId, Guid tenantId, string medicationsJson, CancellationToken ct)
     {
@@ -89,19 +87,43 @@ public sealed class DrugSafetyScreeningService(
         return written;
     }
 
-    /// <summary>Tolerant parse of the medications JSON array (<c>[{name,dose,frequency,duration}, ...]</c>).
-    /// Returns an empty list on malformed input — screening must never break prescription issuance.</summary>
+    /// <summary>Tolerant parse of the medications JSON array. Handles BOTH shapes: the legacy
+    /// <c>[{name,dose,frequency,duration}, ...]</c> (all strings) and the structured composer shape
+    /// <c>[{name,strength,form,dose:{morning,noon,night},sos,weekly,timing,durationDays,instructions}, ...]</c>.
+    /// Tolerance is PER ITEM (one odd line never suppresses screening of the rest) — a typed deserialize
+    /// here once made the whole screen silently no-op when the structured dose OBJECT appeared (dose was
+    /// typed string → JsonException → empty list → zero alerts), a clinical-safety failure mode. Only the
+    /// drug NAME matters to the rules; dose/frequency/duration are carried for display only.</summary>
     private static IReadOnlyList<MedicationInput> ParseMedications(string medicationsJson)
     {
         if (string.IsNullOrWhiteSpace(medicationsJson)) return [];
         try
         {
-            var lines = JsonSerializer.Deserialize<List<MedLine>>(medicationsJson, Json);
-            if (lines is null) return [];
-            return lines
-                .Where(l => !string.IsNullOrWhiteSpace(l.Name))
-                .Select(l => new MedicationInput(l.Name!.Trim(), l.Dose, l.Frequency, l.Duration))
-                .ToList();
+            using var doc = JsonDocument.Parse(medicationsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return [];
+            var list = new List<MedicationInput>();
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                if (el.ValueKind != JsonValueKind.Object) continue;
+                var name = Str(el, "name");
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                string? dose = null, frequency = null;
+                if (el.TryGetProperty("dose", out var d))
+                {
+                    if (d.ValueKind == JsonValueKind.String) dose = d.GetString();                 // legacy
+                    else if (d.ValueKind == JsonValueKind.Object)                                  // structured
+                        frequency = $"{Num(d, "morning")}-{Num(d, "noon")}-{Num(d, "night")}";
+                }
+                dose ??= Str(el, "strength");
+                frequency ??= Str(el, "frequency");
+                var duration = Str(el, "duration")
+                    ?? (el.TryGetProperty("durationDays", out var dd) && dd.ValueKind == JsonValueKind.Number
+                        ? $"{dd.GetInt32()} days" : null);
+
+                list.Add(new MedicationInput(name.Trim(), dose, frequency, duration));
+            }
+            return list;
         }
         catch (JsonException)
         {
@@ -109,7 +131,11 @@ public sealed class DrugSafetyScreeningService(
         }
     }
 
-    private static string Trim200(string s) => s.Length <= 200 ? s : s[..200];
+    private static string? Str(JsonElement el, string prop)
+        => el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-    private sealed record MedLine(string? Name, string? Dose, string? Frequency, string? Duration);
+    private static int Num(JsonElement el, string prop)
+        => el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
+
+    private static string Trim200(string s) => s.Length <= 200 ? s : s[..200];
 }

@@ -66,11 +66,16 @@ public sealed class AuthRbacFlowTests(PlatformWebAppFactory factory) : IClassFix
         // The 'doctors' menu targets hospital/clinic tenant types → must appear for this hospital tenant.
         Assert.Contains(menus, m => m.Key == "doctors");
 
-        // Tree assembly: 'bookings' has children (today/upcoming/history).
+        // 'bookings' is a leaf: Today/Upcoming/History are in-screen tabs on the
+        // /bookings board, not child routes (see 08_rbac_navigation.sql).
         var bookings = menus.SingleOrDefault(m => m.Key == "bookings");
         Assert.NotNull(bookings);
-        Assert.NotEmpty(bookings!.Children);
-        Assert.Contains(bookings.Children, c => c.Key == "bookings.today");
+        Assert.Empty(bookings!.Children);
+
+        // Tree assembly: 'care_partners' still carries children (directory/payouts).
+        var carePartners = menus.SingleOrDefault(m => m.Key == "care_partners");
+        Assert.NotNull(carePartners);
+        Assert.Contains(carePartners!.Children, c => c.Key == "care_partners.payouts");
     }
 
     [Fact]

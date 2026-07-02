@@ -85,11 +85,11 @@ CREATE TABLE platform.navigation_menus (
                                                               -- NULL = top-level menu
 
     -- Identity
-    menu_key            VARCHAR(80) NOT NULL,                -- 'bookings', 'bookings.today', 'settings.brokers'
+    menu_key            VARCHAR(80) NOT NULL,                -- 'bookings', 'care_partners.payouts', 'settings.brokers'
     menu_label          VARCHAR(120) NOT NULL,               -- 'Bookings' (default English)
     menu_label_hi       VARCHAR(120),                        -- Hindi label (bilingual UI)
     menu_icon           VARCHAR(80),                         -- Icon identifier for frontend
-    menu_url            VARCHAR(255),                        -- Route path: '/bookings/today'
+    menu_url            VARCHAR(255),                        -- Route path: '/care-partners/payouts'
 
     -- DocSlot multi-tenant adaptations
     product_key         VARCHAR(50) NOT NULL DEFAULT 'docslot',  -- Which product this menu belongs to
@@ -476,14 +476,17 @@ BEGIN
     RETURNING menu_id INTO m_settings;
 
     -- ---- Children -----------------------------------------------------------
-    INSERT INTO platform.navigation_menus (parent_menu_id, menu_key, menu_label, menu_label_hi, menu_url, display_order, badge_source) VALUES
-    (m_bookings, 'bookings.today', 'Today', 'आज', '/bookings/today', 1, 'today_bookings_count'),
-    (m_bookings, 'bookings.upcoming', 'Upcoming', 'आगामी', '/bookings/upcoming', 2, NULL),
-    (m_bookings, 'bookings.history', 'History', 'इतिहास', '/bookings/history', 3, NULL);
+    -- NOTE: Bookings has NO child menu nodes. The Today / Upcoming / History
+    -- horizons are in-screen tabs on the /bookings board (BookingsScreen), not
+    -- separate routes — duplicating them as sidebar children was redundant and
+    -- pointed at non-existent /bookings/{today,upcoming,history} routes. Removed.
 
-    -- Patient clinical sub-screen (PHI — gated separately below on patient.read)
-    INSERT INTO platform.navigation_menus (parent_menu_id, menu_key, menu_label, menu_label_hi, menu_url, display_order) VALUES
-    (m_patients, 'patients.clinical', 'Clinical Records', 'क्लिनिकल रिकॉर्ड', '/patients/clinical', 1);
+    -- NOTE: Patients has NO child menu nodes. Clinical records are PER-PATIENT
+    -- (prescriptions / reports / history / ABDM live under /patients/{id}/records,
+    -- reached by opening a patient and gated by a purpose-of-use declaration), so
+    -- there is no tenant-wide "clinical records" screen to hang off the sidebar.
+    -- The old 'patients.clinical' child pointed at a non-existent /patients/clinical
+    -- route — removed.
 
     -- Care Partners children (customer-facing names for broker/commission program)
     INSERT INTO platform.navigation_menus (parent_menu_id, menu_key, menu_label, menu_label_hi, menu_url, display_order) VALUES
@@ -498,7 +501,7 @@ BEGIN
 
     -- ---- Menu → permission gates -------------------------------------------
     -- Helper pattern: map a menu to a permission only if that permission exists.
-    -- bookings + children + calendar → docslot.booking.read (tenant-wide view).
+    -- bookings + calendar → docslot.booking.read (tenant-wide view).
     -- ANY-of semantics (require_all=false default): we ALSO map booking.read_self
     -- so a doctor (who holds the self-scoped read, not the tenant-wide one) still
     -- sees Bookings/Calendar for their own schedule. The menu is shown if the user
@@ -507,15 +510,15 @@ BEGIN
     SELECT m.menu_id, p.permission_id
     FROM platform.navigation_menus m
     JOIN platform.permissions p ON p.permission_key IN ('docslot.booking.read', 'docslot.booking.read_self')
-    WHERE m.menu_key IN ('bookings','bookings.today','bookings.upcoming','bookings.history','calendar')
+    WHERE m.menu_key IN ('bookings','calendar')
     ON CONFLICT DO NOTHING;
 
-    -- patients + clinical → docslot.patient.read
+    -- patients → docslot.patient.read
     INSERT INTO platform.menu_permissions (menu_id, permission_id)
     SELECT m.menu_id, p.permission_id
     FROM platform.navigation_menus m
     JOIN platform.permissions p ON p.permission_key = 'docslot.patient.read'
-    WHERE m.menu_key IN ('patients','patients.clinical')
+    WHERE m.menu_key IN ('patients')
     ON CONFLICT DO NOTHING;
 
     -- doctors → docslot.doctor.read

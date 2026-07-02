@@ -1,10 +1,11 @@
-// Purpose-of-use gate. Clinical reads require a declared purpose (DPDP). Until
-// the operator declares one, the records are LOCKED — no clinical fetch happens
-// (the queries are disabled without a purpose). Once declared, the chosen purpose
-// is attached to every clinical read (X-Purpose-Of-Use) and the access is logged.
+// Purpose-of-use gate (shared clinical primitive). Clinical reads require a
+// declared purpose (DPDP). Until the operator declares one, the records are LOCKED
+// — no clinical fetch happens (the queries stay disabled without a purpose). Once
+// declared, the chosen purpose is attached to every clinical read (X-Purpose-Of-Use)
+// and the access is logged.
 //
-// `value` is the active purpose (null = not declared). The parent owns the state
-// so it resets on navigation away from the patient.
+// Used by the patient records screen and the consultation composer; the parent owns
+// the `purpose` state so it resets on navigation away from the patient/booking.
 
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';

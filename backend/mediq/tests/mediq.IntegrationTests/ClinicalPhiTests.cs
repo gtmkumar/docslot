@@ -380,10 +380,10 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
         var presIdB = Guid.NewGuid();
         await ExecAsync(
             """
-            INSERT INTO docslot.prescriptions (prescription_id, booking_id, patient_id, doctor_id, tenant_id, medications, status, created_at, updated_at)
-            VALUES (@id, @b, @p, @doc, @t, to_jsonb('enc'::text), 'finalized', NOW(), NOW())
+            INSERT INTO docslot.prescriptions (prescription_id, booking_id, patient_id, doctor_id, tenant_id, medications, status, finalized_by_user_id, finalized_at, created_at, updated_at)
+            VALUES (@id, @b, @p, @doc, @t, to_jsonb('enc'::text), 'finalized', @u, NOW(), NOW(), NOW())
             """,
-            ("id", presIdB), ("b", factory.BookingId), ("p", factory.PatientId), ("doc", factory.DoctorId), ("t", factory.TenantB));
+            ("id", presIdB), ("b", factory.BookingId), ("p", factory.PatientId), ("doc", factory.DoctorId), ("t", factory.TenantB), ("u", factory.AdminUserId));
 
         // The caller is scoped to tenant A. Under docslot_app (NOBYPASSRLS), RLS must hide tenant B's row.
         // Prove at the DB level under docslot_app with app.tenant_id = A.
@@ -436,16 +436,16 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
         var presA = Guid.NewGuid();
         var presB = Guid.NewGuid();
         await ExecAsync(
-            "INSERT INTO docslot.prescriptions (prescription_id, booking_id, patient_id, doctor_id, tenant_id, medications, status, created_at, updated_at) VALUES (@id,@bk,@p,@d,@t, to_jsonb('encA'::text),'finalized',NOW(),NOW())",
-            ("id", presA), ("bk", factory.BookingId), ("p", factory.PatientId), ("d", factory.DoctorId), ("t", factory.TenantA));
+            "INSERT INTO docslot.prescriptions (prescription_id, booking_id, patient_id, doctor_id, tenant_id, medications, status, finalized_by_user_id, finalized_at, created_at, updated_at) VALUES (@id,@bk,@p,@d,@t, to_jsonb('encA'::text),'finalized',@u,NOW(),NOW(),NOW())",
+            ("id", presA), ("bk", factory.BookingId), ("p", factory.PatientId), ("d", factory.DoctorId), ("t", factory.TenantA), ("u", factory.AdminUserId));
         // B needs its own booking (FK). Create a minimal booking + slot in B.
         var slotB = Guid.NewGuid(); var bookingB = Guid.NewGuid(); var doctorB = Guid.NewGuid();
         await ExecAsync("INSERT INTO docslot.doctors (doctor_id,tenant_id,full_name,is_active,is_accepting_new_patients,created_at,updated_at) VALUES (@id,@t,'DrB',true,true,NOW(),NOW())", ("id", doctorB), ("t", factory.TenantB));
         await ExecAsync("INSERT INTO docslot.time_slots (slot_id,tenant_id,doctor_id,slot_date,start_time,end_time,status,current_count,max_count,created_at) VALUES (@id,@t,@d,CURRENT_DATE,'08:00','08:15','booked',1,1,NOW())", ("id", slotB), ("t", factory.TenantB), ("d", doctorB));
         await ExecAsync("INSERT INTO docslot.bookings (booking_id,tenant_id,slot_id,patient_id,doctor_id,status,booked_via,booked_for,booked_at,updated_at) VALUES (@id,@t,@s,@p,@d,'completed','dashboard','self',NOW(),NOW())", ("id", bookingB), ("t", factory.TenantB), ("s", slotB), ("p", factory.PatientId), ("d", doctorB));
         await ExecAsync(
-            "INSERT INTO docslot.prescriptions (prescription_id, booking_id, patient_id, doctor_id, tenant_id, medications, status, created_at, updated_at) VALUES (@id,@bk,@p,@d,@t, to_jsonb('encB'::text),'finalized',NOW(),NOW())",
-            ("id", presB), ("bk", bookingB), ("p", factory.PatientId), ("d", doctorB), ("t", factory.TenantB));
+            "INSERT INTO docslot.prescriptions (prescription_id, booking_id, patient_id, doctor_id, tenant_id, medications, status, finalized_by_user_id, finalized_at, created_at, updated_at) VALUES (@id,@bk,@p,@d,@t, to_jsonb('encB'::text),'finalized',@u,NOW(),NOW(),NOW())",
+            ("id", presB), ("bk", bookingB), ("p", factory.PatientId), ("d", doctorB), ("t", factory.TenantB), ("u", factory.AdminUserId));
 
         // The admin (super_admin platform) can scope to either tenant via login tenantId. Fire MANY parallel
         // reads, alternating tenants. Each request must see ONLY its own tenant's prescription — a pool-bleed
@@ -935,7 +935,289 @@ public sealed class ClinicalPhiTests(ClinicalWebAppFactory factory) : IClassFixt
         }
     }
 
+    // ---- Consultation composer (draft → finalize) ------------------------------------------------
+
+    [Fact]
+    public async Task Consultation_Post_Is_Idempotent_Per_Booking()
+    {
+        var client = await DoctorClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var (bookingId, slotId) = await SeedBookingAsync();
+        try
+        {
+            var r1 = await client.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId));
+            Assert.Equal(HttpStatusCode.OK, r1.StatusCode);
+            var d1 = (await r1.Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+            Assert.Equal("draft", d1.Status);
+            Assert.StartsWith("PRX-", d1.PrescriptionNumber);
+            Assert.Equal(bookingId, d1.BookingId);
+            Assert.Equal(factory.PatientId, d1.PatientId);
+
+            // Second call for the SAME booking returns the SAME draft (get-or-create), not a new row.
+            var r2 = await client.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId));
+            Assert.Equal(HttpStatusCode.OK, r2.StatusCode);
+            var d2 = (await r2.Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+            Assert.Equal(d1.ConsultationId, d2.ConsultationId);
+
+            Assert.Equal(1, await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM docslot.prescriptions WHERE booking_id=@b AND status='draft'", ("b", bookingId)));
+            // drafted_by is the preparer; not yet signed.
+            Assert.Equal(factory.DoctorUserId.ToString(), await ScalarStrAsync(
+                "SELECT drafted_by_user_id::text FROM docslot.prescriptions WHERE prescription_id=@id", ("id", d1.ConsultationId)));
+        }
+        finally { await CleanupBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task Consultation_Patch_Saves_And_Encrypts_Clinical_Fields_Vitals_Plain()
+    {
+        var client = await DoctorClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var (bookingId, slotId) = await SeedBookingAsync();
+        try
+        {
+            var draft = (await (await client.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId)))
+                .Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+
+            const string diagnosis = "Type 2 diabetes mellitus";
+            const string meds = "[{\"name\":\"Metformin\",\"dose\":\"500mg\"}]";
+            var save = await client.PatchAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}",
+                new SaveConsultationRequest(
+                    new VitalsDto("130/85", 82, 98.6m, 97, 72.5m), "Polyuria", "BMI 29", diagnosis, meds,
+                    ["HbA1c", "Fasting glucose"], "Diet + exercise", 14));
+            Assert.Equal(HttpStatusCode.NoContent, save.StatusCode);
+
+            // CIPHERTEXT AT REST for the registered clinical fields.
+            var rawDiag = await ScalarStrAsync("SELECT diagnosis FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId));
+            Assert.DoesNotContain(diagnosis, rawDiag!);
+            var rawMeds = await ScalarStrAsync("SELECT medications #>> '{}' FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId));
+            Assert.DoesNotContain("Metformin", rawMeds!);
+            // vitals stored PLAIN (unencrypted standard PHI — deliberately NOT in the encrypted_fields_registry).
+            var rawVitals = await ScalarStrAsync("SELECT vitals::text FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId));
+            Assert.Contains("130/85", rawVitals!);
+
+            // Re-open (get-or-create returns the same draft) → decrypts back to plaintext + surfaces vitals/investigations.
+            var refetch = (await (await client.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId)))
+                .Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+            Assert.Equal(draft.ConsultationId, refetch.ConsultationId);
+            Assert.Equal(diagnosis, refetch.Diagnosis);
+            Assert.Contains("Metformin", refetch.MedicationsJson);
+            Assert.Equal("130/85", refetch.Vitals.Bp);
+            Assert.Equal(82, refetch.Vitals.PulseBpm);
+            Assert.Contains("HbA1c", refetch.Investigations);
+            Assert.Equal(14, refetch.FollowUpInDays);
+
+            // A partial autosave (only advice) must NOT wipe the previously-saved fields.
+            var partial = await client.PatchAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}",
+                new SaveConsultationRequest(null, null, null, null, null, null, "Recheck in 2 weeks", null));
+            Assert.Equal(HttpStatusCode.NoContent, partial.StatusCode);
+            var after = (await (await client.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId)))
+                .Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+            Assert.Equal(diagnosis, after.Diagnosis);          // preserved
+            Assert.Equal("Recheck in 2 weeks", after.Advice);  // updated
+        }
+        finally { await CleanupBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task Consultation_Finalize_By_Doctor_Signs_With_Server_Derived_Author()
+    {
+        var client = await DoctorClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var (bookingId, slotId) = await SeedBookingAsync();
+        try
+        {
+            var draft = (await (await client.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId)))
+                .Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+            await client.PatchAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}",
+                new SaveConsultationRequest(null, "Fever", "Febrile", "Viral fever",
+                    "[{\"name\":\"Paracetamol\",\"dose\":\"500mg\"}]", null, "Fluids", 3));
+
+            var fin = await client.PostAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}/finalize",
+                new FinalizeConsultationRequest(null));
+            Assert.Equal(HttpStatusCode.OK, fin.StatusCode);
+            var result = (await fin.Content.ReadFromJsonAsync<FinalizeConsultationResult>())!;
+            Assert.True(result.Finalized);
+            Assert.Empty(result.Alerts);
+            Assert.StartsWith("PRX-", result.PrescriptionNumber);
+
+            // status finalized; author server-derived: finalized_by = the caller user; doctor_id = the caller's doctor row.
+            Assert.Equal("finalized", await ScalarStrAsync("SELECT status FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId)));
+            Assert.Equal(factory.DoctorUserId.ToString(), await ScalarStrAsync(
+                "SELECT finalized_by_user_id::text FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId)));
+            Assert.Equal(factory.DoctorId.ToString(), await ScalarStrAsync(
+                "SELECT doctor_id::text FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId)));
+            Assert.False(string.IsNullOrEmpty(await ScalarStrAsync(
+                "SELECT finalized_at::text FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId))));
+
+            // A second finalize of the now-signed consultation → 409 (only a draft can be signed).
+            var again = await client.PostAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}/finalize", new FinalizeConsultationRequest(null));
+            Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+        }
+        finally { await CleanupBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task Consultation_Finalize_By_Non_Doctor_With_Create_Permission_Is_Forbidden()
+    {
+        // The doctor prepares the draft.
+        var doctor = await DoctorClientAsync();
+        doctor.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var (bookingId, slotId) = await SeedBookingAsync();
+        try
+        {
+            var draft = (await (await doctor.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId)))
+                .Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+
+            // The admin holds docslot.prescription.create (super_admin/tenant_owner) but is NOT linked to a
+            // docslot.doctors row → the server cannot derive an author → 403 (MCI: only a doctor prescribes).
+            var admin = await AuthedClientAsync();
+            var fin = await admin.PostAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}/finalize", new FinalizeConsultationRequest(null));
+            Assert.Equal(HttpStatusCode.Forbidden, fin.StatusCode);
+
+            // The consultation stays a draft (never signed by a non-doctor).
+            Assert.Equal("draft", await ScalarStrAsync("SELECT status FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId)));
+        }
+        finally { await CleanupBookingAsync(bookingId, slotId); }
+    }
+
+    [Fact]
+    public async Task Consultation_Finalize_Blocks_On_Allergy_Alert_Then_Overrides_Idempotently()
+    {
+        var client = await DoctorClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var (bookingId, slotId) = await SeedBookingAsync();
+
+        // Seed a recorded penicillin allergy (encrypted at rest) so amoxicillin trips a critical allergy alert.
+        var seed = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history",
+            new CreateMedicalHistoryRequest("allergy", "Penicillin allergy", "Anaphylaxis (2019)", "severe", "T78.0", new DateOnly(2019, 5, 1), null, true));
+        var allergy = (await seed.Content.ReadFromJsonAsync<CreateMedicalHistoryResult>())!;
+
+        try
+        {
+            var draft = (await (await client.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId)))
+                .Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+            await client.PatchAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}",
+                new SaveConsultationRequest(null, "Sore throat", null, "Bacterial infection",
+                    "[{\"name\":\"Amoxicillin\",\"dose\":\"500mg\"}]", null, null, 5));
+
+            // (1) Finalize WITHOUT an override reason → blocked: finalized:false + the alert(s), still a draft.
+            var f1 = await client.PostAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}/finalize", new FinalizeConsultationRequest(null));
+            Assert.Equal(HttpStatusCode.OK, f1.StatusCode);
+            var r1 = (await f1.Content.ReadFromJsonAsync<FinalizeConsultationResult>())!;
+            Assert.False(r1.Finalized);
+            Assert.Contains(r1.Alerts, a => a.AlertType == "allergy" && a.Severity == "critical");
+            Assert.Equal("draft", await ScalarStrAsync("SELECT status FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId)));
+
+            var alertsAfterFirst = await ScalarIntAsync("SELECT COUNT(*)::int FROM docslot.drug_alerts WHERE prescription_id=@id", ("id", draft.ConsultationId));
+            Assert.True(alertsAfterFirst >= 1);
+
+            // (2) Retry WITH an override reason → signs; alerts marked overridden; NO duplicate alert rows.
+            var f2 = await client.PostAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}/finalize",
+                new FinalizeConsultationRequest("Prior uneventful amoxicillin course; benefit outweighs risk."));
+            Assert.Equal(HttpStatusCode.OK, f2.StatusCode);
+            var r2 = (await f2.Content.ReadFromJsonAsync<FinalizeConsultationResult>())!;
+            Assert.True(r2.Finalized);
+            Assert.Empty(r2.Alerts);
+            Assert.Equal("finalized", await ScalarStrAsync("SELECT status FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId)));
+
+            // Idempotent screening: the override retry created no duplicate alerts.
+            Assert.Equal(alertsAfterFirst, await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM docslot.drug_alerts WHERE prescription_id=@id", ("id", draft.ConsultationId)));
+            // No unoverridden high/critical alerts remain; the override records who/why.
+            Assert.Equal(0, await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM docslot.drug_alerts WHERE prescription_id=@id AND severity IN ('high','critical') AND overridden=false", ("id", draft.ConsultationId)));
+            Assert.True(await ScalarIntAsync(
+                "SELECT COUNT(*)::int FROM docslot.drug_alerts WHERE prescription_id=@id AND overridden=true AND overridden_by_user_id=@u AND override_reason IS NOT NULL",
+                ("id", draft.ConsultationId), ("u", factory.DoctorUserId)) >= 1);
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.drug_alerts WHERE prescription_id IN (SELECT prescription_id FROM docslot.prescriptions WHERE booking_id=@b)", ("b", bookingId));
+            await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE history_id=@id", ("id", allergy.HistoryId));
+            await CleanupBookingAsync(bookingId, slotId);
+        }
+    }
+
+    [Fact]
+    public async Task Consultation_Finalize_Screens_STRUCTURED_Medications_Shape_Against_Allergy()
+    {
+        // Regression (live bug PRX-2026-07-02203): the composer sends STRUCTURED meds where `dose` is an OBJECT
+        // {morning,noon,night} plus durationDays. A typed deserialize once threw JsonException → the defensive
+        // catch returned [] → the entire drug screen silently no-oped → a penicillin-class drug finalized against
+        // a recorded severe penicillin allergy with ZERO alerts. This asserts the structured shape IS screened.
+        var client = await DoctorClientAsync();
+        client.DefaultRequestHeaders.Add("X-Purpose-Of-Use", "treatment");
+        var (bookingId, slotId) = await SeedBookingAsync();
+
+        var seed = await client.PostAsJsonAsync($"/api/v1/patients/{factory.PatientId}/medical-history",
+            new CreateMedicalHistoryRequest("allergy", "Penicillin allergy", "Anaphylaxis (2019)", "severe", "T78.0", new DateOnly(2019, 5, 1), null, true));
+        var allergy = (await seed.Content.ReadFromJsonAsync<CreateMedicalHistoryResult>())!;
+
+        try
+        {
+            var draft = (await (await client.PostAsJsonAsync("/api/v1/consultations", new CreateConsultationRequest(bookingId)))
+                .Content.ReadFromJsonAsync<ConsultationDraftDto>())!;
+
+            // FULL STRUCTURED composer shape — dose is an OBJECT, plus strength/form/timing/durationDays/instructions.
+            const string structuredMeds =
+                "[{\"name\":\"Amoxicillin\",\"strength\":\"500mg\",\"form\":\"tablet\"," +
+                "\"dose\":{\"morning\":1,\"noon\":0,\"night\":1},\"timing\":\"after_food\"," +
+                "\"durationDays\":7,\"instructions\":\"Complete the course\"}]";
+            await client.PatchAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}",
+                new SaveConsultationRequest(null, "Sore throat", null, "Bacterial infection", structuredMeds, null, null, 7));
+
+            // Finalize without override → MUST be blocked by the allergy alert (the bug produced finalized:true, no alerts).
+            var fin = await client.PostAsJsonAsync($"/api/v1/consultations/{draft.ConsultationId}/finalize", new FinalizeConsultationRequest(null));
+            Assert.Equal(HttpStatusCode.OK, fin.StatusCode);
+            var result = (await fin.Content.ReadFromJsonAsync<FinalizeConsultationResult>())!;
+            Assert.False(result.Finalized);
+            var alert = Assert.Single(result.Alerts, a => a.AlertType == "allergy");
+            Assert.Contains(alert.Severity, new[] { "high", "critical" });
+            Assert.Contains("Amoxicillin", alert.MedicationName);
+            Assert.Equal("draft", await ScalarStrAsync("SELECT status FROM docslot.prescriptions WHERE prescription_id=@id", ("id", draft.ConsultationId)));
+        }
+        finally
+        {
+            await ExecAsync("DELETE FROM docslot.drug_alerts WHERE prescription_id IN (SELECT prescription_id FROM docslot.prescriptions WHERE booking_id=@b)", ("b", bookingId));
+            await ExecAsync("DELETE FROM docslot.patient_medical_history WHERE history_id=@id", ("id", allergy.HistoryId));
+            await CleanupBookingAsync(bookingId, slotId);
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
+
+    private async Task<HttpClient> DoctorClientAsync()
+    {
+        var client = factory.CreateClient();
+        var resp = await client.PostAsJsonAsync("/api/v1/auth/login",
+            new LoginRequest(factory.DoctorEmail, ClinicalWebAppFactory.AdminPassword, factory.TenantA));
+        resp.EnsureSuccessStatusCode();
+        var token = (await resp.Content.ReadFromJsonAsync<TokenResponse>())!;
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+        return client;
+    }
+
+    /// <summary>Seeds a fresh completed booking (with its own slot) in tenant A so each consultation test owns
+    /// an isolated draft (the partial unique index allows one draft per booking).</summary>
+    private async Task<(Guid BookingId, Guid SlotId)> SeedBookingAsync()
+    {
+        var slotId = Guid.NewGuid();
+        var bookingId = Guid.NewGuid();
+        await ExecAsync("INSERT INTO docslot.time_slots (slot_id,tenant_id,doctor_id,slot_date,start_time,end_time,status,current_count,max_count,created_at) VALUES (@s,@t,@d,CURRENT_DATE,'11:00','11:15','booked',1,1,NOW())",
+            ("s", slotId), ("t", factory.TenantA), ("d", factory.DoctorId));
+        await ExecAsync("INSERT INTO docslot.bookings (booking_id,tenant_id,slot_id,patient_id,doctor_id,status,booked_via,booked_for,booked_at,updated_at) VALUES (@b,@t,@s,@p,@d,'completed','dashboard','self',NOW(),NOW())",
+            ("b", bookingId), ("t", factory.TenantA), ("s", slotId), ("p", factory.PatientId), ("d", factory.DoctorId));
+        return (bookingId, slotId);
+    }
+
+    private static async Task CleanupBookingAsync(Guid bookingId, Guid slotId)
+    {
+        await ExecAsync("DELETE FROM docslot.drug_alerts WHERE prescription_id IN (SELECT prescription_id FROM docslot.prescriptions WHERE booking_id=@b)", ("b", bookingId));
+        await ExecAsync("DELETE FROM docslot.prescriptions WHERE booking_id=@b", ("b", bookingId));
+        await ExecAsync("DELETE FROM docslot.bookings WHERE booking_id=@b", ("b", bookingId));
+        await ExecAsync("DELETE FROM docslot.time_slots WHERE slot_id=@s", ("s", slotId));
+    }
 
     /// <summary>Seeds a break-glass grant directly (privileged role) for the negative/positive scope tests.</summary>
     private static Task SeedGrantAsync(Guid userId, Guid tenantId, Guid patientId, string resourceType, Guid? resourceId, int expiresInMinutes) =>

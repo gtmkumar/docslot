@@ -9,18 +9,21 @@
 
 import { useState } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
-import { Link, useParams } from '@tanstack/react-router';
+import { Link, useNavigate, useParams } from '@tanstack/react-router';
+import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { Avatar } from '@/components/ui/Avatar';
 import { Card } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { maskPhone, shortDate } from '@/lib/format';
+import { listBookings } from '@/lib/backend';
 import { PATIENTS } from '@/lib/data';
 import { usePermissions } from '@/lib/permissions';
 import { usePatientConsent } from './api';
 import { ConsentBadge } from './components/ConsentBadge';
-import { PurposeBanner, PurposeGate } from './components/PurposeGate';
+import { PurposeBanner, PurposeGate } from '@/components/ui/PurposeGate';
 import { PrescriptionsTab } from './components/PrescriptionsTab';
 import { ReportsTab } from './components/ReportsTab';
 import { HistoryTab } from './components/HistoryTab';
@@ -35,12 +38,29 @@ const tabTrigger =
 export function PatientRecordsScreen() {
   const { t } = useTranslation();
   const { can } = usePermissions();
+  const navigate = useNavigate();
   const { patientId } = useParams({ from: '/authed/patients/$patientId/records' });
   const patient = PATIENTS.find((p) => p.id === patientId);
   const { data: consent, isLoading: consentLoading } = usePatientConsent(patientId);
 
   // Declared purpose — null until the gate is satisfied. Resets on navigation.
   const [purpose, setPurpose] = useState<PurposeOfUse | null>(null);
+
+  // "New prescription" routes to the consultation composer for the patient's ACTIVE
+  // booking (a prescription must bind a real booking — no synthetic ids). Resolved
+  // from the bookings list by masked phone; only fetched when the operator can
+  // prescribe. If there's no active booking, we explain that one is needed.
+  const canCreateRx = can('docslot.prescription.create');
+  const bookingsQ = useQuery({ queryKey: ['bookings', 'list'] as const, queryFn: listBookings, enabled: canCreateRx });
+  const activeBooking = patient
+    ? bookingsQ.data?.find(
+        (b) => b.maskedPhone === maskPhone(patient.phone) && (b.status === 'pending' || b.status === 'confirmed' || b.status === 'checked_in'),
+      )
+    : undefined;
+  const onNewPrescription = () => {
+    if (activeBooking) navigate({ to: '/consult/$bookingId', params: { bookingId: activeBooking.id } });
+    else toast.info(t('clinical.rx.needBooking'));
+  };
 
   return (
     <section aria-labelledby="screen-heading" className="flex flex-col gap-5">
@@ -111,7 +131,7 @@ export function PatientRecordsScreen() {
 
             {can('docslot.prescription.read') ? (
               <Tabs.Content value="prescriptions" className="pt-5 focus-visible:outline-none">
-                <PrescriptionsTab patientId={patientId} purpose={purpose} />
+                <PrescriptionsTab patientId={patientId} purpose={purpose} onNewPrescription={onNewPrescription} />
               </Tabs.Content>
             ) : null}
             {can('docslot.report.read') ? (

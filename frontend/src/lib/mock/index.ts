@@ -262,6 +262,9 @@ export function listBookings(): Promise<BookingRow[]> {
       source: b.source,
       note: b.note,
       createdAgo: b.createdAgo,
+      // Demographics for the queue row subline (masked phone stays the only PHI).
+      age: b.age,
+      gender: b.gender,
       bookedByType: b.bookedByType,
       behalfRelation: b.behalfRelation,
       patientConsentStatus: b.patientConsentStatus,

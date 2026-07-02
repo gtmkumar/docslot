@@ -303,6 +303,13 @@ export const getPatientConsent = USE_REAL_API ? real.getPatientConsent : mock.ge
 export const listPrescriptions = USE_REAL_API ? real.listPrescriptions : mock.listPrescriptions;
 export const getPrescription = USE_REAL_API ? real.getPrescription : mock.getPrescription;
 export const issuePrescription = USE_REAL_API ? real.issuePrescription : mock.issuePrescription;
+// CONSULTATION COMPOSER (Phase A) — get-or-create draft (POST, purpose + Idempotency-Key),
+// autosave (PATCH → 204, no PHI echoed), finalize (POST, Idempotency-Key; finalized:false
+// means blocked by unoverridden high/critical drug alerts). Mock keeps stateful drafts
+// keyed by bookingId so the full flow works flag-off.
+export const getOrCreateConsultation = USE_REAL_API ? real.getOrCreateConsultation : mock.getOrCreateConsultation;
+export const saveConsultation = USE_REAL_API ? real.saveConsultation : mock.saveConsultation;
+export const finalizeConsultation = USE_REAL_API ? real.finalizeConsultation : mock.finalizeConsultation;
 export const listLabReports = USE_REAL_API ? real.listLabReports : mock.listLabReports;
 export const getLabReport = USE_REAL_API ? real.getLabReport : mock.getLabReport;
 export const uploadLabReport = USE_REAL_API ? real.uploadLabReport : mock.uploadLabReport;
