@@ -1446,6 +1446,86 @@ export interface AddIpAllowlistRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WORKSPACE SETTINGS (Settings screen — Phase 1). Mirrors
+// mediq.SharedDataModel/Docslot/Settings/SettingsDtos.cs (camelCase wire). Surfaced
+// on /settings; the facility row is bound from the JWT tenant server-side. GET gates
+// tenant.settings.read (404 when the tenant has no facility row); PATCH gates
+// tenant.settings.update — each supplied section REPLACES that section (send the full
+// section object, not a diff). The WhatsApp access token is NEVER present on the wire —
+// keep it out of this contract. NO PHI (tenant configuration only).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One weekday's opening window. `open`/`close` are "HH:mm" (IST) or null; `closed`
+ *  marks the day shut (times ignored). Absent day keys are treated as closed by the UI. */
+export const BusinessHoursDaySchema = z.object({
+  open: z.string().nullable(),
+  close: z.string().nullable(),
+  closed: z.boolean(),
+});
+export type BusinessHoursDay = z.infer<typeof BusinessHoursDaySchema>;
+
+/** Weekly business hours keyed by mon..sun (a subset may be present on the wire). */
+export const BusinessHoursSchema = z.record(z.string(), BusinessHoursDaySchema);
+export type BusinessHours = z.infer<typeof BusinessHoursSchema>;
+
+/** Tenant-default appointment rules (a doctor-specific override, when present, wins).
+ *  Ranges are server-validated (422): slotDuration 5..120, cutoff ≥0, maxAdvance >0,
+ *  reminder ≥0, grace 0..240. The schema stays permissive (ints) — the form + server
+ *  enforce the bounds so a regression surfaces at the API, not the parser. */
+export const AppointmentSettingsSchema = z.object({
+  slotDurationMinutes: z.number().int(),
+  bookingCutoffHours: z.number().int(),
+  autoConfirm: z.boolean(),
+  maxAdvanceDays: z.number().int(),
+  allowOverbooking: z.boolean(),
+  reminderHoursBefore: z.number().int(),
+  noShowGraceMinutes: z.number().int(),
+});
+export type AppointmentSettings = z.infer<typeof AppointmentSettingsSchema>;
+
+/** WhatsApp Cloud API connection status. The access token is NEVER serialized — this
+ *  shape intentionally omits it. `verifiedAt` is an ISO string (.NET DateTimeOffset). */
+export const WhatsappSettingsSchema = z.object({
+  connected: z.boolean(),
+  phoneNumberId: z.string().nullable(),
+  verifiedAt: z.string().nullable(),
+});
+export type WhatsappSettings = z.infer<typeof WhatsappSettingsSchema>;
+
+/** ABDM Health Facility Registry linkage (display-only). */
+export const HfrSettingsSchema = z.object({
+  id: z.string().nullable(),
+  status: z.string().nullable(),
+});
+export type HfrSettings = z.infer<typeof HfrSettingsSchema>;
+
+/** `GET /settings` → SettingsDto. Tolerant (passthrough) so additive server fields
+ *  don't break parsing. facilityType/specialtyFocus are read-only identity. */
+export const SettingsSchema = z
+  .object({
+    facilityType: z.string(),
+    specialtyFocus: z.string().nullable(),
+    businessHours: BusinessHoursSchema,
+    appointmentSettings: AppointmentSettingsSchema,
+    // WIRE NOTE: the live API serializes this as `whatsApp` (capital A) — .NET
+    // camelCases the C# `WhatsApp` property, lowercasing only the first char. The
+    // handoff contract wrote `whatsapp`; the running endpoint is authoritative, so the
+    // app-facing field matches the wire (mock seeds it the same → no adapter needed).
+    whatsApp: WhatsappSettingsSchema,
+    hfr: HfrSettingsSchema,
+  })
+  .passthrough();
+export type Settings = z.infer<typeof SettingsSchema>;
+
+/** `PATCH /settings` body — at least one section; each is a FULL replace (not a diff).
+ *  No Idempotency-Key (configuration write, not a money/booking mutation). */
+export const UpdateSettingsRequestSchema = z.object({
+  businessHours: BusinessHoursSchema.optional(),
+  appointmentSettings: AppointmentSettingsSchema.optional(),
+});
+export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // INVITATIONS (issue #89, epic #80 Phase C) — token-based tenant onboarding.
 // Mirrors mediq.SharedDataModel/Docslot/Admin/InvitationDtos.cs (camelCase wire).
 // The plaintext token is returned EXACTLY ONCE (create/resend); the list/read

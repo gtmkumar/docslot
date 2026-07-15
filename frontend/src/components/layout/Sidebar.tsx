@@ -108,16 +108,20 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
           <p className="px-1 text-[13px] text-muted">{t('error.genericTitle')}</p>
         ) : (
           <ul className="flex flex-col gap-0.5">
-            {menus.map((node) => (
-              <NavItem
-                key={node.key}
-                node={node}
-                pathname={pathname}
-                badges={badges}
-                isHindi={isHindi}
-                onNavigate={onNavigate}
-              />
-            ))}
+            {menus
+              // Settings has a fixed home in the bottom utility block (below), like the
+              // WhatsApp pill and profile — so it is not repeated in the scrollable list.
+              .filter((node) => node.key !== 'settings')
+              .map((node) => (
+                <NavItem
+                  key={node.key}
+                  node={node}
+                  pathname={pathname}
+                  badges={badges}
+                  isHindi={isHindi}
+                  onNavigate={onNavigate}
+                />
+              ))}
           </ul>
         )}
       </nav>
@@ -133,7 +137,13 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
         <Link
           to="/settings"
           onClick={onNavigate}
-          className="mt-1 flex items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-[13px] text-ink transition-colors hover:bg-surface-sunk aria-[current=page]:bg-primary-soft aria-[current=page]:text-primary"
+          aria-current={pathname === '/settings' || pathname.startsWith('/settings/') ? 'page' : undefined}
+          className={[
+            'mt-1 flex items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-[13px] transition-colors',
+            pathname === '/settings' || pathname.startsWith('/settings/')
+              ? 'bg-primary-soft text-primary'
+              : 'text-ink hover:bg-surface-sunk',
+          ].join(' ')}
         >
           <SettingsIcon size={16} aria-hidden="true" />
           {t('app.settings')}
@@ -179,65 +189,65 @@ function NavItem({
   // the English label when the Hindi string is absent.
   const Icon = iconForKey(node.icon ?? '');
   const label = (isHindi ? node.labelHi : node.label) ?? node.label;
-  const active = node.route === pathname;
   const badge = node.badgeSource ? badges?.[node.badgeSource] : undefined;
 
-  // /me/menus returns a nested parent→children tree; render children recursively under their
-  // parent (indented) so child menu nodes are not silently dropped from navigation (#59).
-  const childItems =
-    node.children && node.children.length > 0 ? (
-      <li>
-        <ul className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
-          {node.children.map((child) => (
-            <NavItem
-              key={child.key}
-              node={child}
-              pathname={pathname}
-              badges={badges}
-              isHindi={isHindi}
-              onNavigate={onNavigate}
-            />
-          ))}
-        </ul>
-      </li>
-    ) : null;
-
-  // Section headers (server-decided) or routeless nodes render as group labels (+ any children).
+  // Routeless GROUP node (section header) → a label that renders its children indented.
+  // A group has no page of its own, so its children are the actual navigable items.
   if (node.isSectionHeader || !node.route) {
     return (
       <>
         <li className="px-1 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-2">{label}</li>
-        {childItems}
+        {node.children && node.children.length > 0 ? (
+          <li>
+            <ul className="ml-3 flex flex-col gap-0.5 border-l border-line pl-2">
+              {node.children.map((child) => (
+                <NavItem
+                  key={child.key}
+                  node={child}
+                  pathname={pathname}
+                  badges={badges}
+                  isHindi={isHindi}
+                  onNavigate={onNavigate}
+                />
+              ))}
+            </ul>
+          </li>
+        ) : null}
       </>
     );
   }
+
+  // Routed node → a single FLAT leaf. Its children (e.g. Settings' Organization/Users,
+  // Care Partners' Directory/Payouts) are DELIBERATELY not nested here: the destination
+  // page presents them as tabs / a section-rail, so the sidebar stays one level deep and
+  // never duplicates a page's own sub-navigation. Active on the node's own path OR any
+  // sub-path, so a parent stays highlighted while you're on one of its in-page sections
+  // (e.g. /patients/$id, /settings/booking-rules).
+  const active = pathname === node.route || pathname.startsWith(node.route + '/');
   return (
-    <>
-      <li>
-        <Link
-          to={node.route}
-          onClick={onNavigate}
-          className={[
-            'flex items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-sm transition-colors',
-            active ? 'bg-primary text-bg' : 'text-ink hover:bg-surface-sunk',
-            isHindi ? 'deva' : '',
-          ].join(' ')}
-        >
-          <Icon size={17} aria-hidden="true" />
-          <span className="flex-1 truncate">{label}</span>
-          {badge ? (
-            <span
-              className={[
-                'inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold',
-                active ? 'bg-bg/20 text-bg' : 'bg-accent-soft text-accent',
-              ].join(' ')}
-            >
-              {badge}
-            </span>
-          ) : null}
-        </Link>
-      </li>
-      {childItems}
-    </>
+    <li>
+      <Link
+        to={node.route}
+        onClick={onNavigate}
+        className={[
+          'flex items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-sm transition-colors',
+          active ? 'bg-primary text-bg' : 'text-ink hover:bg-surface-sunk',
+          isHindi ? 'deva' : '',
+        ].join(' ')}
+      >
+        <Icon size={17} aria-hidden="true" />
+        <span className="flex-1 truncate">{label}</span>
+        {badge ? (
+          <span
+            className={[
+              'inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold',
+              active ? 'bg-bg/20 text-bg' : 'bg-accent-soft text-accent',
+            ].join(' ')}
+          >
+            {badge}
+          </span>
+        ) : null}
+      </Link>
+    </li>
   );
 }

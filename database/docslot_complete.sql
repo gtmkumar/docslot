@@ -6397,6 +6397,15 @@ BEGIN
     JOIN platform.permissions p ON p.permission_key = 'tenant.roles.assign'
     WHERE m.menu_key = 'settings.users' ON CONFLICT DO NOTHING;
 
+    -- settings.tenant (Organization) → tenant.settings.read. Menus must never lie:
+    -- the Organization screen's read is gated on tenant.settings.read, so users
+    -- without it (e.g. doctors) must not be offered the menu item at all.
+    INSERT INTO platform.menu_permissions (menu_id, permission_id)
+    SELECT m.menu_id, p.permission_id
+    FROM platform.navigation_menus m
+    JOIN platform.permissions p ON p.permission_key = 'tenant.settings.read'
+    WHERE m.menu_key = 'settings.tenant' ON CONFLICT DO NOTHING;
+
     -- Overview/dashboard and Settings root have NO gating permission — visible to
     -- all authenticated users (the FE still hides empty sub-items per their gates).
 END $seed_menus$;
@@ -8337,6 +8346,7 @@ AS $$
 DECLARE
     v_perm_key VARCHAR;
     v_perm_scope VARCHAR;
+    v_is_system BOOLEAN;
 BEGIN
     SELECT permission_key, scope INTO v_perm_key, v_perm_scope
     FROM platform.permissions WHERE permission_id = p_permission_id;
@@ -8344,7 +8354,21 @@ BEGIN
         RAISE EXCEPTION 'unknown permission %', p_permission_id;
     END IF;
 
+    SELECT is_system INTO v_is_system
+    FROM platform.roles WHERE role_id = p_role_id AND deleted_at IS NULL;
+    IF v_is_system IS NULL THEN
+        RAISE EXCEPTION 'unknown or deleted role %', p_role_id;
+    END IF;
+
     IF NOT platform.is_super_admin(p_actor_user_id) THEN
+        -- Built-in roles are catalog artifacts SHARED BY EVERY TENANT (role_permissions has no
+        -- tenant_id) — only super_admin may alter them. Without this guard a tenant admin could
+        -- inject any permission they hold with grant option into a global system role, escalating
+        -- that role in all tenants at once. Mirrors revoke_permission_from_role.
+        IF v_is_system THEN
+            RAISE EXCEPTION 'actor % may not edit the matrix of system role %', p_actor_user_id, p_role_id
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
         -- Non-super actors may never confer platform-scoped authority...
         IF v_perm_scope = 'platform' THEN
             RAISE EXCEPTION 'actor % may not grant platform-scoped permission %', p_actor_user_id, v_perm_key
@@ -8374,7 +8398,7 @@ BEGIN
 END;
 $$;
 COMMENT ON FUNCTION platform.grant_permission_to_role IS
-    'R3: grant a permission to a role only if the actor is super_admin OR holds it with grant option and it is not platform-scoped. Prevents privilege escalation.';
+    'R3: grant a permission to a role only if the actor is super_admin OR (the role is non-system AND the actor holds the permission with grant option AND it is not platform-scoped). System roles are global — non-super edits would escalate every tenant. Prevents privilege escalation.';
 
 -- Assign a role to a user, only if the actor may confer that role's authority.
 CREATE OR REPLACE FUNCTION platform.assign_role_to_user(

@@ -53,10 +53,13 @@ import {
   RevokeInvitationResultSchema,
   IpAllowlistEntrySchema,
   SecurityPolicyViewSchema,
+  SettingsSchema,
   type AddIpAllowlistRequest,
   type IpAllowlistEntry,
   type SecurityPolicyInput,
   type SecurityPolicyView,
+  type Settings,
+  type UpdateSettingsRequest,
   type CreateInvitationRequest,
   type InvitationList,
   type InvitationTokenResult,
@@ -2004,6 +2007,34 @@ export async function removeIpAllowlist(allowlistId: string, idempotencyKey: str
     idempotency: idempotencyKey,
   });
   return raw === true;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WORKSPACE SETTINGS (Settings screen — Phase 1) — /settings. The facility row is
+// bound from the JWT tenant server-side (never a client param). GET gates
+// tenant.settings.read (404 when the tenant has no facility row → the caller shows a
+// distinct "not set up" state); PATCH gates tenant.settings.update. Each supplied
+// section REPLACES that section wholesale. NO Idempotency-Key (configuration write,
+// not a money/booking mutation — the controller documents it as not required). NO PHI.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** GET /settings → SettingsDto (throws ApiError 404 when the tenant has no facility row). */
+export async function getSettings(): Promise<Settings> {
+  const raw = await apiFetch<unknown>('/settings');
+  return SettingsSchema.parse(raw);
+}
+
+/** PATCH /settings → the re-read SettingsDto. Sends only the supplied section(s); each
+ *  is a FULL replace. Ranges are server-validated → 422 surfaces via toUserError. */
+export async function updateSettings(req: UpdateSettingsRequest): Promise<Settings> {
+  const raw = await apiFetch<unknown>('/settings', {
+    method: 'PATCH',
+    body: {
+      ...(req.businessHours ? { businessHours: req.businessHours } : {}),
+      ...(req.appointmentSettings ? { appointmentSettings: req.appointmentSettings } : {}),
+    },
+  });
+  return SettingsSchema.parse(raw);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

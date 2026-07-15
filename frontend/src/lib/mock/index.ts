@@ -23,6 +23,8 @@ export * from './clinical';
 export * from './commission';
 // AI assist (no-show risk + triage) lives in ./ai.
 export * from './ai';
+// Workspace Settings screen (Phase 1) lives in ./settings.
+export * from './settings';
 
 import { BOOKINGS, CONVERSATIONS, DAYS, DEPARTMENTS, DOCTORS, TIMES, buildSlotGrid } from '@/lib/data';
 import { inr, maskPhone } from '@/lib/format';

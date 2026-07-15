@@ -587,6 +587,15 @@ BEGIN
     JOIN platform.permissions p ON p.permission_key = 'tenant.roles.assign'
     WHERE m.menu_key = 'settings.users' ON CONFLICT DO NOTHING;
 
+    -- settings.tenant (Organization) → tenant.settings.read. Menus must never lie:
+    -- the Organization screen's read is gated on tenant.settings.read, so users
+    -- without it (e.g. doctors) must not be offered the menu item at all.
+    INSERT INTO platform.menu_permissions (menu_id, permission_id)
+    SELECT m.menu_id, p.permission_id
+    FROM platform.navigation_menus m
+    JOIN platform.permissions p ON p.permission_key = 'tenant.settings.read'
+    WHERE m.menu_key = 'settings.tenant' ON CONFLICT DO NOTHING;
+
     -- Overview/dashboard and Settings root have NO gating permission — visible to
     -- all authenticated users (the FE still hides empty sub-items per their gates).
 END $seed_menus$;

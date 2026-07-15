@@ -142,6 +142,26 @@ public sealed class IamAdminTests(IamAdminWebAppFactory factory) : IClassFixture
     }
 
     [Fact]
+    public async Task Owner_GrantsToSystemRoleMatrix_Gets403()
+    {
+        // The GRANT (POST) path must guard system roles exactly like revoke (DELETE). role_permissions
+        // has no tenant_id, so a non-super grant to a built-in role would escalate it in EVERY tenant —
+        // even for a permission the actor holds with grant option. The DB guard must refuse it, and the
+        // system role's grant set must be unchanged afterward.
+        var client = await AuthedClientAsync(factory.OwnerEmail);
+        var viewerRoleId = await IamAdminWebAppFactory.SystemRoleIdAsync("tenant_viewer");
+        var permId = await IamAdminWebAppFactory.PermissionIdAsync(TenantPermissionKey);
+
+        var had = await IamAdminWebAppFactory.RoleHasPermissionAsync(viewerRoleId, permId);
+
+        var resp = await client.PostAsync(
+            $"/api/v1/iam/roles/{viewerRoleId}/permissions/{permId}", content: null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Equal(had, await IamAdminWebAppFactory.RoleHasPermissionAsync(viewerRoleId, permId));
+    }
+
+    [Fact]
     public async Task Owner_GrantsPlatformScopedPermission_Gets403()
     {
         var client = await AuthedClientAsync(factory.OwnerEmail);

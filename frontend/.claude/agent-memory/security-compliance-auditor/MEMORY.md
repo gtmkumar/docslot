@@ -3,3 +3,4 @@
 - [Frontend Form16A full-PAN handling](frontend-form16a-pan.md) — the transient-blob pattern for the full-PAN TDS document, and the leak vectors verified absent. Audited PASS on feat/phase2-broker-portal-frontend.
 - [Frontend RBAC gating pattern](frontend-rbac-gating.md) — usePermissions().can() backed by /me/permissions; mock seed grants are mock-only; no role-in-JSX. IDOR-safe /commission/me paths.
 - [Frontend AI triage/no-show PHI handling](frontend-ai-triage-phi.md) — complaint PHI stays a mutation var (never keyed/logged/stored); submitTriage purpose-of-use mirror; honest unavailable states. Audited PASS on feat/phase4-ai-frontend-surfacing.
+- [Frontend Settings screen (Phase 1)](frontend-settings-screen.md) — WhatsApp token never on wire, PATCH whitelisted to 2 sections, can()-gated forbidden card, locale-only lang switcher

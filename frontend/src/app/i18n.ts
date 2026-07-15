@@ -470,6 +470,105 @@ export const en = {
     compact: 'Compact',
     appearance: 'Appearance',
   },
+  settings: {
+    eyebrow: 'Settings',
+    workspace: 'Workspace',
+    subtitle: 'Identity, opening hours, booking defaults, and integrations for this workspace.',
+    railLabel: 'Settings sections',
+    section: {
+      organization: 'Organization',
+      bookingRules: 'Booking rules',
+      whatsapp: 'WhatsApp',
+      languages: 'Language',
+      team: 'Team & roles',
+    },
+    readOnly: 'You can view these settings but don’t have permission to change them.',
+    forbiddenTitle: 'No access to settings',
+    forbiddenBody: 'You don’t have permission to view this workspace’s settings.',
+    noFacilityTitle: 'Workspace not set up yet',
+    noFacilityBody: 'This workspace has no facility profile yet. An administrator needs to finish setup before these settings appear.',
+    discard: 'Discard',
+    organization: {
+      title: 'Organization',
+      caption: 'Facility identity and weekly opening hours.',
+      facilityType: 'Facility type',
+      specialtyFocus: 'Specialty focus',
+      hfr: 'Health Facility Registry',
+      hfrId: 'HFR ID',
+      notSet: 'Not set',
+      businessHours: 'Business hours',
+      businessHoursCaption: 'When this facility is open for appointments. Times are IST (Asia/Kolkata).',
+      open: 'Opens',
+      close: 'Closes',
+      closed: 'Closed',
+      save: 'Save hours',
+      saved: 'Business hours saved',
+      invalidRange: 'Closing time must be after opening time.',
+      incompleteRange: 'Set both times, or mark the day closed.',
+    },
+    bookingRules: {
+      title: 'Booking rules',
+      caption: 'Defaults that apply when no doctor-specific override exists.',
+      autoConfirm: 'Auto-confirm bookings',
+      autoConfirmSub: 'Confirm new appointments automatically, without staff approval.',
+      allowOverbooking: 'Allow overbooking',
+      allowOverbookingSub: 'Let a slot hold more than one appointment past its capacity.',
+      slotDuration: 'Slot duration',
+      slotDurationSub: 'Default length of one appointment.',
+      slotDurationValue: '{{value}} min',
+      cutoff: 'Booking cutoff',
+      cutoffSub: 'Hours before a slot that online booking closes.',
+      cutoffUnit: 'hours',
+      maxAdvance: 'Booking window',
+      maxAdvanceSub: 'How many days ahead patients can book.',
+      maxAdvanceUnit: 'days',
+      reminder: 'Reminder lead time',
+      reminderSub: 'Hours before an appointment to send the reminder.',
+      reminderUnit: 'hours',
+      grace: 'No-show grace period',
+      graceSub: 'Minutes past the slot before a patient is marked no-show.',
+      graceUnit: 'minutes',
+      save: 'Save booking rules',
+      saved: 'Booking rules saved',
+      validation: {
+        slotDuration: 'Choose a slot duration.',
+        cutoff: 'Enter 0 or more hours.',
+        maxAdvance: 'Enter at least 1 day.',
+        reminder: 'Enter 0 or more hours.',
+        grace: 'Enter between 0 and 240 minutes.',
+      },
+    },
+    whatsapp: {
+      title: 'WhatsApp Cloud API',
+      caption: 'The WhatsApp Business number patients message to book.',
+      connected: 'Connected · verified',
+      notConnected: 'Not connected',
+      phoneNumberId: 'Phone number ID',
+      webhookUrl: 'Webhook URL',
+      verifiedAt: 'Verified',
+      copy: 'Copy',
+      copied: 'Copied',
+      empty: 'Not set',
+      platformNote: 'Greetings and message templates are managed by the platform today. Per-workspace customisation arrives in a later phase.',
+    },
+    languages: {
+      title: 'Language',
+      caption: 'Display language on this device.',
+      deviceNote: 'This changes the language for this browser only. Your saved account preference is set in Team & roles.',
+      english: 'English',
+      englishSub: 'English',
+      hindi: 'हिंदी',
+      hindiSub: 'Hindi',
+    },
+    links: {
+      title: 'More settings',
+      caption: 'Manage people and partners elsewhere in the workspace.',
+      team: 'Team & roles',
+      teamSub: 'People, roles, permissions, and security.',
+      carePartners: 'Care Partners',
+      carePartnersSub: 'Referral partners and commission rules.',
+    },
+  },
   nav_aria: {
     openMenu: 'Open menu',
     closeMenu: 'Close menu',
@@ -2745,6 +2844,105 @@ export const hi: typeof en = {
     compact: 'सघन',
     appearance: 'रूप',
   },
+  settings: {
+    eyebrow: 'सेटिंग्स',
+    workspace: 'वर्कस्पेस',
+    subtitle: 'इस वर्कस्पेस की पहचान, खुलने का समय, बुकिंग डिफ़ॉल्ट और इंटीग्रेशन।',
+    railLabel: 'सेटिंग्स अनुभाग',
+    section: {
+      organization: 'संगठन',
+      bookingRules: 'बुकिंग नियम',
+      whatsapp: 'व्हाट्सऐप',
+      languages: 'भाषा',
+      team: 'टीम और भूमिकाएँ',
+    },
+    readOnly: 'आप ये सेटिंग्स देख सकते हैं, पर बदलने की अनुमति नहीं है।',
+    forbiddenTitle: 'सेटिंग्स तक पहुँच नहीं',
+    forbiddenBody: 'आपके पास इस वर्कस्पेस की सेटिंग्स देखने की अनुमति नहीं है।',
+    noFacilityTitle: 'वर्कस्पेस अभी सेट अप नहीं है',
+    noFacilityBody: 'इस वर्कस्पेस का फ़ैसिलिटी प्रोफ़ाइल अभी नहीं है। ये सेटिंग्स दिखने से पहले किसी व्यवस्थापक को सेटअप पूरा करना होगा।',
+    discard: 'रद्द करें',
+    organization: {
+      title: 'संगठन',
+      caption: 'फ़ैसिलिटी पहचान और साप्ताहिक खुलने का समय।',
+      facilityType: 'फ़ैसिलिटी प्रकार',
+      specialtyFocus: 'विशेषज्ञता',
+      hfr: 'हेल्थ फ़ैसिलिटी रजिस्ट्री',
+      hfrId: 'HFR आईडी',
+      notSet: 'सेट नहीं',
+      businessHours: 'कार्य समय',
+      businessHoursCaption: 'यह फ़ैसिलिटी अपॉइंटमेंट के लिए कब खुली रहती है। समय IST (एशिया/कोलकाता) में है।',
+      open: 'खुलता है',
+      close: 'बंद होता है',
+      closed: 'बंद',
+      save: 'समय सहेजें',
+      saved: 'कार्य समय सहेजा गया',
+      invalidRange: 'बंद होने का समय खुलने के समय के बाद होना चाहिए।',
+      incompleteRange: 'दोनों समय भरें, या दिन को बंद चिह्नित करें।',
+    },
+    bookingRules: {
+      title: 'बुकिंग नियम',
+      caption: 'ऐसे डिफ़ॉल्ट जो तब लागू होते हैं जब कोई डॉक्टर-विशिष्ट ओवरराइड न हो।',
+      autoConfirm: 'बुकिंग स्वतः पुष्टि',
+      autoConfirmSub: 'नई अपॉइंटमेंट को स्टाफ़ अनुमोदन के बिना स्वतः पुष्ट करें।',
+      allowOverbooking: 'ओवरबुकिंग की अनुमति',
+      allowOverbookingSub: 'क्षमता से अधिक होने पर एक स्लॉट में एक से अधिक अपॉइंटमेंट रखने दें।',
+      slotDuration: 'स्लॉट अवधि',
+      slotDurationSub: 'एक अपॉइंटमेंट की डिफ़ॉल्ट लंबाई।',
+      slotDurationValue: '{{value}} मिनट',
+      cutoff: 'बुकिंग कटऑफ़',
+      cutoffSub: 'ऑनलाइन बुकिंग बंद होने से पहले स्लॉट के कितने घंटे।',
+      cutoffUnit: 'घंटे',
+      maxAdvance: 'बुकिंग विंडो',
+      maxAdvanceSub: 'मरीज़ कितने दिन पहले तक बुक कर सकते हैं।',
+      maxAdvanceUnit: 'दिन',
+      reminder: 'रिमाइंडर समय',
+      reminderSub: 'अपॉइंटमेंट से कितने घंटे पहले रिमाइंडर भेजें।',
+      reminderUnit: 'घंटे',
+      grace: 'नो-शो छूट अवधि',
+      graceSub: 'स्लॉट के बाद कितने मिनट में मरीज़ को नो-शो चिह्नित करें।',
+      graceUnit: 'मिनट',
+      save: 'बुकिंग नियम सहेजें',
+      saved: 'बुकिंग नियम सहेजे गए',
+      validation: {
+        slotDuration: 'स्लॉट अवधि चुनें।',
+        cutoff: '0 या अधिक घंटे दर्ज करें।',
+        maxAdvance: 'कम से कम 1 दिन दर्ज करें।',
+        reminder: '0 या अधिक घंटे दर्ज करें।',
+        grace: '0 से 240 मिनट के बीच दर्ज करें।',
+      },
+    },
+    whatsapp: {
+      title: 'व्हाट्सऐप क्लाउड API',
+      caption: 'वह व्हाट्सऐप बिज़नेस नंबर जिस पर मरीज़ बुक करने के लिए संदेश भेजते हैं।',
+      connected: 'कनेक्टेड · सत्यापित',
+      notConnected: 'कनेक्ट नहीं',
+      phoneNumberId: 'फ़ोन नंबर आईडी',
+      webhookUrl: 'वेबहुक URL',
+      verifiedAt: 'सत्यापित',
+      copy: 'कॉपी',
+      copied: 'कॉपी हो गया',
+      empty: 'सेट नहीं',
+      platformNote: 'ग्रीटिंग और संदेश टेम्पलेट फ़िलहाल प्लेटफ़ॉर्म द्वारा प्रबंधित हैं। प्रति-वर्कस्पेस अनुकूलन बाद के चरण में आएगा।',
+    },
+    languages: {
+      title: 'भाषा',
+      caption: 'इस डिवाइस पर प्रदर्शन भाषा।',
+      deviceNote: 'यह केवल इस ब्राउज़र की भाषा बदलता है। आपकी सहेजी गई खाता वरीयता टीम और भूमिकाएँ में सेट होती है।',
+      english: 'English',
+      englishSub: 'अंग्रेज़ी',
+      hindi: 'हिंदी',
+      hindiSub: 'हिंदी',
+    },
+    links: {
+      title: 'अन्य सेटिंग्स',
+      caption: 'वर्कस्पेस में लोगों और पार्टनर्स को अन्यत्र प्रबंधित करें।',
+      team: 'टीम और भूमिकाएँ',
+      teamSub: 'लोग, भूमिकाएँ, अनुमतियाँ और सुरक्षा।',
+      carePartners: 'केयर पार्टनर',
+      carePartnersSub: 'रेफ़रल पार्टनर और कमीशन नियम।',
+    },
+  },
   nav_aria: {
     openMenu: 'मेनू खोलें',
     closeMenu: 'मेनू बंद करें',
@@ -4544,12 +4742,45 @@ export const hi: typeof en = {
   },
 };
 
+// Per-device display language (chosen in the Languages settings section). Persisted to
+// localStorage so a reload keeps the choice; falls back to 'en'. It is a DEVICE
+// preference, distinct from a user's saved account language (edited in Team & roles).
+export const LANG_STORAGE_KEY = 'docslot.lang';
+export type AppLang = 'en' | 'hi';
+
+function readStoredLang(): AppLang {
+  try {
+    const stored = localStorage.getItem(LANG_STORAGE_KEY);
+    if (stored === 'en' || stored === 'hi') return stored;
+  } catch {
+    // localStorage can throw (private mode / disabled) — fall back to English.
+  }
+  return 'en';
+}
+
+const initialLang = readStoredLang();
+if (typeof document !== 'undefined') document.documentElement.lang = initialLang;
+
+/**
+ * Switch the per-device display language: change i18next, persist to localStorage, and
+ * keep <html lang> in sync for accessibility. Called by the Languages settings section.
+ */
+export function setLanguage(lang: AppLang): void {
+  void i18n.changeLanguage(lang);
+  try {
+    localStorage.setItem(LANG_STORAGE_KEY, lang);
+  } catch {
+    // Best-effort persistence — the in-memory switch still applies for this session.
+  }
+  if (typeof document !== 'undefined') document.documentElement.lang = lang;
+}
+
 void i18n.use(initReactI18next).init({
   resources: {
     en: { translation: en },
     hi: { translation: hi },
   },
-  lng: 'en',
+  lng: initialLang,
   fallbackLng: 'en',
   interpolation: { escapeValue: false },
   returnNull: false,

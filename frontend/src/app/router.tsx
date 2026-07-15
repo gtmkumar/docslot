@@ -64,6 +64,9 @@ const AnalyticsScreen = lazy(() =>
 const AiOpsScreen = lazy(() =>
   import('@/features/ai/AiOpsScreen').then((m) => ({ default: m.AiOpsScreen })),
 );
+const SettingsScreen = lazy(() =>
+  import('@/features/settings/SettingsScreen').then((m) => ({ default: m.SettingsScreen })),
+);
 
 // Shared slide-over search params (root-level so all routes carry them).
 // `clientSecret`, `invitationToken`, and `deletionCertificate` are intentionally
@@ -198,10 +201,34 @@ const portalRoute = createRoute({
   path: '/portal',
   component: PortalScreen,
 });
+// Workspace Settings (Phase 1). /settings shows all sections; /settings/$section focuses
+// one (valid: organization, whatsapp, booking-rules, languages, team — an unknown section
+// falls back to showing all). The two seeded nav children that point elsewhere redirect:
+// the STATIC /settings/users → /team and /settings/commission → /care-partners routes
+// out-rank the $section param route, so they never render the settings screen.
 const settingsRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/settings',
-  component: () => <PlaceholderScreen titleKey="app.settings" />,
+  component: SettingsScreen,
+});
+const settingsSectionRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/settings/$section',
+  component: SettingsScreen,
+});
+const settingsUsersRedirectRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/settings/users',
+  beforeLoad: () => {
+    throw redirect({ to: '/team' });
+  },
+});
+const settingsCommissionRedirectRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/settings/commission',
+  beforeLoad: () => {
+    throw redirect({ to: '/care-partners' });
+  },
 });
 // Lab Tests — backend nav surfaces this for lab/hospital/diagnostic tenants; the
 // full screen lands in a later wave, so the route resolves to a placeholder
@@ -230,6 +257,9 @@ const routeTree = rootRoute.addChildren([
     carePartnersRoute,
     portalRoute,
     settingsRoute,
+    settingsSectionRoute,
+    settingsUsersRedirectRoute,
+    settingsCommissionRedirectRoute,
     labRoute,
   ]),
 ]);

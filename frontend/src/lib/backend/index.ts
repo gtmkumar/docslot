@@ -210,6 +210,15 @@ export const listIpAllowlist = USE_REAL_API ? real.listIpAllowlist : mock.listIp
 export const addIpAllowlist = USE_REAL_API ? real.addIpAllowlist : mock.addIpAllowlist;
 export const removeIpAllowlist = USE_REAL_API ? real.removeIpAllowlist : mock.removeIpAllowlist;
 
+// ── WORKSPACE SETTINGS (Settings screen — Phase 1) — /settings ─────────────────
+// Live: GET/PATCH /settings (gated tenant.settings.read / .update; facility row bound
+// from the JWT tenant). GET 404s when the tenant has no facility row → the screen shows
+// a distinct "not set up" state. PATCH replaces each supplied section wholesale and
+// carries NO Idempotency-Key (configuration write). Mock side seeds a configured tenant
+// so the demo exercises every section + state flag-off. NO PHI.
+export const getSettings = USE_REAL_API ? real.getSettings : mock.getSettings;
+export const updateSettings = USE_REAL_API ? real.updateSettings : mock.updateSettings;
+
 // TEAM — token-based Invitations (#89)
 export const listInvitations = USE_REAL_API ? real.listInvitations : mock.listInvitations;
 export const createInvitation = USE_REAL_API ? real.createInvitation : mock.createInvitation;
