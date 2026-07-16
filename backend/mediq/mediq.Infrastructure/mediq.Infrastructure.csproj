@@ -9,13 +9,13 @@
     <!-- Aspire RabbitMQ client wrapper (IConnection + OTel/health wiring). Used ONLY by the
          RabbitMqIntegrationEventBus, which is constructed only when Messaging:Provider=rabbitmq;
          the dev/test default (Provider=none) wires NullIntegrationEventBus and never touches it. -->
-    <PackageReference Include="Aspire.RabbitMQ.Client" Version="13.4.3" />
-    <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+    <PackageReference Include="Aspire.RabbitMQ.Client" Version="13.4.6" />
+    <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
     <PackageReference Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.0" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
-    <PackageReference Include="Polly.Core" Version="8.6.6" />
-    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.3.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="Polly.Core" Version="8.7.0" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.19.2" />
   </ItemGroup>
 
   <PropertyGroup>
