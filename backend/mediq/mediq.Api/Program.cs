@@ -121,8 +121,12 @@ var app = builder.Build();
 JwtSigningKeyGuard.Validate(app.Configuration, app.Environment, app.Logger);
 
 // --- Pipeline order matters ---
+// ResponseCompression must be the OUTERMOST middleware: it wraps Response.Body around the call to next() and
+// tears the wrapper back down (uncompressed) once that call returns or throws. Registering it after
+// ExceptionHandler would mean an exception unwinds the compression wrapper before ExceptionHandler gets to
+// write the error body, so error JSON would silently ship uncompressed.
+app.UseResponseCompression();
 app.UseMiddleware<ExceptionHandler>();   // reuse Utilities global exception → ApiResponse envelope (DRY)
-app.UseResponseCompression();             // must run early — before anything else writes to the response body
 app.UseCorrelationId();                   // honor/generate X-Correlation-ID, push into log scope
 
 // X-Forwarded-For aware per-IP rate limiting (STRICT default-deny). MUST precede UseRateLimiter so the limiter
