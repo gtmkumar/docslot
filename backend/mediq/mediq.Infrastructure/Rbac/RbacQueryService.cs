@@ -42,7 +42,7 @@ public sealed class RbacQueryService(PlatformDbContext db) : IRbacQueryService
     }
 
     public async Task<IReadOnlyList<MenuNodeDto>> GetMenusAsync(
-        Guid userId, Guid tenantId, string? tenantType, string productKey, CancellationToken ct)
+        Guid userId, Guid? tenantId, string? tenantType, string productKey, CancellationToken ct)
     {
         var flat = await db.MenuRows
             .FromSqlRaw(
@@ -54,7 +54,7 @@ public sealed class RbacQueryService(PlatformDbContext db) : IRbacQueryService
                 FROM platform.get_user_menus(@p0, @p1, @p2, @p3)
                 """,
                 new NpgsqlParameter("@p0", userId),
-                new NpgsqlParameter("@p1", tenantId),
+                new NpgsqlParameter("@p1", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)tenantId ?? DBNull.Value },
                 new NpgsqlParameter("@p2", (object?)tenantType ?? DBNull.Value),
                 new NpgsqlParameter("@p3", productKey))
             .AsNoTracking()

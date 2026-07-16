@@ -46,6 +46,13 @@ export const listBookings = USE_REAL_API ? real.listBookings : mock.listBookings
 export const listDoctorCards = USE_REAL_API ? real.listDoctorCards : mock.listDoctorCards;
 export const getDashboardSummary = USE_REAL_API ? real.getDashboardSummary : mock.getDashboardSummary;
 
+// DASHBOARD SIDE PANELS — live: GET /dashboard/agent-panel | /department-load |
+// /floor (tenant-scoped aggregates, docslot.booking.read). Mock keeps serving the
+// prototype fixtures when the flag is off.
+export const getAgentPanel = USE_REAL_API ? real.getAgentPanel : mock.getAgentPanel;
+export const getDepartmentLoad = USE_REAL_API ? real.getDepartmentLoad : mock.getDepartmentLoad;
+export const getFloorDoctors = USE_REAL_API ? real.getFloorDoctors : mock.getFloorDoctors;
+
 // BOOKING DETAIL — real fetches GET /bookings/{id} and adapts it to the panel's
 // Booking shape; mock resolves the prototype BOOKINGS.find. Either way the
 // manage/approve slide-overs open for a REAL booking id.

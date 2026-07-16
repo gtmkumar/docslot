@@ -206,9 +206,11 @@ export const FloorDoctorSchema = z.object({
   id: z.string(),
   name: z.string(),
   spec: z.string(),
-  room: z.string(),
-  /** Next slot, 24h Asia/Kolkata. */
-  nextSlot: z.string(),
+  /** Consultation room. The live API has no room source yet — optional; the row
+   *  renders the spec alone when absent. */
+  room: z.string().optional(),
+  /** Next available slot, 24h Asia/Kolkata; null when none left today. */
+  nextSlot: z.string().nullable(),
   seenToday: z.number(),
   initials: z.string(),
 });
@@ -2901,6 +2903,59 @@ export const DashboardSummaryDtoSchema = z
   })
   .passthrough();
 export type DashboardSummaryDto = z.infer<typeof DashboardSummaryDtoSchema>;
+
+/** `GET /api/v1/dashboard/agent-panel`. Mirrors AgentPanelDto: conversation
+ *  activity from wa_message_log (24h) + today's WhatsApp booking funnel. The
+ *  funnel keys are the SAME contract enums the AgentPanel screen labels off.
+ *  Tolerant/passthrough so additive backend fields don't break parsing. */
+export const AgentPanelDtoSchema = z
+  .object({
+    activeConversations: z.number(),
+    /** 24 hourly buckets, oldest first, normalised 0..1. */
+    sparkline: z.array(z.number()),
+    avgResponseMins: z.number(),
+    selfServedPct: z.number(),
+    handedPct: z.number(),
+    dropOffPct: z.number(),
+    funnel: z.array(
+      z.object({
+        key: z.enum(['greeted', 'selectedDept', 'pickedSlot', 'confirmed']),
+        count: z.number(),
+        pct: z.number(),
+      }),
+    ),
+  })
+  .passthrough();
+export type AgentPanelDto = z.infer<typeof AgentPanelDtoSchema>;
+
+/** `GET /api/v1/dashboard/department-load` row. Mirrors DepartmentLoadDto:
+ *  today's (IST) SUM(current_count)/SUM(max_count) per department. colorKey is a
+ *  server-assigned design-token key (never a hex). */
+export const DepartmentLoadDtoSchema = z
+  .object({
+    departmentId: z.string(),
+    name: z.string(),
+    colorKey: z.string(),
+    booked: z.number(),
+    capacity: z.number(),
+  })
+  .passthrough();
+export type DepartmentLoadDto = z.infer<typeof DepartmentLoadDtoSchema>;
+
+/** `GET /api/v1/dashboard/floor` row. Mirrors FloorDoctorDto: a doctor with OPD
+ *  slots today; nextSlot is a nullable ISO instant (IST offset); seenToday counts
+ *  completed bookings on today's slots. No room source exists yet. */
+export const FloorDoctorDtoSchema = z
+  .object({
+    doctorId: z.string(),
+    name: z.string(),
+    specialization: z.string().nullable(),
+    departmentName: z.string().nullable(),
+    nextSlot: z.string().nullable(),
+    seenToday: z.number(),
+  })
+  .passthrough();
+export type FloorDoctorDto = z.infer<typeof FloorDoctorDtoSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IAM — Roles & permissions privilege matrix (Team & Roles, Slice 2).

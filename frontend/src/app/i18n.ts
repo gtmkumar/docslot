@@ -12,6 +12,7 @@ export const en = {
     workspace: 'Workspace',
     settings: 'Settings',
     profileRole: 'Receptionist',
+    profileRolePlatform: 'Platform admin',
   },
   nav: {
     overview: 'Overview',
@@ -30,6 +31,7 @@ export const en = {
     newWalkIn: '+ New walk-in',
     moreActions: 'More actions',
     breadcrumbReception: 'Reception desk',
+    platformScope: 'DocSlot platform',
     impersonate: 'Impersonate',
   },
   agent: {
@@ -108,6 +110,9 @@ export const en = {
     seenToday: 'seen',
     emptyQueueTitle: 'All caught up',
     emptyQueueBody: 'No bookings waiting for approval right now.',
+    platformScopeTitle: 'Platform scope — no active clinic',
+    platformScopeBody:
+      'You are signed in as a platform administrator without an active clinic. Use Impersonate (top right) to open a clinic’s reception desk, or manage the platform from Developers and Security & Compliance.',
   },
   manage: {
     appointmentDetails: 'Appointment Details',
@@ -2387,6 +2392,7 @@ export const hi: typeof en = {
     workspace: 'वर्कस्पेस',
     settings: 'सेटिंग्स',
     profileRole: 'रिसेप्शनिस्ट',
+    profileRolePlatform: 'प्लेटफ़ॉर्म एडमिन',
   },
   nav: {
     overview: 'अवलोकन',
@@ -2405,6 +2411,7 @@ export const hi: typeof en = {
     newWalkIn: '+ नया वॉक-इन',
     moreActions: 'अधिक क्रियाएँ',
     breadcrumbReception: 'रिसेप्शन डेस्क',
+    platformScope: 'डॉकस्लॉट प्लेटफ़ॉर्म',
     impersonate: 'प्रतिरूपण',
   },
   agent: {
@@ -2483,6 +2490,9 @@ export const hi: typeof en = {
     seenToday: 'देखे',
     emptyQueueTitle: 'सब पूरा हुआ',
     emptyQueueBody: 'अभी कोई बुकिंग स्वीकृति की प्रतीक्षा में नहीं है।',
+    platformScopeTitle: 'प्लेटफ़ॉर्म स्कोप — कोई सक्रिय क्लिनिक नहीं',
+    platformScopeBody:
+      'आप बिना किसी सक्रिय क्लिनिक के प्लेटफ़ॉर्म एडमिन के रूप में साइन इन हैं। किसी क्लिनिक की रिसेप्शन डेस्क खोलने के लिए प्रतिरूपण (ऊपर दाएँ) का उपयोग करें, या डेवलपर्स और सुरक्षा से प्लेटफ़ॉर्म प्रबंधित करें।',
   },
   manage: {
     appointmentDetails: 'अपॉइंटमेंट विवरण',

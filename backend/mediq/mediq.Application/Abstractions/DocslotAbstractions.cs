@@ -69,6 +69,18 @@ public interface IBookingReadService
 public sealed record BookingListFilter(
     Guid TenantId, string? Status, DateOnly? Date, Guid? DoctorId, int Skip, int Take);
 
+/// <summary>
+/// Read-models for the dashboard's three side panels (WhatsApp agent, department load, on-the-floor
+/// doctors). All tenant-scoped aggregates over slots / bookings / wa_message_log — no PHI. "Today" is
+/// always computed in Asia/Kolkata.
+/// </summary>
+public interface IDashboardPanelsReadService
+{
+    Task<AgentPanelDto> GetAgentPanelAsync(Guid tenantId, CancellationToken ct);
+    Task<IReadOnlyList<DepartmentLoadDto>> GetDepartmentLoadAsync(Guid tenantId, CancellationToken ct);
+    Task<IReadOnlyList<FloorDoctorDto>> GetFloorDoctorsAsync(Guid tenantId, CancellationToken ct);
+}
+
 /// <summary>A WhatsApp/booking conversation message (maps to <c>docslot.wa_message_log</c>) for the panel.</summary>
 public sealed record ConversationMessageDto(
     Guid LogId, string Direction, string MessageType, string? Content, string? Status, DateTimeOffset SentAt);

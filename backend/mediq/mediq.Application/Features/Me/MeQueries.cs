@@ -58,7 +58,10 @@ public sealed class GetMyPermissionsQueryHandler(IPermissionContext permissions,
 
 // ---- GET /api/v1/me/menus -------------------------------------------------------------------------
 
-public sealed record GetMyMenusQuery(Guid UserId, Guid TenantId, string? TenantType, string ProductKey = "docslot")
+/// <summary>A null <paramref name="TenantId"/> is the PLATFORM scope: a platform user (super_admin) with
+/// no active tenant gets the global menu set filtered by their platform-level permissions — the sidebar
+/// stays backend-driven for every session shape (never a 403 that blanks the nav).</summary>
+public sealed record GetMyMenusQuery(Guid UserId, Guid? TenantId, string? TenantType, string ProductKey = "docslot")
     : IQuery<IReadOnlyList<MenuNodeDto>>;
 
 public sealed class GetMyMenusQueryHandler(IRbacQueryService rbac)

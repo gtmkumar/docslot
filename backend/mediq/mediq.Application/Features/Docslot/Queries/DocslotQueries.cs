@@ -43,6 +43,35 @@ public sealed class GetDashboardSummaryQueryHandler(IBookingReadService reads)
         => reads.GetSummaryAsync(q.TenantId, ct);
 }
 
+// ---- Dashboard side panels (agent / department load / floor) --------------------------------------
+
+public sealed record GetAgentPanelQuery(Guid TenantId) : IQuery<AgentPanelDto>;
+
+public sealed class GetAgentPanelQueryHandler(IDashboardPanelsReadService reads)
+    : IQueryHandler<GetAgentPanelQuery, AgentPanelDto>
+{
+    public Task<AgentPanelDto> Handle(GetAgentPanelQuery q, CancellationToken ct)
+        => reads.GetAgentPanelAsync(q.TenantId, ct);
+}
+
+public sealed record GetDepartmentLoadQuery(Guid TenantId) : IQuery<IReadOnlyList<DepartmentLoadDto>>;
+
+public sealed class GetDepartmentLoadQueryHandler(IDashboardPanelsReadService reads)
+    : IQueryHandler<GetDepartmentLoadQuery, IReadOnlyList<DepartmentLoadDto>>
+{
+    public Task<IReadOnlyList<DepartmentLoadDto>> Handle(GetDepartmentLoadQuery q, CancellationToken ct)
+        => reads.GetDepartmentLoadAsync(q.TenantId, ct);
+}
+
+public sealed record GetFloorDoctorsQuery(Guid TenantId) : IQuery<IReadOnlyList<FloorDoctorDto>>;
+
+public sealed class GetFloorDoctorsQueryHandler(IDashboardPanelsReadService reads)
+    : IQueryHandler<GetFloorDoctorsQuery, IReadOnlyList<FloorDoctorDto>>
+{
+    public Task<IReadOnlyList<FloorDoctorDto>> Handle(GetFloorDoctorsQuery q, CancellationToken ct)
+        => reads.GetFloorDoctorsAsync(q.TenantId, ct);
+}
+
 // ---- Analytics -----------------------------------------------------------------------------------
 
 public sealed record GetAnalyticsQuery(Guid TenantId, AnalyticsPeriod Period) : IQuery<AnalyticsDto>;

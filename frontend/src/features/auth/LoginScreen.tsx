@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { FieldShell, TextInput } from '@/components/ui/Field';
 import { DEMO_LOGIN, MockApiError } from '@/lib/mock';
+import { USE_REAL_API } from '@/lib/backend/flag';
 import { useLogin } from './api';
 import { loginSchema, type LoginForm } from './schema';
 
@@ -111,9 +112,13 @@ export function LoginScreen() {
             </Button>
           </form>
 
-          <p className="mt-4 text-center text-[12px] text-muted-2">
-            {t('auth.demoHint', { email: DEMO_LOGIN.email, password: DEMO_LOGIN.password })}
-          </p>
+          {/* The demo-credentials hint only applies to the mock app — in live mode
+              real accounts sign in and the fixture creds don't exist. */}
+          {USE_REAL_API ? null : (
+            <p className="mt-4 text-center text-[12px] text-muted-2">
+              {t('auth.demoHint', { email: DEMO_LOGIN.email, password: DEMO_LOGIN.password })}
+            </p>
+          )}
         </div>
       </main>
     </div>

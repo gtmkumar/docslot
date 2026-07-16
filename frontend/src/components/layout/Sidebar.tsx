@@ -33,9 +33,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
   // real-API mode instead of the mock ORGS list. (#59)
   const activeTenantName = user?.tenants.find((tn) => tn.tenantId === tenantId)?.displayName;
   // The signed-in user's active-tenant role names, joined for the profile chip.
-  // Empty → the generic bilingual fallback (keeps hi working). Display only.
+  // Empty + no active tenant (live mode) → platform admin; empty otherwise → the
+  // generic bilingual fallback (keeps hi working). Display only.
   const roleNames = (user?.roles ?? []).map((r) => r.name).filter(Boolean);
-  const roleLabel = roleNames.length > 0 ? roleNames.join(' · ') : t('app.profileRole');
+  const roleLabel =
+    roleNames.length > 0
+      ? roleNames.join(' · ')
+      : USE_REAL_API && !tenantId
+        ? t('app.profileRolePlatform')
+        : t('app.profileRole');
   const doLogout = useLogout();
 
   const onSignOut = async () => {

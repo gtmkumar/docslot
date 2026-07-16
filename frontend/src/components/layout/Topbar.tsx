@@ -8,12 +8,22 @@ import { Menu, Search } from 'lucide-react';
 import { AppearanceMenu } from './AppearanceMenu';
 import { TopbarActions } from './TopbarActions';
 import { ORGS } from '@/lib/data';
+import { USE_REAL_API } from '@/lib/backend/flag';
+import { useSession } from '@/stores/session';
 import { useUI } from '@/stores/ui';
 
 export function Topbar({ onOpenPalette, onOpenMenu }: { onOpenPalette: () => void; onOpenMenu: () => void }) {
   const { t } = useTranslation();
   const orgId = useUI((s) => s.orgId);
   const org = ORGS.find((o) => o.id === orgId) ?? ORGS[0];
+  // Live mode: the breadcrumb is the SESSION's active tenant (like the Sidebar's
+  // org box, #59) — never the mock ORGS list. No active tenant (a platform
+  // super_admin) → the platform label, with no "Reception desk" suffix.
+  const user = useSession((s) => s.user);
+  const tenantId = useSession((s) => s.tenantId);
+  const activeTenantName = user?.tenants.find((tn) => tn.tenantId === tenantId)?.displayName;
+  const orgName = USE_REAL_API ? (activeTenantName ?? t('topbar.platformScope')) : org.name;
+  const showReceptionSuffix = !USE_REAL_API || Boolean(activeTenantName);
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface px-4 sm:px-5">
@@ -29,9 +39,13 @@ export function Topbar({ onOpenPalette, onOpenMenu }: { onOpenPalette: () => voi
 
       <nav aria-label="Breadcrumb" className="min-w-0 flex-1 md:flex-none">
         <p className="truncate text-[13px] text-muted">
-          <span className="font-medium text-ink">{org.name}</span>
-          <span className="mx-1.5 text-muted-2">·</span>
-          {t('topbar.breadcrumbReception')}
+          <span className="font-medium text-ink">{orgName}</span>
+          {showReceptionSuffix ? (
+            <>
+              <span className="mx-1.5 text-muted-2">·</span>
+              {t('topbar.breadcrumbReception')}
+            </>
+          ) : null}
         </p>
       </nav>
 

@@ -125,6 +125,7 @@ public static class InfrastructureRegistration
         services.AddScoped<IDoctorReadService, Docslot.DoctorReadService>();
         services.AddScoped<IDoctorRepository, Docslot.DoctorRepository>();
         services.AddScoped<IAnalyticsReadService, Docslot.AnalyticsReadService>();
+        services.AddScoped<IDashboardPanelsReadService, Docslot.DashboardPanelsReadService>();
         services.AddScoped<IBadgeReadService, Docslot.BadgeReadService>();
         services.AddScoped<IPatientReadService, Docslot.PatientReadService>();
         services.AddScoped<IPatientRepository, Docslot.PatientRepository>();

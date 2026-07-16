@@ -10,21 +10,23 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { greetingKey } from '@/lib/format';
 import { ApprovalQueue } from '@/features/bookings/components/ApprovalQueue';
+import { USE_REAL_API } from '@/lib/backend/flag';
+import { useSession } from '@/stores/session';
 import { useDashboardSummary } from './api';
 import { AgentPanel } from './components/AgentPanel';
 import { DepartmentLoad } from './components/DepartmentLoad';
 import { OnTheFloor } from './components/OnTheFloor';
 import { StatCards } from './components/StatCards';
 
-// Patients-on-the-floor count is data-driven; in the prototype it is the day's
-// confirmed + pending volume plus those already seen. Derived from summary so it
-// stays live.
+// Patients-on-the-floor count is data-driven: the day's confirmed volume plus
+// the still-pending queue. Derived from summary so it stays live.
 function floorCount(confirmed: number, queue: number): number {
-  return confirmed + queue + 11;
+  return confirmed + queue;
 }
 
 export function OverviewScreen() {
   const { t } = useTranslation();
+  const tenantId = useSession((s) => s.tenantId);
   const { data, isLoading, isError, refetch } = useDashboardSummary();
   const queueRef = useRef<HTMLElement>(null);
 
@@ -32,6 +34,20 @@ export function OverviewScreen() {
     queueRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     queueRef.current?.focus();
   };
+
+  // PLATFORM scope (live mode, no active tenant — a super_admin before impersonation):
+  // every reception widget is tenant-scoped and would 403, so show an honest state
+  // pointing at Impersonate instead of six error cards. Mock mode is unaffected.
+  if (USE_REAL_API && !tenantId) {
+    return (
+      <div className="flex flex-col gap-5">
+        <GreetingHeader count={undefined} showFloorCount={false} />
+        <Card>
+          <EmptyState title={t('overview.platformScopeTitle')} description={t('overview.platformScopeBody')} />
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -68,14 +84,18 @@ export function OverviewScreen() {
   );
 }
 
-function GreetingHeader({ count }: { count: number | undefined }) {
+function GreetingHeader({ count, showFloorCount = true }: { count: number | undefined; showFloorCount?: boolean }) {
   const { t } = useTranslation();
   const greeting = t(`greeting.${greetingKey()}`);
+  // The signed-in user's first name from the real session — never a hardcoded
+  // prototype name. No user yet (initial load) → greeting alone.
+  const fullName = useSession((s) => s.user?.fullName);
+  const firstName = fullName?.trim().split(/\s+/)[0];
   return (
     <header>
       <h1 id="screen-heading" tabIndex={-1} className="text-2xl font-semibold tracking-tight text-ink outline-none">
-        {greeting}, Priyanka.{' '}
-        {count !== undefined ? (
+        {firstName ? `${greeting}, ${firstName}.` : `${greeting}.`}{' '}
+        {!showFloorCount ? null : count !== undefined ? (
           <span className="text-muted">{t('greeting.onTheFloor', { count })}</span>
         ) : (
           <span className="inline-block align-middle">

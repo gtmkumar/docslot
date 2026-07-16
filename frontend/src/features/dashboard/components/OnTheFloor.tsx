@@ -58,12 +58,12 @@ export function OnTheFloor() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[13px] font-medium text-ink">{d.name}</p>
                 <p className="text-[11px] text-muted">
-                  {d.spec} · {d.room}
+                  {d.room ? `${d.spec} · ${d.room}` : d.spec}
                 </p>
               </div>
               <div className="shrink-0 text-right">
                 <p className="text-[11px] text-muted-2">{t('overview.nextSlot')}</p>
-                <p className="mono text-[13px] text-ink">{istSlot(d.nextSlot)}</p>
+                <p className="mono text-[13px] text-ink">{d.nextSlot ? istSlot(d.nextSlot) : '—'}</p>
               </div>
               <span className="mono w-12 shrink-0 text-right text-[12px] text-muted">
                 {d.seenToday} {t('overview.seenToday')}

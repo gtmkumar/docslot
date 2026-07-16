@@ -31,15 +31,15 @@ public sealed class MeController(
     public async Task<ActionResult<PermissionSetDto>> Permissions(CancellationToken ct)
         => Ok(await queries.Query(new GetMyPermissionsQuery(RequireUserId(), currentUser.TenantId), ct));
 
-    /// <summary>GET /api/v1/me/menus — backend-driven bilingual menu tree, tenant-type-aware.</summary>
+    /// <summary>GET /api/v1/me/menus — backend-driven bilingual menu tree, tenant-type-aware. With no
+    /// active tenant (a platform super_admin session before impersonation) the tree is the PLATFORM scope:
+    /// global menus filtered by the caller's platform-level permission set — never a 403.</summary>
     [HttpGet("menus")]
     [ProducesResponseType<IReadOnlyList<MenuNodeDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<MenuNodeDto>>> Menus(CancellationToken ct)
     {
-        var tenantId = currentUser.TenantId
-            ?? throw new mediq.Utilities.Exceptions.ForbiddenException("No active tenant for this session.");
-
-        var tenant = await tenants.GetByIdAsync(tenantId, ct);
+        var tenantId = currentUser.TenantId;
+        var tenant = tenantId is { } id ? await tenants.GetByIdAsync(id, ct) : null;
         var menus = await queries.Query(
             new GetMyMenusQuery(RequireUserId(), tenantId, tenant?.TenantType), ct);
         return Ok(menus);

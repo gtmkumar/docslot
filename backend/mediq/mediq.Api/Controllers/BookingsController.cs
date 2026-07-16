@@ -29,6 +29,28 @@ public sealed class BookingsController(
     public async Task<ActionResult<DashboardSummaryDto>> Summary(CancellationToken ct)
         => Ok(await queries.Query(new GetDashboardSummaryQuery(RequireTenant()), ct));
 
+    /// <summary>The WhatsApp-agent side panel (active conversations, 24h sparkline, response/served/handed/
+    /// drop-off metrics, today's funnel). Tenant-scoped aggregates over wa_message_log + bookings — no PHI.</summary>
+    [HttpGet("dashboard/agent-panel")]
+    [RequirePermission("docslot.booking.read")]
+    [ProducesResponseType<AgentPanelDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<AgentPanelDto>> AgentPanel(CancellationToken ct)
+        => Ok(await queries.Query(new GetAgentPanelQuery(RequireTenant()), ct));
+
+    /// <summary>Today's per-department live capacity vs booked appointments (IST). Aggregate — no PHI.</summary>
+    [HttpGet("dashboard/department-load")]
+    [RequirePermission("docslot.booking.read")]
+    [ProducesResponseType<IReadOnlyList<DepartmentLoadDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<DepartmentLoadDto>>> DepartmentLoad(CancellationToken ct)
+        => Ok(await queries.Query(new GetDepartmentLoadQuery(RequireTenant()), ct));
+
+    /// <summary>Doctors with active OPD today (IST): next available slot + seen-today count. No patient data.</summary>
+    [HttpGet("dashboard/floor")]
+    [RequirePermission("docslot.booking.read")]
+    [ProducesResponseType<IReadOnlyList<FloorDoctorDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<FloorDoctorDto>>> Floor(CancellationToken ct)
+        => Ok(await queries.Query(new GetFloorDoctorsQuery(RequireTenant()), ct));
+
     // Any-of gate: tenant-wide readers (reception) OR self-scoped doctors (booking.read_self). The handler
     // confines a read_self caller to their own docslot.doctors row (Phase D §6) — reception is unchanged.
     [HttpGet("bookings")]

@@ -171,7 +171,7 @@ public sealed class CountingRbacQueryService(IRbacQueryService inner) : IRbacQue
     }
 
     public Task<IReadOnlyList<mediq.SharedDataModel.Docslot.Navigation.MenuNodeDto>> GetMenusAsync(
-        Guid userId, Guid tenantId, string? tenantType, string productKey, CancellationToken ct)
+        Guid userId, Guid? tenantId, string? tenantType, string productKey, CancellationToken ct)
         => inner.GetMenusAsync(userId, tenantId, tenantType, productKey, ct);
 
     public Task<bool> HasPermissionAsync(Guid userId, string permissionKey, Guid? tenantId, CancellationToken ct)

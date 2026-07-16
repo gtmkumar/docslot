@@ -119,6 +119,12 @@ import {
   EffectivePermissionSchema,
   CreateDoctorResultDtoSchema,
   DashboardSummaryDtoSchema,
+  AgentPanelDtoSchema,
+  DepartmentLoadDtoSchema,
+  FloorDoctorDtoSchema,
+  type AgentPanel,
+  type DepartmentLoad,
+  type FloorDoctor,
   DisputeSchema,
   DoctorDtoSchema,
   DpdpRequestSchema,
@@ -771,6 +777,57 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     // card stays 0 until /dashboard/summary emits it.
     activeConversations: 0,
   };
+}
+
+// ── DASHBOARD SIDE PANELS ──────────────────────────────────────────────────────
+// The three panels that stayed on the mock seam until the live endpoints landed:
+// GET /dashboard/agent-panel, /dashboard/department-load, /dashboard/floor.
+// Each adapter maps the wire DTO into the app-facing shape the widgets already
+// render (initials computed here; colorKey stays a token key, never a hex).
+
+export async function getAgentPanel(): Promise<AgentPanel> {
+  const raw = await apiFetch<unknown>('/dashboard/agent-panel');
+  const dto = AgentPanelDtoSchema.parse(raw);
+  // Wire shape == app shape (the DTO was designed against the contract); strip
+  // passthrough extras by rebuilding the object.
+  return {
+    activeConversations: dto.activeConversations,
+    sparkline: dto.sparkline,
+    avgResponseMins: dto.avgResponseMins,
+    selfServedPct: dto.selfServedPct,
+    handedPct: dto.handedPct,
+    dropOffPct: dto.dropOffPct,
+    funnel: dto.funnel.map((s) => ({ key: s.key, count: s.count, pct: s.pct })),
+  };
+}
+
+export async function getDepartmentLoad(): Promise<DepartmentLoad[]> {
+  const raw = await apiFetch<unknown[]>('/dashboard/department-load');
+  const dtos = DepartmentLoadDtoSchema.array().parse(raw);
+  return dtos.map((d) => ({
+    id: d.departmentId,
+    name: d.name,
+    // Prefer the same name-keyed token mapping the doctors directory uses so the
+    // known departments keep their prototype colors; fall back to the
+    // server-assigned rotation key for departments the mapping doesn't know.
+    colorKey: DEPT_COLOR_KEY[deptIdForName(d.name)] ?? d.colorKey,
+    booked: d.booked,
+    capacity: d.capacity,
+  }));
+}
+
+export async function getFloorDoctors(): Promise<FloorDoctor[]> {
+  const raw = await apiFetch<unknown[]>('/dashboard/floor');
+  const dtos = FloorDoctorDtoSchema.array().parse(raw);
+  return dtos.map((d) => ({
+    id: d.doctorId,
+    name: d.name,
+    spec: d.specialization ?? d.departmentName ?? '—',
+    // No room source in the live schema yet — omitted; the row renders spec alone.
+    nextSlot: d.nextSlot ? toClockTime(d.nextSlot) : null,
+    seenToday: d.seenToday,
+    initials: doctorInitials(d.name),
+  }));
 }
 
 // ── ANALYTICS ───────────────────────────────────────────────────────────────────
