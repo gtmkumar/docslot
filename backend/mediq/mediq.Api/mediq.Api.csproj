@@ -10,11 +10,15 @@
   <ItemGroup>
     <!-- Aspire RabbitMQ client — registers the IConnection singleton via builder.AddRabbitMQClient("rabbitmq").
          Only invoked when Messaging:Provider=rabbitmq; the dev/test default (none) never touches it. -->
-    <PackageReference Include="Aspire.RabbitMQ.Client" Version="13.4.3" />
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.3" />
-    <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
+    <PackageReference Include="Aspire.RabbitMQ.Client" Version="13.4.6" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Enrichers.Span" Version="3.1.0" />
+    <!-- Microsoft.OpenApi must stay on the 2.x line that Microsoft.AspNetCore.OpenApi 10.0.x
+         targets: its source generator assigns IOpenApiMediaType.Example, which 3.x made
+         read-only (CS0200 in generated code). GHSA-v5pm-xwqc-g5wc is patched from 2.7.5. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.11.0" />
   </ItemGroup>
 
   <ItemGroup>
