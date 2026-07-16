@@ -13,3 +13,4 @@
 - [Owner-rights view RLS bypass in IAM reads](owner-rights-view-rls-bypass-iam-reads.md) — views bypass RLS; effective-permissions/effective-access reads leak cross-tenant via ?tenantId; plain-table overrides read is safe.
 - [Consultation draft→finalize composer](consultation-draft-finalize.md) — Phase-A Rx composer; vitals unencrypted PHI, signer CHECK, server-derived doctor, one-draft/booking index; PASS.
 - [Last-active-admin anti-bricking guard](last-admin-guard-antibricking.md) — permission-based guard in set_tenant_user_active + revoke_role_assignment; super_admin bypasses it; #79 test pins the blocking branch via a non-member global-override actor.
+- [Tenant onboarding feature](tenant-onboarding-feature.md) — POST /tenants creates tenant + tenant_owner invite in one txn; server-fixed role, no-RLS tenants table, TenantId:null audits, token hygiene, status='active' birth; PASS.

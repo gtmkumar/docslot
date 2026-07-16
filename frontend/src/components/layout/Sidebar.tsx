@@ -32,6 +32,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
   // The real active tenant's display name (session source of truth). Used by the org switcher in
   // real-API mode instead of the mock ORGS list. (#59)
   const activeTenantName = user?.tenants.find((tn) => tn.tenantId === tenantId)?.displayName;
+  // Live-mode session with no active tenant = a platform super_admin. Reception-desk
+  // chrome (eyebrow, WhatsApp-agent pill) is tenant-scoped and hidden at this scope.
+  const isPlatformScope = USE_REAL_API && !tenantId;
   // The signed-in user's active-tenant role names, joined for the profile chip.
   // Empty + no active tenant (live mode) → platform admin; empty otherwise → the
   // generic bilingual fallback (keeps hi working). Display only.
@@ -65,7 +68,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
         </span>
         <div className="leading-tight">
           <p className="text-sm font-semibold text-ink">DocSlot</p>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-2">{t('app.eyebrow')}</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-2">
+            {isPlatformScope ? t('app.eyebrowPlatform') : t('app.eyebrow')}
+          </p>
         </div>
       </div>
 
@@ -83,7 +88,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
             className="w-full truncate rounded-[var(--radius-sm)] border border-line bg-surface-sunk px-2.5 py-2 text-[13px] font-medium text-ink"
             title={activeTenantName ?? undefined}
           >
-            {activeTenantName ?? '—'}
+            {activeTenantName ?? t('topbar.platformScope')}
           </div>
         ) : (
           <select
@@ -134,11 +139,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
 
       {/* Bottom block */}
       <div className="mt-auto border-t border-line px-3 py-3">
-        <div className="flex items-center gap-2 rounded-[var(--radius-sm)] bg-whatsapp-soft px-2.5 py-2">
-          <span className="h-2 w-2 rounded-full bg-whatsapp" aria-hidden="true" />
-          <span className="flex-1 text-[13px] font-medium text-whatsapp-ink">{t('agent.label')}</span>
-          <span className="text-[10px] font-bold uppercase tracking-wider text-whatsapp-ink">{t('agent.live')}</span>
-        </div>
+        {/* The WhatsApp-agent pill is a clinic concept — there is no agent to report on
+            at platform scope, so showing a LIVE status there would be fabricated. */}
+        {isPlatformScope ? null : (
+          <div className="flex items-center gap-2 rounded-[var(--radius-sm)] bg-whatsapp-soft px-2.5 py-2">
+            <span className="h-2 w-2 rounded-full bg-whatsapp" aria-hidden="true" />
+            <span className="flex-1 text-[13px] font-medium text-whatsapp-ink">{t('agent.label')}</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-whatsapp-ink">{t('agent.live')}</span>
+          </div>
+        )}
 
         <Link
           to="/settings"

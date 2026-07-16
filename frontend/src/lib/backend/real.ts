@@ -50,6 +50,14 @@ import {
   RevokeAllSessionsResultSchema,
   InvitationListSchema,
   InvitationTokenResultSchema,
+  AcceptInvitationResultSchema,
+  CreateTenantResultSchema,
+  PincodeLookupSchema,
+  type AcceptInvitationRequest,
+  type AcceptInvitationResult,
+  type CreateTenantRequest,
+  type CreateTenantResult,
+  type PincodeLookup,
   RevokeInvitationResultSchema,
   IpAllowlistEntrySchema,
   SecurityPolicyViewSchema,
@@ -661,6 +669,40 @@ export async function listPatients(): Promise<PatientRow[]> {
 export async function listTenants(): Promise<TenantListItem[]> {
   const raw = await apiFetch<unknown[]>('/tenants?skip=0&take=200');
   return TenantListItemSchema.array().parse(raw);
+}
+
+/** POST /tenants → 201 CreateTenantResult — tenant onboarding (gated
+ *  `platform.tenants.create`). Creates the clinic AND mints its one-time tenant_owner
+ *  invitation in one transaction; `inviteToken` is surfaced exactly once. 409 = the
+ *  tenantCode is taken. */
+export async function createTenant(
+  req: CreateTenantRequest,
+  idempotencyKey: string,
+): Promise<CreateTenantResult> {
+  const raw = await apiFetch<unknown>('/tenants', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: req,
+  });
+  return CreateTenantResultSchema.parse(raw);
+}
+
+/** GET /geo/pincode/{pin} — India PIN-code reference lookup (auth-only, no tenant scope).
+ *  404 = unknown code; lat/long may be null (postal directory answered, geocoder didn't). */
+export async function lookupPincode(pinCode: string): Promise<PincodeLookup> {
+  const raw = await apiFetch<unknown>(`/geo/pincode/${encodeURIComponent(pinCode)}`);
+  return PincodeLookupSchema.parse(raw);
+}
+
+/** POST /invitations/accept — PUBLIC (the token IS the authorization; no JWT). The
+ *  invitee sets their own displayName + password; single-use; invalid/expired/used
+ *  tokens all yield the same generic 422. */
+export async function acceptInvitation(req: AcceptInvitationRequest): Promise<AcceptInvitationResult> {
+  const raw = await apiFetch<unknown>('/invitations/accept', {
+    method: 'POST',
+    body: req,
+  });
+  return AcceptInvitationResultSchema.parse(raw);
 }
 
 // ── DOCTORS DIRECTORY ──────────────────────────────────────────────────────────
@@ -1634,10 +1676,12 @@ export async function getCalendarGrid(): Promise<CalendarGrid> {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /** Derive the UI status from the DB's is_active/is_verified pair (mirrors the
- *  mock's statusOf — the ApiClientDto omits the computed `status`). */
+ *  mock's statusOf — the ApiClientDto omits the computed `status`). Never-approved
+ *  wins over inactive: a FRESH client (inactive AND unverified) is awaiting approval,
+ *  not "suspended" — and the Approve action sets both flags in one click. */
 function clientStatusOf(isActive: boolean, isVerified: boolean): ApiClient['status'] {
-  if (!isActive) return 'suspended';
   if (!isVerified) return 'pending';
+  if (!isActive) return 'suspended';
   return 'approved';
 }
 

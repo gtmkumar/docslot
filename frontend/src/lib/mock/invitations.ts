@@ -14,11 +14,19 @@
 //    references seeded People-tab users so the console can resolve a display name.
 
 import {
+  AcceptInvitationResultSchema,
+  CreateTenantResultSchema,
+  PincodeLookupSchema,
+  type PincodeLookup,
   InvitationSchema,
   InvitationListSchema,
   InvitationTokenResultSchema,
   RevokeInvitationResultSchema,
+  type AcceptInvitationRequest,
+  type AcceptInvitationResult,
   type CreateInvitationRequest,
+  type CreateTenantRequest,
+  type CreateTenantResult,
   type Invitation,
   type InvitationList,
   type InvitationTokenResult,
@@ -148,6 +156,52 @@ export function resendInvitation(
     );
     return InvitationTokenResultSchema.parse({ invitationId, token: newToken(), expiresAt, resendCount });
   });
+}
+
+/** POST /tenants — mock tenant onboarding: fabricates a tenant id + a one-time owner
+ *  invitation token (mirrors CreateTenantCommand: tenant + tenant_owner invite atomically). */
+export function createTenant(req: CreateTenantRequest, idempotencyKey: string): Promise<CreateTenantResult> {
+  return withIdem(idempotencyKey, () =>
+    CreateTenantResultSchema.parse({
+      tenantId: crypto.randomUUID(),
+      tenantCode: req.tenantCode,
+      displayName: req.displayName,
+      invitationId: `inv-${crypto.randomUUID().slice(0, 8)}`,
+      inviteToken: newToken(),
+      inviteExpiresAt: at(TTL_DAYS * DAY),
+      adminEmail: req.adminEmail,
+    }),
+  );
+}
+
+/** GET /geo/pincode/{pin} — mock lookup: a handful of canned codes so the onboarding
+ *  form's auto-fill is demoable offline; anything else rejects like the real 404. */
+const MOCK_PINCODES: Record<string, Omit<PincodeLookup, 'pinCode'>> = {
+  '400001': { state: 'Maharashtra', district: 'Mumbai', areas: ['Fort', 'M.P.T.', 'Town Hall'], latitude: 18.938771, longitude: 72.835335 },
+  '110001': { state: 'Delhi', district: 'New Delhi', areas: ['Connaught Place', 'Janpath', 'Sansad Marg'], latitude: 28.632735, longitude: 77.219696 },
+  '854301': { state: 'Bihar', district: 'Purnia', areas: ['Purnea City', 'Line Bazar', 'Bhatta Bazar'], latitude: 25.777268, longitude: 87.475556 },
+  '560001': { state: 'Karnataka', district: 'Bengaluru', areas: ['Bangalore G.P.O.', 'Vidhana Soudha', 'HighCourt'], latitude: 12.972442, longitude: 77.580643 },
+};
+
+export function lookupPincode(pinCode: string): Promise<PincodeLookup> {
+  const hit = MOCK_PINCODES[pinCode];
+  if (!hit) return Promise.reject(new Error(`PIN code ${pinCode} was not found in the postal directory.`));
+  return delay(PincodeLookupSchema.parse({ pinCode, ...hit }));
+}
+
+/** POST /invitations/accept — mock redemption. Any non-empty token "succeeds" so the
+ *  public accept page is demoable offline; the real endpoint 422s bad/expired tokens. */
+export function acceptInvitation(req: AcceptInvitationRequest): Promise<AcceptInvitationResult> {
+  if (!req.token.trim()) {
+    return Promise.reject(new Error('This invitation is invalid, expired, or has already been used.'));
+  }
+  return delay(
+    AcceptInvitationResultSchema.parse({
+      userId: crypto.randomUUID(),
+      tenantId: crypto.randomUUID(),
+      alreadyExisted: false,
+    }),
+  );
 }
 
 /** POST /tenants/{id}/invitations/{id}/revoke — flip a pending invite to revoked.

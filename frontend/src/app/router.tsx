@@ -18,6 +18,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import { PlaceholderScreen } from '@/components/layout/PlaceholderScreen';
 import { NotFoundScreen } from '@/components/layout/NotFoundScreen';
 import { LoginScreen } from '@/features/auth/LoginScreen';
+import { AcceptInviteScreen } from '@/features/auth/AcceptInviteScreen';
 import { useSession } from '@/stores/session';
 
 // Heavy feature screens are code-split: each becomes its own chunk, loaded on
@@ -83,7 +84,7 @@ const panelSearchSchema = z.object({
       'exportData', 'eraseData', 'reportBreach', 'breakGlass',
       'registerBroker', 'manageBroker', 'createCommissionRule', 'createCampaign', 'raiseDispute', 'resolveDispute',
       'generateLink', 'bookOnBehalf',
-      'beginImpersonation',
+      'beginImpersonation', 'newTenant',
     ])
     .optional(),
   id: z.string().optional(),
@@ -107,6 +108,19 @@ const loginRoute = createRoute({
     if (useSession.getState().isAuthenticated()) throw redirect({ to: '/' });
   },
   component: LoginScreen,
+});
+
+// ── /accept-invite (standalone, PUBLIC) ──────────────────────────────────────
+// Invitation redemption: the token in the search param IS the authorization (no
+// session). Signed-in users can still open it (accepting for another identity is
+// a server-side concern; the token decides).
+const acceptInviteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/accept-invite',
+  validateSearch: (search: Record<string, unknown>) => ({
+    token: typeof search.token === 'string' ? search.token : undefined,
+  }),
+  component: AcceptInviteScreen,
 });
 
 // ── authed layout (pathless) — the guarded AppShell ──────────────────────────
@@ -241,6 +255,7 @@ const labRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
+  acceptInviteRoute,
   authLayoutRoute.addChildren([
     indexRoute,
     bookingsRoute,

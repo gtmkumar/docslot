@@ -5,6 +5,22 @@ public sealed record TenantDto(
     Guid TenantId, string TenantCode, string DisplayName, string TenantType,
     string PrimaryEmail, string Status, string Country, string? City);
 
+/// <summary>Onboard a new tenant (clinic/hospital/lab) from the platform console. <c>AdminEmail</c> is the
+/// initial Tenant Owner — a password is never involved: the command mints a <c>tenant_owner</c> invitation
+/// and the owner sets their own credential on accept. Gated on <c>platform.tenants.create</c>.
+/// <c>Latitude</c>/<c>Longitude</c> geo-tag the facility (typically from the PIN-code lookup) and are
+/// stored under <c>settings.geo</c>; <c>PinCode</c> lands in the tenants.pin_code column.</summary>
+public sealed record CreateTenantRequest(
+    string TenantCode, string LegalName, string DisplayName, string TenantType,
+    string PrimaryEmail, string PrimaryPhone, string? City, string? State,
+    string? PinCode, decimal? Latitude, decimal? Longitude, string AdminEmail);
+
+/// <summary>Result of onboarding a tenant. <c>InviteToken</c> is the ONE-TIME plaintext owner-invitation
+/// token — surfaced exactly once (the response is never idempotency-cached); only its hash is persisted.</summary>
+public sealed record CreateTenantResult(
+    Guid TenantId, string TenantCode, string DisplayName,
+    Guid InvitationId, string InviteToken, DateTime InviteExpiresAt, string AdminEmail);
+
 /// <summary>A role a user holds in the tenant (for the user-row role chips). Carries the assignment id so
 /// the manage panel can revoke without a second lookup.</summary>
 public sealed record UserRoleDto(

@@ -86,7 +86,7 @@ export function WebhookFormPanel({
           idempotencyKey: idempotencyKey(),
         });
         // One-time signing-secret reveal.
-        openPanel({ type: 'clientSecret', result, kind: 'webhook' });
+        openPanel({ type: 'clientSecret', result, kind: 'webhook', intent: 'created' });
       }
     } catch (e) {
       toast.error(toUserError(e));

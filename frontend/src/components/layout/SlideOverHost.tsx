@@ -73,6 +73,8 @@ const ResolveDisputePanel = lazy(() => import('@/features/commission/components/
 const GenerateLinkPanel = lazy(() => import('@/features/portal/components/GenerateLinkPanel').then((m) => ({ default: m.GenerateLinkPanel })));
 const BookOnBehalfPanel = lazy(() => import('@/features/portal/components/BookOnBehalfPanel').then((m) => ({ default: m.BookOnBehalfPanel })));
 const BeginImpersonationPanel = lazy(() => import('@/features/impersonation/components/BeginImpersonationPanel').then((m) => ({ default: m.BeginImpersonationPanel })));
+const NewTenantPanel = lazy(() => import('@/features/tenants/components/NewTenantPanel').then((m) => ({ default: m.NewTenantPanel })));
+const TenantCreatedPanel = lazy(() => import('@/features/tenants/components/TenantCreatedPanel').then((m) => ({ default: m.TenantCreatedPanel })));
 import { BOOKINGS } from '@/lib/data';
 import { useUI, type Panel } from '@/stores/ui';
 
@@ -86,6 +88,7 @@ type PanelType = Panel['type'];
 type TransientPanelType =
   | 'clientSecret'
   | 'invitationToken'
+  | 'tenantCreated'
   | 'deletionCertificate'
   | 'prescriptionDetail'
   | 'labReportDetail'
@@ -102,7 +105,7 @@ type TransientPanelType =
 /** URL-addressable panel types. */
 type UrlPanelType = Exclude<PanelType, TransientPanelType>;
 const TRANSIENT_SET = new Set<PanelType>([
-  'clientSecret', 'invitationToken', 'deletionCertificate',
+  'clientSecret', 'invitationToken', 'tenantCreated', 'deletionCertificate',
   'prescriptionDetail', 'labReportDetail', 'uploadReport', 'abdmDetail',
   // Medical-history create/edit + import + attachment viewer + the clinical
   // break-glass carry PHI and/or a declared purpose-of-use — never URL-encoded or
@@ -124,7 +127,7 @@ const PAYLOADLESS: PanelType[] = [
   'exportData', 'reportBreach', 'breakGlass',
   'registerBroker', 'createCommissionRule', 'createCampaign',
   'generateLink', 'bookOnBehalf',
-  'beginImpersonation',
+  'beginImpersonation', 'newTenant',
 ];
 
 function panelToSearch(panel: Panel | null): { panel?: UrlPanelType; id?: string } {
@@ -292,7 +295,7 @@ function renderPanel(panel: Panel, closePanel: () => void) {
     case 'manageClient':
       return <ManageClientPanel clientId={panel.clientId} open onClose={closePanel} />;
     case 'clientSecret':
-      return <SecretRevealPanel result={panel.result} kind={panel.kind} open onClose={closePanel} />;
+      return <SecretRevealPanel result={panel.result} kind={panel.kind} intent={panel.intent} open onClose={closePanel} />;
     case 'createWebhook':
       return <WebhookFormPanel open onClose={closePanel} />;
     case 'webhookForm':
@@ -351,6 +354,10 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <BookOnBehalfPanel open onClose={closePanel} />;
     case 'beginImpersonation':
       return <BeginImpersonationPanel open onClose={closePanel} />;
+    case 'newTenant':
+      return <NewTenantPanel open onClose={closePanel} />;
+    case 'tenantCreated':
+      return <TenantCreatedPanel result={panel.result} open onClose={closePanel} />;
     default:
       return null;
   }

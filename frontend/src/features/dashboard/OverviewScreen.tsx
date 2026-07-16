@@ -27,7 +27,10 @@ function floorCount(confirmed: number, queue: number): number {
 export function OverviewScreen() {
   const { t } = useTranslation();
   const tenantId = useSession((s) => s.tenantId);
-  const { data, isLoading, isError, refetch } = useDashboardSummary();
+  // Platform scope renders the empty state below — never fire the tenant-scoped
+  // summary query without a tenant (it can only 403).
+  const hasTenant = !USE_REAL_API || Boolean(tenantId);
+  const { data, isLoading, isError, refetch } = useDashboardSummary(hasTenant);
   const queueRef = useRef<HTMLElement>(null);
 
   const focusQueue = () => {

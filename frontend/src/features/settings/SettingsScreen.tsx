@@ -22,7 +22,9 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ApiError } from '@/lib/api-client';
+import { USE_REAL_API } from '@/lib/backend/flag';
 import { usePermissions } from '@/lib/permissions';
+import { useSession } from '@/stores/session';
 import { useSettings } from './api';
 import { OrganizationSection } from './components/OrganizationSection';
 import { BookingRulesSection } from './components/BookingRulesSection';
@@ -45,8 +47,13 @@ const GATED_SECTIONS = new Set<string>(['organization', 'booking-rules', 'whatsa
 export function SettingsScreen() {
   const { t } = useTranslation();
   const { can } = usePermissions();
-  const canRead = can('tenant.settings.read');
-  const canUpdate = can('tenant.settings.update');
+  // Platform scope (super_admin, no active tenant): tenant.* permissions resolve but
+  // there is no workspace to read — never fire the settings query without a tenant
+  // (same gate as TeamScreen; avoids null-tenant requests).
+  const tenantId = useSession((s) => s.tenantId);
+  const hasTenant = !USE_REAL_API || Boolean(tenantId);
+  const canRead = can('tenant.settings.read') && hasTenant;
+  const canUpdate = can('tenant.settings.update') && hasTenant;
 
   // `strict: false` reads the optional $section param for both /settings and
   // /settings/$section (the two routes render this same screen).

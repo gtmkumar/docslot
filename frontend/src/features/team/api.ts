@@ -88,8 +88,8 @@ export const modulesQueryKey = ['team', 'modules'] as const;
 export const roleMatrixQueryKey = (roleId: string | undefined) => ['team', 'roleMatrix', roleId] as const;
 export const effectiveAccessQueryKey = (userId: string | undefined) => ['team', 'effectiveAccess', userId] as const;
 
-export function useTenantUsers() {
-  return useQuery({ queryKey: usersQueryKey, queryFn: listTenantUsers });
+export function useTenantUsers(enabled = true) {
+  return useQuery({ queryKey: usersQueryKey, queryFn: listTenantUsers, enabled });
 }
 
 // ── BRANCHES + MEMBERSHIP SCOPE (#90) ─────────────────────────────────────────
@@ -133,8 +133,8 @@ export function useSetMemberScope() {
   });
 }
 
-export function useRoles() {
-  return useQuery({ queryKey: rolesQueryKey, queryFn: listRoles });
+export function useRoles(enabled = true) {
+  return useQuery({ queryKey: rolesQueryKey, queryFn: listRoles, enabled });
 }
 
 export function usePermissionRegistry() {

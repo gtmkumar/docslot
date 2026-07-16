@@ -32,6 +32,20 @@ public sealed class AdminController(ICommandDispatcher commands, IQueryDispatche
     public async Task<ActionResult<TenantDto>> GetTenant(Guid tenantId, CancellationToken ct)
         => Ok(await queries.Query(new GetTenantQuery(tenantId), ct));
 
+    /// <summary>Onboard a new tenant + mint its one-time <c>tenant_owner</c> invitation (single transaction).
+    /// The response carries the plaintext invite token EXACTLY ONCE — the owner redeems it on the public
+    /// accept page and sets their own password; no credential is ever created here.</summary>
+    [HttpPost("tenants")]
+    [RequirePermission("platform.tenants.create")]
+    [ProducesResponseType<CreateTenantResult>(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<CreateTenantResult>> CreateTenant(
+        [FromBody] CreateTenantRequest request, CancellationToken ct)
+    {
+        var result = await commands.Send(new CreateTenantCommand(request), ct);
+        return CreatedAtAction(nameof(GetTenant), new { tenantId = result.TenantId }, result);
+    }
+
     // ---- Users in a tenant ---------------------------------------------------------------------
 
     [HttpGet("tenants/{tenantId:guid}/users")]

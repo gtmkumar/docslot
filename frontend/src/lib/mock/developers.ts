@@ -47,10 +47,11 @@ function withIdem<T>(key: string, compute: () => T): Promise<T> {
   return delay(result);
 }
 
-/** Derive the UI status from the DB's is_active/is_verified pair. */
+/** Derive the UI status from the DB's is_active/is_verified pair. Never-approved wins
+ *  over inactive: a fresh client is "pending approval", not "suspended". */
 function statusOf(isActive: boolean, isVerified: boolean): ApiClientStatus {
-  if (!isActive) return 'suspended';
   if (!isVerified) return 'pending';
+  if (!isActive) return 'suspended';
   return 'approved';
 }
 

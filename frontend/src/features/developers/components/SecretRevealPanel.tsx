@@ -17,17 +17,24 @@ import type { ApiClientSecretResult, CreateWebhookResult } from '@/lib/mock/cont
 interface SecretRevealPanelProps {
   result: ApiClientSecretResult | CreateWebhookResult;
   kind: 'client' | 'webhook';
+  intent: 'created' | 'rotated';
   open: boolean;
   onClose: () => void;
 }
 
-export function SecretRevealPanel({ result, kind, open, onClose }: SecretRevealPanelProps) {
+export function SecretRevealPanel({ result, kind, intent, open, onClose }: SecretRevealPanelProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const secret = kind === 'client' ? (result as ApiClientSecretResult).clientSecret : (result as CreateWebhookResult).signingSecret;
   const labelKey = kind === 'client' ? 'developers.secret.clientSecret' : 'developers.secret.signingSecret';
-  const titleKey = kind === 'client' ? 'developers.secret.titleNew' : 'developers.secret.titleRotate';
+  // Title says what just HAPPENED: registration vs rotation vs webhook creation.
+  const titleKey =
+    intent === 'rotated'
+      ? 'developers.secret.titleRotate'
+      : kind === 'client'
+        ? 'developers.secret.titleNew'
+        : 'developers.secret.titleWebhookNew';
 
   const onCopy = async () => {
     try {

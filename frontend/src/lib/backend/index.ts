@@ -232,6 +232,12 @@ export const createInvitation = USE_REAL_API ? real.createInvitation : mock.crea
 export const resendInvitation = USE_REAL_API ? real.resendInvitation : mock.resendInvitation;
 export const revokeInvitation = USE_REAL_API ? real.revokeInvitation : mock.revokeInvitation;
 
+// PLATFORM CONSOLE — tenant onboarding (create clinic + owner invite) and the
+// PUBLIC invitation redemption behind /accept-invite.
+export const createTenant = USE_REAL_API ? real.createTenant : mock.createTenant;
+export const acceptInvitation = USE_REAL_API ? real.acceptInvitation : mock.acceptInvitation;
+export const lookupPincode = USE_REAL_API ? real.lookupPincode : mock.lookupPincode;
+
 // ── IAM / ROLES & PERMISSIONS (Slice 2) ───────────────────────────────────────
 // Privilege-matrix grid + duplicate + effective-access viewer. READS pass through
 // (zod mirrors the IAM DTOs 1:1); WRITES (cell toggle, duplicate) carry an

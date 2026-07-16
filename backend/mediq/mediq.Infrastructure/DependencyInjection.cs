@@ -92,6 +92,23 @@ public static class InfrastructureRegistration
         services.AddScoped<IWebhookHttpDispatcher, WebhookHttpDispatcher>();
         services.AddScoped<IWebhookPublisher, WebhookPublisher>();
 
+        // PIN-code reference lookup (address auto-fill + clinic geo-tagging). Two public upstreams:
+        // India Post (authoritative postal directory) + OSM Nominatim (best-effort centroid — its
+        // usage policy requires the identifying User-Agent below). Results cache in-memory for 24h.
+        services.AddMemoryCache();
+        services.AddHttpClient(Geo.PincodeLookupService.IndiaPostClient, c =>
+        {
+            c.BaseAddress = new Uri("https://api.postalpincode.in/");
+            c.Timeout = TimeSpan.FromSeconds(6);
+        });
+        services.AddHttpClient(Geo.PincodeLookupService.NominatimClient, c =>
+        {
+            c.BaseAddress = new Uri("https://nominatim.openstreetmap.org/");
+            c.Timeout = TimeSpan.FromSeconds(6);
+            c.DefaultRequestHeaders.UserAgent.ParseAdd("DocSlot/1.0 (healthcare-saas; contact: ops@docslot.in)");
+        });
+        services.AddScoped<IPincodeLookupService, Geo.PincodeLookupService>();
+
         // Durable transactional INTEGRATION-EVENT OUTBOX (phase-4 seam). WebhookPublisher captures EVERY event
         // into platform_api.integration_event_outbox atomically with the business write (closing the lost-event
         // gap: an event with no matching webhook subscription was previously discarded). The drain worker

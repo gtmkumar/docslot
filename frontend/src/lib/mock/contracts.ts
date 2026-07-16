@@ -1589,6 +1589,69 @@ export const CreateInvitationRequestSchema = z.object({
 });
 export type CreateInvitationRequest = z.infer<typeof CreateInvitationRequestSchema>;
 
+/** `POST /api/v1/tenants` body. Mirrors CreateTenantRequest — tenant onboarding from
+ *  the platform console (gated `platform.tenants.create`). `adminEmail` is the initial
+ *  Tenant Owner; no password crosses the wire — the owner sets their own on accept. */
+export const CreateTenantRequestSchema = z.object({
+  tenantCode: z.string(),
+  legalName: z.string(),
+  displayName: z.string(),
+  tenantType: z.string(),
+  primaryEmail: z.string(),
+  primaryPhone: z.string(),
+  city: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  pinCode: z.string().nullable().optional(),
+  latitude: z.number().nullable().optional(),
+  longitude: z.number().nullable().optional(),
+  adminEmail: z.string(),
+});
+export type CreateTenantRequest = z.infer<typeof CreateTenantRequestSchema>;
+
+/** `GET /api/v1/geo/pincode/{pin}` — India PIN-code reference lookup. `areas` are the
+ *  post-office localities inside the code; lat/long are the code's approximate centroid
+ *  (null when only the postal directory answered — a lookup is useful without them). */
+export const PincodeLookupSchema = z.object({
+  pinCode: z.string(),
+  state: z.string(),
+  district: z.string(),
+  areas: z.array(z.string()),
+  latitude: z.number().nullable(),
+  longitude: z.number().nullable(),
+});
+export type PincodeLookup = z.infer<typeof PincodeLookupSchema>;
+
+/** `POST /api/v1/tenants` result. Mirrors CreateTenantResult. `inviteToken` is the
+ *  ONE-TIME plaintext owner-invitation token — surfaced exactly once, never re-fetchable
+ *  (only its hash is persisted; the response is never idempotency-cached). */
+export const CreateTenantResultSchema = z.object({
+  tenantId: z.string(),
+  tenantCode: z.string(),
+  displayName: z.string(),
+  invitationId: z.string(),
+  inviteToken: z.string(),
+  inviteExpiresAt: z.string(),
+  adminEmail: z.string(),
+});
+export type CreateTenantResult = z.infer<typeof CreateTenantResultSchema>;
+
+/** `POST /api/v1/invitations/accept` body. Mirrors AcceptInvitationRequest — the token
+ *  IS the authorization (no JWT); the invitee sets their own displayName + password. */
+export const AcceptInvitationRequestSchema = z.object({
+  token: z.string(),
+  displayName: z.string(),
+  password: z.string(),
+});
+export type AcceptInvitationRequest = z.infer<typeof AcceptInvitationRequestSchema>;
+
+/** `POST /api/v1/invitations/accept` result. Mirrors AcceptInvitationResult. */
+export const AcceptInvitationResultSchema = z.object({
+  userId: z.string(),
+  tenantId: z.string(),
+  alreadyExisted: z.boolean(),
+});
+export type AcceptInvitationResult = z.infer<typeof AcceptInvitationResultSchema>;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CLINICAL PHI (Slice 03b) — mirrors mediq.SharedDataModel/Docslot/Clinical
 // (camelCase wire). THE MOST PHI-SENSITIVE SURFACE.

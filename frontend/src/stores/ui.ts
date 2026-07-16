@@ -7,6 +7,7 @@ import type { Booking } from '@/lib/types';
 import type {
   ApiClientSecretResult,
   BreakGlassResourceType,
+  CreateTenantResult,
   CreateWebhookResult,
   ErasureResult,
   InvitationTokenResult,
@@ -65,7 +66,14 @@ export type Panel =
   // DELIBERATELY NOT URL-restorable — the secret can't survive a refresh.
   | { type: 'registerClient' }
   | { type: 'manageClient'; clientId: string }
-  | { type: 'clientSecret'; result: ApiClientSecretResult | CreateWebhookResult; kind: 'client' | 'webhook' }
+  | {
+      type: 'clientSecret';
+      result: ApiClientSecretResult | CreateWebhookResult;
+      kind: 'client' | 'webhook';
+      // Why the secret exists — drives the panel title ("registered" vs "rotated" vs
+      // "webhook created"); `kind` alone can't tell a fresh client from a rotation.
+      intent: 'created' | 'rotated';
+    }
   | { type: 'createWebhook' }
   | { type: 'webhookForm'; webhookId: string }
   | { type: 'webhookDeliveries'; webhookId: string }
@@ -140,7 +148,11 @@ export type Panel =
   // Support impersonation (issue #3). Payloadless + URL-addressable: a super_admin
   // opens it to begin acting as a tenant. No PHI/secret payload — the target
   // tenant id is picked inside the panel, never URL-encoded.
-  | { type: 'beginImpersonation' };
+  | { type: 'beginImpersonation' }
+  // Tenant onboarding (platform console). `tenantCreated` carries the ONE-TIME owner
+  // invite token — transient (never URL-synced), like `invitationToken`.
+  | { type: 'newTenant' }
+  | { type: 'tenantCreated'; result: CreateTenantResult };
 
 interface UIState {
   orgId: string;

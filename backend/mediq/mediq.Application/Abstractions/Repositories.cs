@@ -33,6 +33,15 @@ public interface ITenantRepository
 
     /// <summary>The user's active (non-revoked) role labels within one tenant — display-only for GET /me.</summary>
     Task<IReadOnlyList<UserRoleLabel>> GetRoleLabelsAsync(Guid userId, Guid tenantId, CancellationToken ct);
+
+    /// <summary>Inserts a <c>platform.tenants</c> row (status <c>active</c>; DB defaults fill country/timezone).
+    /// A lat/long pair geo-tags the facility under <c>settings.geo</c> (no dedicated columns yet — the JSONB
+    /// tag is the portable form until a schema migration promotes it). Returns the new tenant_id.
+    /// A duplicate <c>tenant_code</c> surfaces as ConflictException (409).</summary>
+    Task<Guid> CreateAsync(
+        string tenantCode, string legalName, string displayName, string tenantType,
+        string primaryEmail, string primaryPhone, string? city, string? state,
+        string? pinCode, decimal? latitude, decimal? longitude, CancellationToken ct);
 }
 
 public sealed record UserTenantMembership(Guid TenantId, string TenantCode, string DisplayName, string TenantType, bool IsPrimary);

@@ -24,6 +24,8 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { usePermissions } from '@/lib/permissions';
 import { downloadTextFile } from '@/lib/download';
 import { toUserError } from '@/lib/backend';
+import { USE_REAL_API } from '@/lib/backend/flag';
+import { useSession } from '@/stores/session';
 import { useUI } from '@/stores/ui';
 import { UsersTab } from './components/UsersTab';
 import { RolesPermissionsTab } from './components/RolesPermissionsTab';
@@ -47,18 +49,23 @@ export function TeamScreen() {
 
   // Per-tab / per-action permission gates (in-memory Set lookups — never a network
   // call, never a role-name branch).
-  const canReadUsers = can('tenant.users.read');
-  const canCreateUsers = can('tenant.users.create');
-  const canManageRoles = can('platform.roles.manage');
-  const canReadAudit = can('tenant.audit.read');
-  const canReadSettings = can('tenant.settings.read');
+  // The tenant.* planes additionally need an ACTIVE tenant: a platform-scope
+  // super_admin session (live mode, no tenant) resolves those permission keys but
+  // has no tenant to read — firing the queries would hit /tenants/null/* (404).
+  const tenantId = useSession((s) => s.tenantId);
+  const hasTenant = !USE_REAL_API || Boolean(tenantId);
+  const canReadUsers = can('tenant.users.read') && hasTenant;
+  const canCreateUsers = can('tenant.users.create') && hasTenant;
+  const canManageRoles = can('platform.roles.manage') && hasTenant;
+  const canReadAudit = can('tenant.audit.read') && hasTenant;
+  const canReadSettings = can('tenant.settings.read') && hasTenant;
   const canApi = can('platform.api_clients.manage');
 
   // Header stats: only what is derivable TODAY. Active users come from the loaded
   // users list; role counts from the roles list (custom = !isSystem); the branch
   // count (#90) from the branches list.
-  const { data: users } = useTenantUsers();
-  const { data: roles } = useRoles();
+  const { data: users } = useTenantUsers(canReadUsers);
+  const { data: roles } = useRoles(canReadUsers);
   // Pending-invitation count (#89) — feeds the Invites tab badge. Gated on
   // tenant.users.read so we never fire a 403 when the tab itself is hidden.
   const { data: invites } = useInvitations('pending', canReadUsers);

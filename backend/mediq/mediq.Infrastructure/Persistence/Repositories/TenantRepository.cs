@@ -1,5 +1,6 @@
 using mediq.Application.Abstractions;
 using mediq.Domain.Platform;
+using mediq.Utilities.Exceptions;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -76,4 +77,56 @@ public sealed class TenantRepository(PlatformDbContext db) : ITenantRepository
     }
 
     private sealed record RoleLabelRow(string RoleKey, string Name);
+
+    /// <summary>
+    /// Onboarding insert — platform.tenants carries no RLS, so a direct parameterised INSERT on the ambient
+    /// UoW transaction is the sanctioned path (the caller is gated on <c>platform.tenants.create</c>). Status
+    /// starts <c>active</c> so the owner can sign in the moment they accept their invitation; country/timezone/
+    /// settings/regulatory_metadata come from the schema defaults.
+    /// </summary>
+    public async Task<Guid> CreateAsync(
+        string tenantCode, string legalName, string displayName, string tenantType,
+        string primaryEmail, string primaryPhone, string? city, string? state,
+        string? pinCode, decimal? latitude, decimal? longitude, CancellationToken ct)
+    {
+        try
+        {
+            // The geo tag lives under settings.geo (JSONB) — platform.tenants has no coordinate
+            // columns yet, and settings is the sanctioned per-tenant config bag. Both-or-neither is
+            // enforced by the validator; the CASE keeps settings '{}' when untagged.
+            var rows = await db.Database.SqlQueryRaw<Guid>(
+                    """
+                    INSERT INTO platform.tenants
+                        (tenant_code, legal_name, display_name, tenant_type, primary_email, primary_phone,
+                         city, state, pin_code, settings, status)
+                    VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8,
+                            CASE WHEN @p9::numeric IS NOT NULL AND @p10::numeric IS NOT NULL
+                                 THEN jsonb_build_object('geo', jsonb_build_object(
+                                          'latitude', @p9::numeric, 'longitude', @p10::numeric,
+                                          'source', 'pincode_lookup', 'tagged_at', now()))
+                                 -- argless jsonb_build_object() = empty object; a literal brace pair
+                                 -- anywhere in this string breaks SqlQueryRaw placeholder parsing.
+                                 ELSE jsonb_build_object() END,
+                            'active')
+                    RETURNING tenant_id AS "Value"
+                    """,
+                    new NpgsqlParameter("@p0", tenantCode),
+                    new NpgsqlParameter("@p1", legalName),
+                    new NpgsqlParameter("@p2", displayName),
+                    new NpgsqlParameter("@p3", tenantType),
+                    new NpgsqlParameter("@p4", primaryEmail),
+                    new NpgsqlParameter("@p5", primaryPhone),
+                    new NpgsqlParameter("@p6", (object?)city ?? DBNull.Value),
+                    new NpgsqlParameter("@p7", (object?)state ?? DBNull.Value),
+                    new NpgsqlParameter("@p8", (object?)pinCode ?? DBNull.Value),
+                    new NpgsqlParameter("@p9", NpgsqlTypes.NpgsqlDbType.Numeric) { Value = (object?)latitude ?? DBNull.Value },
+                    new NpgsqlParameter("@p10", NpgsqlTypes.NpgsqlDbType.Numeric) { Value = (object?)longitude ?? DBNull.Value })
+                .ToListAsync(ct);
+            return rows.First();
+        }
+        catch (PostgresException pg) when (pg.SqlState == "23505")
+        {
+            throw new ConflictException($"A tenant with code '{tenantCode}' already exists.", pg);
+        }
+    }
 }

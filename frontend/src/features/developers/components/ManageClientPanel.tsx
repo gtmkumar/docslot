@@ -92,7 +92,7 @@ function DetailsSection({
   const onRotate = async () => {
     const result = await rotate.mutateAsync({ clientId: client.clientId, idempotencyKey: idempotencyKey() });
     // Hand the one-time secret straight to the reveal panel (never cached).
-    openPanel({ type: 'clientSecret', result, kind: 'client' });
+    openPanel({ type: 'clientSecret', result, kind: 'client', intent: 'rotated' });
   };
 
   const rows: { label: string; value: string; mono?: boolean }[] = [

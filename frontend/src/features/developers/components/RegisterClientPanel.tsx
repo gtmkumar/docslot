@@ -60,7 +60,7 @@ export function RegisterClientPanel({ open, onClose }: { open: boolean; onClose:
       idempotencyKey: idempotencyKey(),
     });
     // Swap to the one-time secret reveal (the result carries the plaintext once).
-    openPanel({ type: 'clientSecret', result, kind: 'client' });
+    openPanel({ type: 'clientSecret', result, kind: 'client', intent: 'created' });
   });
 
   const errKey = (k: keyof RegisterForm) => {

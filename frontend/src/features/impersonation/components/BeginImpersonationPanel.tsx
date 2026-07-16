@@ -13,11 +13,13 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { ShieldAlert } from 'lucide-react';
+import { Plus, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
 import { FieldShell, Select, TextArea, labelClass } from '@/components/ui/Field';
 import { toUserError } from '@/lib/backend';
+import { usePermissions } from '@/lib/permissions';
+import { useUI } from '@/stores/ui';
 import { useBeginImpersonation, useTenants } from '../api';
 
 const schema = z.object({
@@ -32,6 +34,11 @@ export function BeginImpersonationPanel({ open, onClose }: { open: boolean; onCl
   // Only fetch the tenant list while the panel is open.
   const tenantsQuery = useTenants(open);
   const beginMutation = useBeginImpersonation();
+  // Tenant onboarding entry point — permission-gated (platform.tenants.create),
+  // never a role check. Opening it replaces this panel.
+  const { can } = usePermissions();
+  const canCreateTenant = can('platform.tenants.create');
+  const openPanel = useUI((s) => s.openPanel);
 
   const { register, handleSubmit, formState } = useForm<BeginForm>({
     defaultValues: { targetTenantId: '', reason: '', breakGlass: false },
@@ -119,9 +126,19 @@ export function BeginImpersonationPanel({ open, onClose }: { open: boolean; onCl
               </button>
             </div>
           ) : noTenants ? (
-            <p className="rounded-[var(--radius-sm)] border border-line bg-surface-sunk px-3 py-2 text-[12px] text-muted">
-              {t('impersonation.begin.tenantsEmpty')}
-            </p>
+            <div className="flex flex-col gap-2 rounded-[var(--radius-sm)] border border-line bg-surface-sunk px-3 py-2.5">
+              <p className="text-[12px] text-muted">{t('impersonation.begin.tenantsEmpty')}</p>
+              {canCreateTenant ? (
+                <button
+                  type="button"
+                  onClick={() => openPanel({ type: 'newTenant' })}
+                  className="inline-flex items-center gap-1 self-start text-[12px] font-medium text-primary underline hover:no-underline focus-visible:outline-none"
+                >
+                  <Plus size={13} aria-hidden="true" />
+                  {t('tenants.new.openCta')}
+                </button>
+              ) : null}
+            </div>
           ) : (
             <Select
               id="imp-tenant"
@@ -141,6 +158,18 @@ export function BeginImpersonationPanel({ open, onClose }: { open: boolean; onCl
             </Select>
           )}
         </FieldShell>
+
+        {/* Onboarding shortcut when tenants already exist (the empty state has its own). */}
+        {canCreateTenant && !noTenants && !tenantsQuery.isLoading ? (
+          <button
+            type="button"
+            onClick={() => openPanel({ type: 'newTenant' })}
+            className="-mt-2 inline-flex items-center gap-1 self-start text-[12px] font-medium text-primary underline hover:no-underline focus-visible:outline-none"
+          >
+            <Plus size={13} aria-hidden="true" />
+            {t('tenants.new.openCta')}
+          </button>
+        ) : null}
 
         <FieldShell label={t('impersonation.begin.reason')} htmlFor="imp-reason" error={errKey('reason')}>
           <TextArea
