@@ -6213,6 +6213,7 @@ DECLARE
     m_analytics UUID;
     m_care_partners UUID;
     m_portal UUID;
+    m_tenants UUID;
     m_team UUID;
     m_developers UUID;
     m_security UUID;
@@ -6262,6 +6263,15 @@ BEGIN
     INSERT INTO platform.navigation_menus (menu_key, menu_label, menu_label_hi, menu_icon, menu_url, display_order, applies_to_tenant_types)
     VALUES ('partner_portal', 'My Portal', 'मेरा पोर्टल', 'wallet', '/portal', 85, NULL)
     RETURNING menu_id INTO m_portal;
+
+    -- Tenants (platform console). A super_admin's clinic directory — list + view/edit a tenant. Gated on the
+    -- EXISTING platform.tenants.read permission (below), so it is visible ONLY to platform-scope holders and is
+    -- invisible to ordinary clinic staff. Ordered at 20 to sit right under Overview in the platform console;
+    -- this shares a display_order with the tenant-scope 'bookings' node, but the two never co-occur for one user
+    -- (platform.tenants.read vs docslot.booking.read gate disjoint audiences).
+    INSERT INTO platform.navigation_menus (menu_key, menu_label, menu_label_hi, menu_icon, menu_url, display_order, applies_to_tenant_types)
+    VALUES ('tenants', 'Tenants', 'टेनेंट्स', 'building-2', '/tenants', 20, NULL)
+    RETURNING menu_id INTO m_tenants;
 
     INSERT INTO platform.navigation_menus (menu_key, menu_label, menu_label_hi, menu_icon, menu_url, display_order, applies_to_tenant_types)
     VALUES ('team', 'Team & Roles', 'टीम और भूमिकाएँ', 'user-cog', '/team', 90, NULL)
@@ -6361,6 +6371,13 @@ BEGIN
     INSERT INTO platform.menu_permissions (menu_id, permission_id)
     SELECT m_portal, p.permission_id FROM platform.permissions p
     WHERE p.permission_key = 'commission.broker.read_self' ON CONFLICT DO NOTHING;
+
+    -- Tenants → platform.tenants.read (platform-scope; the clinic directory is a super_admin surface). Gating on
+    -- the READ perm (not update) keeps the menu visible to any platform holder who can list tenants; the edit
+    -- action inside self-gates on platform.tenants.update.
+    INSERT INTO platform.menu_permissions (menu_id, permission_id)
+    SELECT m_tenants, p.permission_id FROM platform.permissions p
+    WHERE p.permission_key = 'platform.tenants.read' ON CONFLICT DO NOTHING;
 
     -- Team & Roles → tenant.roles.assign
     INSERT INTO platform.menu_permissions (menu_id, permission_id)

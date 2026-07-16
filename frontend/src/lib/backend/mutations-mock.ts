@@ -10,8 +10,11 @@
 import {
   BookingMutationResultSchema,
   TenantListItemSchema,
+  TenantDetailSchema,
   type BookingMutationResult,
   type TenantListItem,
+  type TenantDetail,
+  type UpdateTenantRequest,
 } from '@/lib/mock/contracts';
 import { BOOKINGS } from '@/lib/data';
 import type { Booking } from '@/lib/types';
@@ -32,6 +35,68 @@ export function listTenantsMock(): Promise<TenantListItem[]> {
       { tenantId: '33333333-3333-3333-3333-333333333333', tenantCode: 'SUNRISE-DEL', displayName: 'Sunrise Clinic · New Delhi', tenantType: 'clinic', status: 'active', country: 'IN', city: 'New Delhi' },
     ]),
   );
+}
+
+// Mock tenant edit (live mode hits PUT /tenants/{id}, super_admin only). Echoes the
+// merged row back as a TenantDto so the panel's success path + toast are exercisable
+// offline. Contact/display fields only — lifecycle status is changed via suspend/reactivate.
+// The static listTenantsMock seed isn't mutated (mock mode is demo-only), so the
+// reflected change won't persist into the list — parity with the live cache refresh
+// is a real-API concern.
+export function updateTenantMock(
+  tenantId: string,
+  req: UpdateTenantRequest,
+  idempotencyKey: string,
+): Promise<TenantListItem> {
+  return withIdem(idempotencyKey, () =>
+    TenantListItemSchema.parse({
+      tenantId,
+      tenantCode: 'MOCK-CODE',
+      displayName: req.displayName,
+      tenantType: 'hospital',
+      primaryEmail: req.primaryEmail,
+      status: 'active',
+      country: 'IN',
+      city: req.city ?? null,
+    }),
+  );
+}
+
+// Mock tenant lifecycle actions (live: PUT /tenants/{id}/suspend | /reactivate, gated
+// platform.tenants.suspend). Each echoes the fresh TenantDetail with the new status +
+// suspended_reason so the confirm flow + chip re-sync are exercisable offline.
+export async function suspendTenantMock(tenantId: string, reason: string, _idempotencyKey: string): Promise<TenantDetail> {
+  const detail = await getTenantMock(tenantId);
+  return TenantDetailSchema.parse({ ...detail, status: 'suspended', suspendedReason: reason });
+}
+
+export async function reactivateTenantMock(tenantId: string, _reason: string | null, _idempotencyKey: string): Promise<TenantDetail> {
+  const detail = await getTenantMock(tenantId);
+  return TenantDetailSchema.parse({ ...detail, status: 'active', suspendedReason: null });
+}
+
+// Mock tenant detail (live: GET /tenants/{id} → TenantDetailDto). Augments the matching
+// static list row with placeholder legalName/primaryPhone/state/pinCode so the edit
+// form's pre-fill path is exercisable offline.
+export async function getTenantMock(tenantId: string): Promise<TenantDetail> {
+  const list = await listTenantsMock();
+  const row = list.find((tn) => tn.tenantId === tenantId);
+  const suspended = row?.status === 'suspended';
+  return TenantDetailSchema.parse({
+    tenantId,
+    tenantCode: row?.tenantCode ?? 'MOCK-CODE',
+    displayName: row?.displayName ?? 'Mock Clinic',
+    tenantType: row?.tenantType ?? 'hospital',
+    legalName: `${row?.displayName ?? 'Mock Clinic'} Pvt Ltd`,
+    primaryEmail: row?.primaryEmail ?? 'ops@clinic.in',
+    primaryPhone: '+91 98200 11223',
+    status: row?.status ?? 'active',
+    country: row?.country ?? 'IN',
+    city: row?.city ?? null,
+    state: null,
+    pinCode: null,
+    suspendedReason: suspended ? 'Mock suspension reason' : null,
+  });
 }
 
 // Idempotent replay cache, mirroring the lib/mock withIdem helper.

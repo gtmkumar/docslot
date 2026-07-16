@@ -18,17 +18,21 @@ public sealed class ListTenantsQueryHandler(ITenantRepository tenants)
     }
 }
 
-public sealed record GetTenantQuery(Guid TenantId) : IQuery<TenantDto>;
+/// <summary>Detail read for the edit surface — returns the full <see cref="TenantDetailDto"/> (superset of the
+/// list DTO) so the form pre-fills every editable field. Reuses <see cref="ITenantRepository.GetByIdAsync"/>,
+/// which already loads the full entity; this only widens the projection.</summary>
+public sealed record GetTenantQuery(Guid TenantId) : IQuery<TenantDetailDto>;
 
 public sealed class GetTenantQueryHandler(ITenantRepository tenants)
-    : IQueryHandler<GetTenantQuery, TenantDto>
+    : IQueryHandler<GetTenantQuery, TenantDetailDto>
 {
-    public async Task<TenantDto> Handle(GetTenantQuery query, CancellationToken ct)
+    public async Task<TenantDetailDto> Handle(GetTenantQuery query, CancellationToken ct)
     {
         var t = await tenants.GetByIdAsync(query.TenantId, ct)
             ?? throw new KeyNotFoundException("Tenant not found.");
-        return new TenantDto(t.TenantId, t.TenantCode, t.DisplayName, t.TenantType,
-            t.PrimaryEmail, t.Status, t.Country, t.City);
+        return new TenantDetailDto(t.TenantId, t.TenantCode, t.DisplayName, t.TenantType,
+            t.LegalName, t.PrimaryEmail, t.PrimaryPhone, t.Status, t.Country, t.City, t.State, t.PinCode,
+            t.SuspendedReason);
     }
 }
 

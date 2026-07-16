@@ -8,3 +8,4 @@
 - [User management revamp](project_user-management.md) — Users-side /team: editUser slide-over, lifecycle actions (deactivate/reset/edit), list toolbar (search+status filter), perm keys, UserListItem quirks.
 - [Clinical live-wiring](project_clinical-live-wiring.md) — Phase-3 s4: clinical/ABDM/consent on the live seam, X-Purpose-Of-Use on ALL reads, medical-history CRUD UI, contextual break-glass→re-fetch.
 - [Settings screen (Phase 1)](project_settings-screen.md) — /settings routes+redirects, GET/PATCH /settings seam, the `whatsApp` wire-casing quirk, per-device language switcher.
+- [Tenants management](project_tenants-management.md) — Platform Console /tenants list+search + manageTenant edit slide-over (PUT /tenants/{id}); OPEN gap: no GET /tenants/{id} detail so edit form can't pre-fill legalName/phone/state/pin.

@@ -72,8 +72,11 @@ public sealed class TenantConfiguration : IEntityTypeConfiguration<Tenant>
         b.Property(t => t.PrimaryPhone).HasColumnName("primary_phone");
         b.Property(t => t.Country).HasColumnName("country");
         b.Property(t => t.City).HasColumnName("city");
+        b.Property(t => t.State).HasColumnName("state");
+        b.Property(t => t.PinCode).HasColumnName("pin_code");
         b.Property(t => t.Timezone).HasColumnName("timezone");
         b.Property(t => t.Status).HasColumnName("status");
+        b.Property(t => t.SuspendedReason).HasColumnName("suspended_reason");
         b.Property(t => t.CreatedAt).HasColumnName("created_at");
         b.Property(t => t.UpdatedAt).HasColumnName("updated_at");
         b.Property(t => t.DeletedAt).HasColumnName("deleted_at");

@@ -19,6 +19,10 @@ import {
   completeBookingMock,
   getBookingMock,
   listTenantsMock,
+  getTenantMock,
+  updateTenantMock,
+  suspendTenantMock,
+  reactivateTenantMock,
   noShowBookingMock,
   rescheduleBookingMock,
 } from './mutations-mock';
@@ -36,6 +40,9 @@ export const getPermissions = USE_REAL_API ? real.getPermissions : mock.getPermi
 // TENANTS — begin-impersonation target picker. Live: GET /tenants (super_admin,
 // `platform.tenants.read`). Mock: a small seed list so the selector is usable.
 export const listTenants = USE_REAL_API ? real.listTenants : listTenantsMock;
+// TENANT DETAIL — GET /tenants/{id} → full editable shape (superset of the list row)
+// so the manage/edit form pre-fills every field. Mock augments the static seed.
+export const getTenant = USE_REAL_API ? real.getTenant : getTenantMock;
 
 // MENUS + BADGES (backend-driven nav)
 export const getMenus = USE_REAL_API ? real.getMenus : mock.getMenus;
@@ -235,6 +242,14 @@ export const revokeInvitation = USE_REAL_API ? real.revokeInvitation : mock.revo
 // PLATFORM CONSOLE — tenant onboarding (create clinic + owner invite) and the
 // PUBLIC invitation redemption behind /accept-invite.
 export const createTenant = USE_REAL_API ? real.createTenant : mock.createTenant;
+// TENANT EDIT — platform console. Live: PUT /tenants/{id} (super_admin,
+// `platform.tenants.update`). Mock echoes the merged row so the edit flow is demoable.
+export const updateTenant = USE_REAL_API ? real.updateTenant : updateTenantMock;
+// TENANT LIFECYCLE — DANGEROUS suspend/reactivate (gated `platform.tenants.suspend`).
+// Live: PUT /tenants/{id}/suspend (reason mandatory) | /reactivate (reason cleared);
+// both return the fresh TenantDetailDto. Mocks echo the new status + suspended_reason.
+export const suspendTenant = USE_REAL_API ? real.suspendTenant : suspendTenantMock;
+export const reactivateTenant = USE_REAL_API ? real.reactivateTenant : reactivateTenantMock;
 export const acceptInvitation = USE_REAL_API ? real.acceptInvitation : mock.acceptInvitation;
 export const lookupPincode = USE_REAL_API ? real.lookupPincode : mock.lookupPincode;
 

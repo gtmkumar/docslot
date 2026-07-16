@@ -4,3 +4,4 @@
 - [Write-slice conventions](feedback_write_slice_conventions.md) — how a create endpoint vertical slice is structured in this .NET solution.
 - [WhatsApp inbound gotchas](project_whatsapp_inbound.md) — anonymous tenant-scoping override pattern, last_relation excludes 'self', bookings.booked_at, jsonb content.
 - [ExecuteSqlRaw brace literals](feedback_execsqlraw_brace_literals.md) — raw SQL with params is string.Format'd; literal {} (e.g. '{}'::jsonb) throws FormatException → use jsonb_build_object().
+- [Local integration-test DB override](reference_local_integration_test_db.md) — live-DB suite 401s locally because user-secrets point at remote dev DB; override ConnectionStrings__platform-db to local docslot_app to run it.

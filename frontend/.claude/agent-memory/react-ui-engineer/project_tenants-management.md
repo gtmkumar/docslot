@@ -1,0 +1,24 @@
+---
+name: tenants-management
+description: Platform Console /tenants screen — list+count+search + manageTenant slide-over edit (PUT /tenants/{id}); the detail-endpoint contract gap.
+metadata:
+  type: project
+---
+
+Platform Console **Tenants management** screen (super_admin, backend-nav surfaces it for `platform.tenants.read`).
+
+- Route `/tenants` → `src/features/tenants/TenantsScreen.tsx`. Reuses `useTenants()` from `@/features/impersonation/api` (shared `['tenants','list']` query key) — do NOT add a second list query. Client-side search over displayName/tenantCode/city; 4 states (loading skeleton / error / empty / filtered-empty). Status chip is a LOCAL `TenantStatusChip` inside TenantsScreen.tsx (active→primary, suspended→warn, else neutral raw label) — kept inline (not its own file) per the user's minimal-new-files steer.
+- Edit slide-over `manageTenant` (panel key in router enum + `stores/ui.ts` `{ type:'manageTenant'; tenantId }` + SlideOverHost wiring; URL-addressable `?panel=manageTenant&id=<tenantId>`). Component `ManageTenantPanel.tsx`, chip `components/TenantStatusChip.tsx` (shared by list + panel). tenantCode + tenantType READ-ONLY. Edit gated on `platform.tenants.update`. City/state use the shared `india-geo.ts` cascade (state Select → city Select + CITY_OTHER escape).
+- **Edit form pre-fills from GET /tenants/{id}** (`useTenant` → `TenantDetail`, gated `platform.tenants.read`) behind a loading skeleton (also has an error+retry state); `geoFromDetail()` maps detail.state/city onto the cascade. This resolved the earlier no-detail-endpoint gap. `useUpdateTenant`/`useSetTenantStatus` invalidate BOTH `tenantsQueryKey` and `tenantDetailQueryKey(id)`.
+- **Lifecycle split (task #5, per auditor VETO):** status is NOT in the edit form. Suspend/Reactivate is a separate gated action (`platform.tenants.suspend`, danger=true) inside the panel's LifecycleSection — inline danger-confirm mirroring ManageUserPanel AccountSection, MANDATORY reason on suspend (zod .min(1); none on reactivate), shows the recorded `suspendedReason` when suspended. Control only rendered when `can('platform.tenants.suspend')`.
+**VERIFIED backend contracts (mediq.SharedDataModel/Docslot/Admin/AdminDtos.cs + AdminController.cs), camelCase wire:**
+- `GET /tenants` → `TenantDto` = { tenantId, tenantCode, displayName, tenantType, primaryEmail, status, country, city? } (list, `TenantListItemSchema`).
+- `GET /tenants/{id}` → `TenantDetailDto` = list + { legalName, primaryPhone, state?, pinCode?, suspendedReason? } (gated `platform.tenants.read`; `TenantDetailSchema`).
+- `PUT /tenants/{id}` body `UpdateTenantRequest` = { displayName, legalName, primaryEmail, primaryPhone, city?, state?, pinCode? } (NO status; gated `platform.tenants.update`) → returns `TenantDetailDto`.
+- **LOCKED suspend contract = TWO endpoints (NOT a /status endpoint — that was a superseded interim):** `PUT /tenants/{id}/suspend` body `{ reason }` (REQUIRED, 422 without) and `PUT /tenants/{id}/reactivate` body `{ reason? }` (optional/ignored). BOTH gated `platform.tenants.suspend`, BOTH return the fresh `TenantDetailDto` (suspendedReason set/cleared). Backend DTO is `SetTenantStatusReasonRequest(string? Reason)` for both; controller picks IsActive by route.
+- Seams in `lib/backend/real.ts`: `getTenant`, `updateTenant`, `suspendTenant(id,reason,idem)`, `reactivateTenant(id,reason,idem)`; mocks in `mutations-mock.ts`; wired in `index.ts`. Hooks in `features/tenants/api.ts`: `useTenant`, `useUpdateTenant`, `useSetTenantSuspension` (single hook, picks route by `isActive`, seeds detail cache with the returned TenantDetail + invalidates list). Contract type: `TenantStatusReasonRequestSchema = { reason? }`.
+- Perms seeded in `database/01_platform_core.sql`: `platform.tenants.update` (danger=false), `platform.tenants.suspend` (danger=true).
+
+**Why:** enables super_admin tenant management (previously tenants only appeared in the impersonation dropdown; no management screen). The earlier "no detail endpoint" gap is RESOLVED — backend shipped GET /tenants/{id} expressly to pre-fill the edit form.
+
+Also fixed a pre-existing build blocker: hi locale `apiTokens...clients.scopesCount` was a non-plural key while `en` had `scopesCount_one/_other` — `hi: typeof en` failed `tsc -b`. Split hi into `scopesCount_one/_other`.

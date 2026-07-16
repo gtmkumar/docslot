@@ -57,6 +57,8 @@ import {
   type AcceptInvitationResult,
   type CreateTenantRequest,
   type CreateTenantResult,
+  type UpdateTenantRequest,
+  type TenantStatusReasonRequest,
   type PincodeLookup,
   RevokeInvitationResultSchema,
   IpAllowlistEntrySchema,
@@ -169,7 +171,9 @@ import {
   RegisterBrokerResultSchema,
   RegisterPatientResultDtoSchema,
   TenantListItemSchema,
+  TenantDetailSchema,
   type TenantListItem,
+  type TenantDetail,
   ReviewQueueItemSchema,
   ScopeSchema,
   SlotDtoSchema,
@@ -671,6 +675,14 @@ export async function listTenants(): Promise<TenantListItem[]> {
   return TenantListItemSchema.array().parse(raw);
 }
 
+/** GET /tenants/{tenantId} → TenantDetailDto (gated `platform.tenants.read`). Superset of
+ *  the list row (adds legalName, primaryPhone, state, pinCode, suspendedReason) so the
+ *  manage/edit form pre-fills every field. 404 when the tenant does not exist. */
+export async function getTenant(tenantId: string): Promise<TenantDetail> {
+  const raw = await apiFetch<unknown>(`/tenants/${encodeURIComponent(tenantId)}`);
+  return TenantDetailSchema.parse(raw);
+}
+
 /** POST /tenants → 201 CreateTenantResult — tenant onboarding (gated
  *  `platform.tenants.create`). Creates the clinic AND mints its one-time tenant_owner
  *  invitation in one transaction; `inviteToken` is surfaced exactly once. 409 = the
@@ -685,6 +697,58 @@ export async function createTenant(
     body: req,
   });
   return CreateTenantResultSchema.parse(raw);
+}
+
+/** PUT /tenants/{tenantId} → 200 updated TenantDto — platform-console tenant edit
+ *  (gated `platform.tenants.update`). Contact/display fields only; `tenantCode`,
+ *  `tenantType` and lifecycle `status` are never part of the body. Carries a stable
+ *  Idempotency-Key. Returns the updated row, parsed 1:1 into TenantListItem. */
+export async function updateTenant(
+  tenantId: string,
+  req: UpdateTenantRequest,
+  idempotencyKey: string,
+): Promise<TenantListItem> {
+  const raw = await apiFetch<unknown>(`/tenants/${encodeURIComponent(tenantId)}`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: req,
+  });
+  return TenantListItemSchema.parse(raw);
+}
+
+/** PUT /tenants/{tenantId}/suspend → 200 TenantDetailDto — DANGEROUS lifecycle action
+ *  (gated `platform.tenants.suspend`, distinct from edit). `reason` is MANDATORY
+ *  (backend 422s without) and persisted to suspended_reason. Carries a stable
+ *  Idempotency-Key; returns the fresh detail so the chip + reason re-sync. */
+export async function suspendTenant(
+  tenantId: string,
+  reason: string,
+  idempotencyKey: string,
+): Promise<TenantDetail> {
+  const body: TenantStatusReasonRequest = { reason };
+  const raw = await apiFetch<unknown>(`/tenants/${encodeURIComponent(tenantId)}/suspend`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body,
+  });
+  return TenantDetailSchema.parse(raw);
+}
+
+/** PUT /tenants/{tenantId}/reactivate → 200 TenantDetailDto — DANGEROUS lifecycle action
+ *  (same `platform.tenants.suspend` key). Clears suspended_reason; no reason required.
+ *  Carries a stable Idempotency-Key; returns the fresh detail. */
+export async function reactivateTenant(
+  tenantId: string,
+  reason: string | null,
+  idempotencyKey: string,
+): Promise<TenantDetail> {
+  const body: TenantStatusReasonRequest = { reason: reason ?? null };
+  const raw = await apiFetch<unknown>(`/tenants/${encodeURIComponent(tenantId)}/reactivate`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body,
+  });
+  return TenantDetailSchema.parse(raw);
 }
 
 /** GET /geo/pincode/{pin} — India PIN-code reference lookup (auth-only, no tenant scope).

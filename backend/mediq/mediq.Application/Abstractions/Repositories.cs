@@ -42,6 +42,23 @@ public interface ITenantRepository
         string tenantCode, string legalName, string displayName, string tenantType,
         string primaryEmail, string primaryPhone, string? city, string? state,
         string? pinCode, decimal? latitude, decimal? longitude, CancellationToken ct);
+
+    /// <summary>Updates a tenant's mutable attributes (display/legal name, primary contact, city/state/pin_code).
+    /// <c>tenant_code</c>/<c>tenant_type</c> (identity/structure) and <c>status</c> (owned by the suspend path) are
+    /// NEVER touched here. <c>platform.tenants</c> carries no RLS, so a direct parameterised UPDATE on the ambient
+    /// UoW transaction is the sanctioned path (the caller is gated on <c>platform.tenants.update</c>); the
+    /// <c>updated_at</c> stamp is owned by the table's BEFORE UPDATE trigger. A unique-constraint clash surfaces as
+    /// ConflictException (409). Returns false when no LIVE row matched (soft-deleted or concurrently removed).</summary>
+    Task<bool> UpdateAsync(
+        Guid tenantId, string displayName, string legalName, string primaryEmail, string primaryPhone,
+        string? city, string? state, string? pinCode, CancellationToken ct);
+
+    /// <summary>Suspend or reactivate a tenant — the ONLY path that writes <c>status</c> (gated on the DANGEROUS
+    /// <c>platform.tenants.suspend</c>). Sets <c>status</c> and, atomically, <c>suspended_reason</c>: the mandatory
+    /// reason on suspend, cleared (NULL) on reactivate. Direct parameterised UPDATE on the UoW transaction (no RLS on
+    /// platform.tenants). Returns false when no LIVE row matched.</summary>
+    Task<bool> SetStatusAsync(
+        Guid tenantId, string status, string? suspendedReason, CancellationToken ct);
 }
 
 public sealed record UserTenantMembership(Guid TenantId, string TenantCode, string DisplayName, string TenantType, bool IsPrimary);

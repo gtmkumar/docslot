@@ -152,7 +152,10 @@ export type Panel =
   // Tenant onboarding (platform console). `tenantCreated` carries the ONE-TIME owner
   // invite token — transient (never URL-synced), like `invitationToken`.
   | { type: 'newTenant' }
-  | { type: 'tenantCreated'; result: CreateTenantResult };
+  | { type: 'tenantCreated'; result: CreateTenantResult }
+  // Tenant management (platform console). Manage/edit a single tenant by id —
+  // URL-addressable (?panel=manageTenant&id=<tenantId>); no PHI/secret payload.
+  | { type: 'manageTenant'; tenantId: string };
 
 interface UIState {
   orgId: string;

@@ -68,6 +68,9 @@ const AiOpsScreen = lazy(() =>
 const SettingsScreen = lazy(() =>
   import('@/features/settings/SettingsScreen').then((m) => ({ default: m.SettingsScreen })),
 );
+const TenantsScreen = lazy(() =>
+  import('@/features/tenants/TenantsScreen').then((m) => ({ default: m.TenantsScreen })),
+);
 
 // Shared slide-over search params (root-level so all routes carry them).
 // `clientSecret`, `invitationToken`, and `deletionCertificate` are intentionally
@@ -84,7 +87,7 @@ const panelSearchSchema = z.object({
       'exportData', 'eraseData', 'reportBreach', 'breakGlass',
       'registerBroker', 'manageBroker', 'createCommissionRule', 'createCampaign', 'raiseDispute', 'resolveDispute',
       'generateLink', 'bookOnBehalf',
-      'beginImpersonation', 'newTenant',
+      'beginImpersonation', 'newTenant', 'manageTenant',
     ])
     .optional(),
   id: z.string().optional(),
@@ -197,6 +200,14 @@ const developersRoute = createRoute({
   path: '/developers',
   component: DevelopersScreen,
 });
+// Platform Console — Tenants (clinic) management. Backend nav surfaces this for
+// platform-scope super_admins holding `platform.tenants.read`; the manage/edit
+// slide-over inside is additionally gated on `platform.tenants.update`.
+const tenantsRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/tenants',
+  component: TenantsScreen,
+});
 const securityRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/security',
@@ -268,6 +279,7 @@ const routeTree = rootRoute.addChildren([
     aiOpsRoute,
     teamRoute,
     developersRoute,
+    tenantsRoute,
     securityRoute,
     carePartnersRoute,
     portalRoute,

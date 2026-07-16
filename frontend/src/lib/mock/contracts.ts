@@ -521,6 +521,27 @@ export const TenantListItemSchema = z.object({
 });
 export type TenantListItem = z.infer<typeof TenantListItemSchema>;
 
+/** `GET /api/v1/tenants/{tenantId}` row. Mirrors TenantDetailDto (gated
+ *  `platform.tenants.read`) — a SUPERSET of the list DTO: adds legalName, primaryPhone,
+ *  state, pinCode and suspendedReason so the manage/edit form pre-fills every field.
+ *  tenantCode + tenantType are immutable display-only. */
+export const TenantDetailSchema = z.object({
+  tenantId: z.string(),
+  tenantCode: z.string(),
+  displayName: z.string(),
+  tenantType: z.string(),
+  legalName: z.string(),
+  primaryEmail: z.string(),
+  primaryPhone: z.string(),
+  status: z.string(),
+  country: z.string(),
+  city: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  pinCode: z.string().nullable().optional(),
+  suspendedReason: z.string().nullable().optional(),
+});
+export type TenantDetail = z.infer<typeof TenantDetailSchema>;
+
 /** `POST /api/v1/auth/impersonation/begin` body. Mirrors BeginImpersonationRequest. */
 export const BeginImpersonationRequestSchema = z.object({
   targetTenantId: z.string(),
@@ -1607,6 +1628,33 @@ export const CreateTenantRequestSchema = z.object({
   adminEmail: z.string(),
 });
 export type CreateTenantRequest = z.infer<typeof CreateTenantRequestSchema>;
+
+/** `PUT /api/v1/tenants/{tenantId}` body. Mirrors UpdateTenantRequest — platform-console
+ *  tenant edit (gated `platform.tenants.update`). Contact/display fields ONLY.
+ *  `tenantCode` and `tenantType` are IMMUTABLE (they scope menus + billing) and are NOT
+ *  part of the payload. Lifecycle `status` is deliberately NOT here — suspend/reactivate
+ *  is a separate, more-privileged action (the /suspend + /reactivate endpoints) so a routine contact
+ *  edit can never flip a clinic's status. The endpoint returns the updated TenantDto. */
+export const UpdateTenantRequestSchema = z.object({
+  displayName: z.string(),
+  legalName: z.string(),
+  primaryEmail: z.string(),
+  primaryPhone: z.string(),
+  city: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  pinCode: z.string().nullable().optional(),
+});
+export type UpdateTenantRequest = z.infer<typeof UpdateTenantRequestSchema>;
+
+/** Body for the tenant lifecycle actions — `PUT /api/v1/tenants/{tenantId}/suspend` and
+ *  `.../reactivate` (both gated `platform.tenants.suspend`, distinct from the edit perm).
+ *  Mirrors SetTenantStatusReasonRequest. `reason` is MANDATORY on SUSPEND (backend 422s
+ *  without; the UI enforces zod .min(1)) and persisted to tenants.suspended_reason;
+ *  IGNORED on reactivate (which clears it). Both endpoints return the fresh TenantDetail. */
+export const TenantStatusReasonRequestSchema = z.object({
+  reason: z.string().nullable().optional(),
+});
+export type TenantStatusReasonRequest = z.infer<typeof TenantStatusReasonRequestSchema>;
 
 /** `GET /api/v1/geo/pincode/{pin}` — India PIN-code reference lookup. `areas` are the
  *  post-office localities inside the code; lat/long are the code's approximate centroid

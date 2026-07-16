@@ -75,6 +75,7 @@ const BookOnBehalfPanel = lazy(() => import('@/features/portal/components/BookOn
 const BeginImpersonationPanel = lazy(() => import('@/features/impersonation/components/BeginImpersonationPanel').then((m) => ({ default: m.BeginImpersonationPanel })));
 const NewTenantPanel = lazy(() => import('@/features/tenants/components/NewTenantPanel').then((m) => ({ default: m.NewTenantPanel })));
 const TenantCreatedPanel = lazy(() => import('@/features/tenants/components/TenantCreatedPanel').then((m) => ({ default: m.TenantCreatedPanel })));
+const ManageTenantPanel = lazy(() => import('@/features/tenants/components/ManageTenantPanel').then((m) => ({ default: m.ManageTenantPanel })));
 import { BOOKINGS } from '@/lib/data';
 import { useUI, type Panel } from '@/stores/ui';
 
@@ -147,6 +148,7 @@ function panelToSearch(panel: Panel | null): { panel?: UrlPanelType; id?: string
   if (panel.type === 'manageClient') return { panel: panel.type, id: panel.clientId };
   if (panel.type === 'webhookForm' || panel.type === 'webhookDeliveries') return { panel: panel.type, id: panel.webhookId };
   if (panel.type === 'eraseData') return panel.requestId ? { panel: panel.type, id: panel.requestId } : { panel: panel.type };
+  if (panel.type === 'manageTenant') return { panel: panel.type, id: panel.tenantId };
   if (panel.type === 'manageBroker') return { panel: panel.type, id: panel.brokerId };
   if (panel.type === 'raiseDispute') return { panel: panel.type, id: panel.attributionId };
   if (panel.type === 'resolveDispute') return { panel: panel.type, id: panel.disputeId };
@@ -178,6 +180,8 @@ function searchToPanel(type: PanelType | undefined, id: string | undefined): Pan
   if (type === 'webhookDeliveries') return id ? { type, webhookId: id } : null;
   // Security: eraseData carries an OPTIONAL source DPDP requestId.
   if (type === 'eraseData') return { type, requestId: id };
+  // Platform-console tenant management carries a tenant id.
+  if (type === 'manageTenant') return id ? { type, tenantId: id } : null;
   // Commission panels that carry an id.
   if (type === 'manageBroker') return id ? { type, brokerId: id } : null;
   if (type === 'raiseDispute') return id ? { type, attributionId: id } : null;
@@ -358,6 +362,8 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <NewTenantPanel open onClose={closePanel} />;
     case 'tenantCreated':
       return <TenantCreatedPanel result={panel.result} open onClose={closePanel} />;
+    case 'manageTenant':
+      return <ManageTenantPanel tenantId={panel.tenantId} open onClose={closePanel} />;
     default:
       return null;
   }
