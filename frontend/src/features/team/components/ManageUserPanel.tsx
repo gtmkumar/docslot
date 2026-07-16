@@ -10,7 +10,7 @@
 
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Info, KeyRound, Pencil, Plus, ShieldAlert, Trash2 } from 'lucide-react';
+import { Info, KeyRound, LockKeyhole, Pencil, Plus, ShieldAlert, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
@@ -25,6 +25,7 @@ import { useSession } from '@/stores/session';
 import { useUI } from '@/stores/ui';
 import type { UserListItem } from '@/lib/mock/contracts';
 import {
+  useAdminResetUserPassword,
   useAssignRole,
   useBranches,
   useEffectivePermissions,
@@ -95,6 +96,19 @@ function AccountSection({ user, isSelf, canManage }: { user: UserListItem; isSel
   const openPanel = useUI((s) => s.openPanel);
   const setStatus = useSetUserStatus();
   const resetAccess = useResetUserAccess();
+  const adminReset = useAdminResetUserPassword();
+
+  // The one-time reset link is revealed in a transient store panel (never URL-synced /
+  // query-cached), exactly like the invitation-token reveal — opening it replaces this
+  // manage panel with the copyable link.
+  const onAdminReset = async () => {
+    try {
+      const res = await adminReset.mutateAsync({ userId: user.userId, idempotencyKey: idempotencyKey() });
+      openPanel({ type: 'adminResetPassword', result: res, userName: user.fullName });
+    } catch (e) {
+      toast.error(toUserError(e));
+    }
+  };
 
   const locked = Boolean(user.lockedUntil) && new Date(user.lockedUntil as string).getTime() > Date.now();
 
@@ -146,7 +160,7 @@ function AccountSection({ user, isSelf, canManage }: { user: UserListItem; isSel
       : user.isActive
         ? t('team.account.confirmDeactivate')
         : t('team.account.confirmReactivate');
-  const pending = setStatus.isPending || resetAccess.isPending;
+  const pending = setStatus.isPending || resetAccess.isPending || adminReset.isPending;
 
   return (
     <section>
@@ -218,6 +232,14 @@ function AccountSection({ user, isSelf, canManage }: { user: UserListItem; isSel
                 >
                   <KeyRound size={14} aria-hidden="true" />
                   {resetLabel}
+                </Button>
+                {/* Admin-initiated password reset — mints a ONE-TIME live link the admin
+                    hands to the user (email delivery is offline). Distinct from "reset
+                    access" above (which forces a change + clears lockout). Self-hidden
+                    like the other lifecycle actions. */}
+                <Button variant="ghost" size="sm" disabled={pending} onClick={() => void onAdminReset()}>
+                  <LockKeyhole size={14} aria-hidden="true" />
+                  {t('team.account.resetPassword')}
                 </Button>
               </>
             ) : null}

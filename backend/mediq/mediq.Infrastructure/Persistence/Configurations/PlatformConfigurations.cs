@@ -77,6 +77,7 @@ public sealed class TenantConfiguration : IEntityTypeConfiguration<Tenant>
         b.Property(t => t.Timezone).HasColumnName("timezone");
         b.Property(t => t.Status).HasColumnName("status");
         b.Property(t => t.SuspendedReason).HasColumnName("suspended_reason");
+        b.Property(t => t.Settings).HasColumnName("settings").HasColumnType("jsonb");
         b.Property(t => t.CreatedAt).HasColumnName("created_at");
         b.Property(t => t.UpdatedAt).HasColumnName("updated_at");
         b.Property(t => t.DeletedAt).HasColumnName("deleted_at");

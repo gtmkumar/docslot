@@ -140,10 +140,14 @@ public sealed class TenantRepository(PlatformDbContext db) : ITenantRepository
     /// </summary>
     public async Task<bool> UpdateAsync(
         Guid tenantId, string displayName, string legalName, string primaryEmail, string primaryPhone,
-        string? city, string? state, string? pinCode, CancellationToken ct)
+        string? city, string? state, string? pinCode, decimal? latitude, decimal? longitude, CancellationToken ct)
     {
         try
         {
+            // Geo re-tag reuses CreateAsync's settings.geo shape, MERGED into the existing settings (|| preserves
+            // other keys). When either coordinate is null the CASE keeps settings unchanged, so a contact-only edit
+            // never wipes an existing geo tag. jsonb_build_object (no literal braces) keeps SqlRaw placeholder
+            // parsing happy — same reason CreateAsync avoids '{}'::jsonb.
             var affected = await db.Database.ExecuteSqlRawAsync(
                 """
                 UPDATE platform.tenants
@@ -153,7 +157,12 @@ public sealed class TenantRepository(PlatformDbContext db) : ITenantRepository
                     primary_phone = @p4,
                     city          = @p5,
                     state         = @p6,
-                    pin_code      = @p7
+                    pin_code      = @p7,
+                    settings      = CASE WHEN @p8::numeric IS NOT NULL AND @p9::numeric IS NOT NULL
+                                         THEN settings || jsonb_build_object('geo', jsonb_build_object(
+                                                  'latitude', @p8::numeric, 'longitude', @p9::numeric,
+                                                  'source', 'pincode_lookup', 'tagged_at', now()))
+                                         ELSE settings END
                 WHERE tenant_id = @p0 AND deleted_at IS NULL
                 """,
                 [
@@ -165,6 +174,8 @@ public sealed class TenantRepository(PlatformDbContext db) : ITenantRepository
                     new NpgsqlParameter("@p5", (object?)city ?? DBNull.Value),
                     new NpgsqlParameter("@p6", (object?)state ?? DBNull.Value),
                     new NpgsqlParameter("@p7", (object?)pinCode ?? DBNull.Value),
+                    new NpgsqlParameter("@p8", NpgsqlTypes.NpgsqlDbType.Numeric) { Value = (object?)latitude ?? DBNull.Value },
+                    new NpgsqlParameter("@p9", NpgsqlTypes.NpgsqlDbType.Numeric) { Value = (object?)longitude ?? DBNull.Value },
                 ],
                 ct);
             return affected > 0;

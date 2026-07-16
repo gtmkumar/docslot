@@ -37,6 +37,12 @@ public sealed class UpdateTenantValidator : AbstractValidator<UpdateTenantComman
         RuleFor(x => x.Request.PinCode).Matches("^[1-9][0-9]{5}$")
             .When(x => !string.IsNullOrWhiteSpace(x.Request.PinCode))
             .WithMessage("PIN code must be 6 digits and cannot start with 0.");
+        // Geo tag mirrors CreateTenantValidator: plausible coordinates, supplied as a pair (both or neither).
+        RuleFor(x => x.Request.Latitude).InclusiveBetween(-90m, 90m).When(x => x.Request.Latitude is not null);
+        RuleFor(x => x.Request.Longitude).InclusiveBetween(-180m, 180m).When(x => x.Request.Longitude is not null);
+        RuleFor(x => x.Request)
+            .Must(r => r.Latitude is null == r.Longitude is null)
+            .WithMessage("Latitude and longitude must be provided together.");
     }
 }
 
@@ -58,9 +64,16 @@ public sealed class UpdateTenantCommandHandler(
         var state = string.IsNullOrWhiteSpace(req.State) ? null : req.State.Trim();
         var pinCode = string.IsNullOrWhiteSpace(req.PinCode) ? null : req.PinCode.Trim();
 
+        // Effective geo: the request pair when supplied (re-tags settings.geo), otherwise the EXISTING tag is left
+        // untouched — a contact-only edit (null lat/long) keeps the stored coordinates, which we echo back.
+        var (existingLat, existingLng) = TenantGeo.Read(existing.Settings);
+        var latitude = req.Latitude ?? existingLat;
+        var longitude = req.Longitude ?? existingLng;
+
         await tenants.UpdateAsync(
             command.TenantId, req.DisplayName.Trim(), req.LegalName.Trim(),
-            req.PrimaryEmail.Trim(), req.PrimaryPhone.Trim(), city, state, pinCode, ct);
+            req.PrimaryEmail.Trim(), req.PrimaryPhone.Trim(), city, state, pinCode,
+            req.Latitude, req.Longitude, ct);
 
         // Audit the edit. Like the onboarding path, this is a platform-scope act (TenantId stays NULL — the audit
         // row writes on a dedicated connection and cannot see this transaction's uncommitted tenant row).
@@ -76,6 +89,7 @@ public sealed class UpdateTenantCommandHandler(
         return new TenantDetailDto(
             existing.TenantId, existing.TenantCode, req.DisplayName.Trim(), existing.TenantType,
             req.LegalName.Trim(), req.PrimaryEmail.Trim(), req.PrimaryPhone.Trim(),
-            existing.Status, existing.Country, city, state, pinCode, existing.SuspendedReason);
+            existing.Status, existing.Country, city, state, pinCode, existing.SuspendedReason,
+            latitude, longitude);
     }
 }

@@ -539,6 +539,10 @@ export const TenantDetailSchema = z.object({
   state: z.string().nullable().optional(),
   pinCode: z.string().nullable().optional(),
   suspendedReason: z.string().nullable().optional(),
+  // Stored geo centroid (settings.geo) — null when the clinic has no geo tag. Lets the
+  // edit panel show the current geo + keep it unless a PIN lookup changes it.
+  latitude: z.number().nullable().optional(),
+  longitude: z.number().nullable().optional(),
 });
 export type TenantDetail = z.infer<typeof TenantDetailSchema>;
 
@@ -1643,6 +1647,10 @@ export const UpdateTenantRequestSchema = z.object({
   city: z.string().nullable().optional(),
   state: z.string().nullable().optional(),
   pinCode: z.string().nullable().optional(),
+  // Geo centroid (settings.geo) — typically captured from the PIN-code lookup, matching
+  // CreateTenantRequest. Null clears the tag.
+  latitude: z.number().nullable().optional(),
+  longitude: z.number().nullable().optional(),
 });
 export type UpdateTenantRequest = z.infer<typeof UpdateTenantRequestSchema>;
 
@@ -1699,6 +1707,50 @@ export const AcceptInvitationResultSchema = z.object({
   alreadyExisted: z.boolean(),
 });
 export type AcceptInvitationResult = z.infer<typeof AcceptInvitationResultSchema>;
+
+// ── PASSWORD RESET ─────────────────────────────────────────────────────────────
+// Self-service forgot/reset + admin-initiated reset. The self-service pair is PUBLIC
+// (the email/token IS the authorization — no JWT). ANTI-ENUMERATION: forgot-password
+// ALWAYS resolves 200 { requested:true } regardless of whether the email exists, so
+// the UI must show one generic confirmation either way. reset-password consumes a
+// one-time token (invalid/expired/used → the same generic 4xx). The admin action is
+// authed + gated tenant.users.update and returns a ONE-TIME live resetLink (email
+// delivery is offline, so the admin copies the link) — never persisted, never cached.
+
+/** `POST /api/v1/auth/forgot-password` body. Mirrors ForgotPasswordRequest. */
+export const ForgotPasswordRequestSchema = z.object({
+  email: z.string(),
+});
+export type ForgotPasswordRequest = z.infer<typeof ForgotPasswordRequestSchema>;
+
+/** `POST /api/v1/auth/forgot-password` result. ALWAYS { requested:true } (anti-enumeration). */
+export const ForgotPasswordResultSchema = z.object({
+  requested: z.boolean(),
+});
+export type ForgotPasswordResult = z.infer<typeof ForgotPasswordResultSchema>;
+
+/** `POST /api/v1/auth/reset-password` body. Mirrors ResetPasswordRequest — the token
+ *  IS the authorization (no JWT); the user sets their own newPassword. Single-use. */
+export const ResetPasswordRequestSchema = z.object({
+  token: z.string(),
+  newPassword: z.string(),
+});
+export type ResetPasswordRequest = z.infer<typeof ResetPasswordRequestSchema>;
+
+/** `POST /api/v1/auth/reset-password` result. Mirrors ResetPasswordResult. */
+export const ResetPasswordResultSchema = z.object({
+  reset: z.boolean(),
+});
+export type ResetPasswordResult = z.infer<typeof ResetPasswordResultSchema>;
+
+/** `POST /api/v1/tenants/{id}/users/{userId}/reset-password` result. Mirrors
+ *  AdminResetPasswordResult. `resetLink` is the ONE-TIME live credential surfaced
+ *  exactly once for hand-off (delivery is offline); never persisted or re-fetchable. */
+export const AdminResetPasswordResultSchema = z.object({
+  resetLink: z.string(),
+  expiresAt: z.string(),
+});
+export type AdminResetPasswordResult = z.infer<typeof AdminResetPasswordResultSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLINICAL PHI (Slice 03b) — mirrors mediq.SharedDataModel/Docslot/Clinical

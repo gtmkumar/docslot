@@ -43,6 +43,7 @@ public static class InfrastructureRegistration
         services.AddScoped<IRoleAssignmentRepository, RoleAssignmentRepository>();
         services.AddScoped<IImpersonationRepository, ImpersonationRepository>();
         services.AddScoped<IInvitationRepository, Persistence.Repositories.InvitationRepository>();
+        services.AddScoped<IPasswordResetRepository, Persistence.Repositories.PasswordResetRepository>();
 
         // Read-side projections + provisioning.
         services.AddScoped<IUserDirectory, UserDirectory>();
@@ -57,11 +58,13 @@ public static class InfrastructureRegistration
         // Security.
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
         services.AddSingleton<IInvitationTokenFactory, Security.InvitationTokenFactory>();
+        services.AddSingleton<IPasswordResetTokenFactory, Security.PasswordResetTokenFactory>();
         services.AddScoped<ITokenService, JwtTokenService>();
         services.AddScoped<ISessionStore, SessionStore>();
         services.AddScoped<ISessionAdminService, Security.SessionAdminService>();
         services.AddScoped<ILoginAttemptService, LoginAttemptService>();
         AddInvitationNotifier(services, config);
+        AddPasswordResetNotifier(services, config);
         // Geo-IP city resolution for the audit-log + active-session surfaces (issue #94). Offline default:
         // NullGeoIpResolver (no external lookup, city=null). A live provider (MaxMind/ip-api) is config-gated.
         services.AddSingleton<IGeoIpResolver, Security.NullGeoIpResolver>();
@@ -339,5 +342,22 @@ public static class InfrastructureRegistration
         // offline stub. When one is built, branch here on `provider` exactly like AddWhatsAppSender.
         _ = provider;
         services.AddScoped<IInvitationNotifier, Security.StubInvitationNotifier>();
+    }
+
+    /// <summary>
+    /// Selects the password-reset notifier from config, mirroring <see cref="AddInvitationNotifier"/>. With no
+    /// live provider configured (dev/test DEFAULT) the offline <see cref="Security.StubPasswordResetNotifier"/>
+    /// is wired — it RECORDS the intended send but performs NO live delivery, so the reset-send path runs
+    /// end-to-end without an email/WhatsApp credential. A real transport is wired only when
+    /// <c>PasswordReset:NotifierProvider</c> names one AND its secret is set.
+    /// </summary>
+    private static void AddPasswordResetNotifier(IServiceCollection services, IConfiguration config)
+    {
+        var provider = config["PasswordReset:NotifierProvider"];
+
+        // No live email/WhatsApp reset transport ships yet: every configured value falls back to the offline
+        // stub. When one is built, branch here on `provider` exactly like AddWhatsAppSender.
+        _ = provider;
+        services.AddScoped<IPasswordResetNotifier, Security.StubPasswordResetNotifier>();
     }
 }

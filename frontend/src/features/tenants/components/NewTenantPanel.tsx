@@ -8,7 +8,6 @@
 // react-hook-form + zod (dependency-free resolver); POST carries a stable
 // Idempotency-Key. The tenantCode auto-slugs from the display name but stays editable.
 
-import { useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useTranslation } from 'react-i18next';
@@ -17,10 +16,10 @@ import { Button } from '@/components/ui/Button';
 import { SlideOver } from '@/components/ui/SlideOver';
 import { FieldShell, Select, TextInput } from '@/components/ui/Field';
 import { idempotencyKey } from '@/lib/api-client';
-import { lookupPincode, toUserError } from '@/lib/backend';
-import type { PincodeLookup } from '@/lib/mock/contracts';
+import { toUserError } from '@/lib/backend';
 import { useUI } from '@/stores/ui';
 import { useCreateTenant } from '../api';
+import { usePincodeGeo } from '../usePincodeGeo';
 import { COUNTRIES, INDIA_STATES } from '../india-geo';
 
 // Mirrors CreateTenantValidator.TenantTypes (the tenant_type vocabulary that drives
@@ -99,63 +98,17 @@ export function NewTenantPanel({ open, onClose }: { open: boolean; onClose: () =
   const citySel = watch('city');
   const stateCities = INDIA_STATES.find((s) => s.name === stateSel)?.cities ?? [];
 
-  // PIN-code auto-fill: at 6 valid digits, resolve via the postal directory and apply
-  // state + city; the centroid (when known) geo-tags the clinic on submit. The lookup
-  // result is kept alongside its PIN so an edited PIN never ships stale coordinates.
-  const [pinStatus, setPinStatus] = useState<'idle' | 'looking' | 'found' | 'notFound'>('idle');
-  const [pinLookup, setPinLookup] = useState<PincodeLookup | null>(null);
-  // What the last lookup wrote — so removing/shortening the PIN un-fills EXACTLY those
-  // values and never wipes a state/city the admin chose or edited themselves.
-  const appliedByLookup = useRef<{ state: string; city: string; cityOther: string } | null>(null);
-
-  const applyLookup = (r: PincodeLookup) => {
-    const match = INDIA_STATES.find((s) => s.name.toLowerCase() === r.state.trim().toLowerCase());
-    if (!match) return;
-    setValue('state', match.name, { shouldDirty: true });
-    const cityInList = match.cities.find((c) => c.toLowerCase() === r.district.trim().toLowerCase());
-    if (cityInList) {
-      setValue('city', cityInList, { shouldDirty: true });
-      appliedByLookup.current = { state: match.name, city: cityInList, cityOther: '' };
-    } else {
-      setValue('city', CITY_OTHER, { shouldDirty: true });
-      setValue('cityOther', r.district.trim(), { shouldDirty: true });
-      appliedByLookup.current = { state: match.name, city: CITY_OTHER, cityOther: r.district.trim() };
-    }
-  };
-
-  /** PIN no longer valid → revert the lookup's own writes (and only those). */
-  const unapplyLookup = () => {
-    const applied = appliedByLookup.current;
-    appliedByLookup.current = null;
-    if (!applied) return;
-    const current = getValues();
-    // Field-by-field: anything the admin overrode since the lookup stays untouched.
-    if (current.city === applied.city) setValue('city', '', { shouldDirty: true });
-    if (applied.city === CITY_OTHER && current.cityOther === applied.cityOther)
-      setValue('cityOther', '', { shouldDirty: true });
-    if (current.state === applied.state) setValue('state', '', { shouldDirty: true });
-  };
-
-  const onPinChange = async (raw: string) => {
-    const pin = raw.trim();
-    setPinLookup(null);
-    if (!/^[1-9][0-9]{5}$/.test(pin)) {
-      setPinStatus('idle');
-      unapplyLookup();
-      return;
-    }
-    setPinStatus('looking');
-    try {
-      const r = await lookupPincode(pin);
-      // Ignore a slow response for a PIN the admin has already changed again.
-      if (getValues('pinCode').trim() !== pin) return;
-      setPinLookup(r);
-      setPinStatus('found');
-      applyLookup(r);
-    } catch {
-      if (getValues('pinCode').trim() === pin) setPinStatus('notFound');
-    }
-  };
+  // PIN-code auto-fill (shared with the edit panel): at 6 valid digits, resolve via the
+  // postal directory and apply state + city; the centroid (when known) geo-tags the clinic
+  // on submit. The lookup is kept alongside its PIN so an edited PIN never ships stale
+  // coordinates. Field writes bake in shouldDirty (the auto-slug watches dirtyFields).
+  const { pinStatus, pinLookup, onPinChange } = usePincodeGeo(
+    {
+      setField: (name, value) => setValue(name, value, { shouldDirty: true }),
+      getField: (name) => getValues(name),
+    },
+    CITY_OTHER,
+  );
 
   const onSubmit = handleSubmit(async (values) => {
     try {

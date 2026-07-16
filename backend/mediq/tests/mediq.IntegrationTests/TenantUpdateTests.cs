@@ -9,8 +9,9 @@ namespace mediq.IntegrationTests;
 
 /// <summary>
 /// End-to-end tenant edit + suspend split (a PLATFORM-ONLY super_admin). Proves:
-/// (1) PUT /tenants/{id} edits mutable attributes, a follow-up GET reflects them, tenant_code/tenant_type stay
-///     immutable, and the edit path NEVER changes status; an unknown id is 404.
+/// (1) PUT /tenants/{id} edits mutable attributes (incl. geo-tag under settings.geo; a contact-only edit does NOT
+///     wipe an existing geo tag), a follow-up GET reflects them, tenant_code/tenant_type stay immutable, and the
+///     edit path NEVER changes status; an unknown id is 404.
 /// (2) Suspend/reactivate are SEPARATE dangerous endpoints (PUT /tenants/{id}/suspend + /reactivate, both gated on
 ///     platform.tenants.suspend, broker pattern): a suspend requires a reason (persisted to suspended_reason;
 ///     missing reason → 422), both return the fresh TenantDetailDto, reactivate clears the reason, unknown id → 404.
@@ -41,10 +42,11 @@ public sealed class TenantUpdateTests(RbacSuperAdminGucWebAppFactory factory)
             var created = (await create.Content.ReadFromJsonAsync<CreateTenantResult>())!;
             tenantId = created.TenantId;
 
-            // ---- Edit: new display name, new city — NO status field on this path ------------------
+            // ---- Edit: new display name, new city, AND geo-tag it — NO status field on this path --
+            const decimal lat = 18.938771m, lng = 72.835335m;
             var update = await sa.PutAsJsonAsync($"/api/v1/tenants/{tenantId}", new UpdateTenantRequest(
                 "Edit Test Clinic (Renamed)", "Edit Test Clinic Pvt Ltd", $"ops+{code}@docslot.test",
-                "+919800000102", "Mumbai", "Maharashtra", "400001"));
+                "+919800000102", "Mumbai", "Maharashtra", "400001", lat, lng));
             Assert.Equal(HttpStatusCode.OK, update.StatusCode);
             var updated = (await update.Content.ReadFromJsonAsync<TenantDetailDto>())!;
 
@@ -57,11 +59,19 @@ public sealed class TenantUpdateTests(RbacSuperAdminGucWebAppFactory factory)
             Assert.Equal("+919800000102", updated.PrimaryPhone);
             Assert.Equal("Maharashtra", updated.State);
             Assert.Equal("400001", updated.PinCode);
+            // Geo persisted under settings.geo and echoed back.
+            Assert.Equal(lat, updated.Latitude);
+            Assert.Equal(lng, updated.Longitude);
             // Immutable identity/structure survived the edit.
             Assert.Equal(code, updated.TenantCode);
             Assert.Equal("hospital", updated.TenantType);
 
-            // ---- A follow-up GET reflects the change AND pre-fills every editable field ------------
+            // settings.geo was written with the same shape as onboarding.
+            Assert.Equal("18.938771|72.835335", await ScalarAsync(
+                "SELECT (settings#>>'{geo,latitude}') || '|' || (settings#>>'{geo,longitude}') " +
+                "FROM platform.tenants WHERE tenant_id = @t", ("t", tenantId)));
+
+            // ---- A follow-up GET reflects the change AND pre-fills every editable field + geo ------
             var fetched = (await sa.GetFromJsonAsync<TenantDetailDto>($"/api/v1/tenants/{tenantId}"))!;
             Assert.Equal("Edit Test Clinic (Renamed)", fetched.DisplayName);
             Assert.Equal("Mumbai", fetched.City);
@@ -70,8 +80,25 @@ public sealed class TenantUpdateTests(RbacSuperAdminGucWebAppFactory factory)
             Assert.Equal("+919800000102", fetched.PrimaryPhone);
             Assert.Equal("Maharashtra", fetched.State);
             Assert.Equal("400001", fetched.PinCode);
+            Assert.Equal(lat, fetched.Latitude);
+            Assert.Equal(lng, fetched.Longitude);
             Assert.Equal(code, fetched.TenantCode);
             Assert.Equal("hospital", fetched.TenantType);
+
+            // ---- A contact-only edit (NO geo supplied) must NOT wipe the existing geo tag ----------
+            var contactOnly = await sa.PutAsJsonAsync($"/api/v1/tenants/{tenantId}", new UpdateTenantRequest(
+                "Edit Test Clinic (Renamed)", "Edit Test Clinic Pvt Ltd", $"ops+{code}@docslot.test",
+                "+919800000102", "Delhi", "Delhi", "110001"));
+            Assert.Equal(HttpStatusCode.OK, contactOnly.StatusCode);
+            var afterContact = (await contactOnly.Content.ReadFromJsonAsync<TenantDetailDto>())!;
+            Assert.Equal("Delhi", afterContact.City);
+            // Geo preserved (not wiped) — the response echoes the retained tag...
+            Assert.Equal(lat, afterContact.Latitude);
+            Assert.Equal(lng, afterContact.Longitude);
+            // ...and it is still in the DB.
+            Assert.Equal("18.938771|72.835335", await ScalarAsync(
+                "SELECT (settings#>>'{geo,latitude}') || '|' || (settings#>>'{geo,longitude}') " +
+                "FROM platform.tenants WHERE tenant_id = @t", ("t", tenantId)));
         }
         finally
         {

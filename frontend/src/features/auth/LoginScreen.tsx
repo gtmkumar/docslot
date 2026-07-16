@@ -5,7 +5,7 @@
 
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { useNavigate, useSearch } from '@tanstack/react-router';
+import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { FieldShell, TextInput } from '@/components/ui/Field';
@@ -100,6 +100,13 @@ export function LoginScreen() {
                 {...register('password')}
               />
             </FieldShell>
+
+            <Link
+              to="/forgot-password"
+              className="-mt-1 self-end text-[12px] font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              {t('auth.forgotLink')}
+            </Link>
 
             {formError ? (
               <p role="alert" className="rounded-[var(--radius-sm)] bg-danger-soft px-3 py-2 text-[13px] text-danger">

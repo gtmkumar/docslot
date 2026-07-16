@@ -51,10 +51,18 @@ import {
   InvitationListSchema,
   InvitationTokenResultSchema,
   AcceptInvitationResultSchema,
+  ForgotPasswordResultSchema,
+  ResetPasswordResultSchema,
+  AdminResetPasswordResultSchema,
   CreateTenantResultSchema,
   PincodeLookupSchema,
   type AcceptInvitationRequest,
   type AcceptInvitationResult,
+  type ForgotPasswordRequest,
+  type ForgotPasswordResult,
+  type ResetPasswordRequest,
+  type ResetPasswordResult,
+  type AdminResetPasswordResult,
   type CreateTenantRequest,
   type CreateTenantResult,
   type UpdateTenantRequest,
@@ -699,21 +707,21 @@ export async function createTenant(
   return CreateTenantResultSchema.parse(raw);
 }
 
-/** PUT /tenants/{tenantId} → 200 updated TenantDto — platform-console tenant edit
- *  (gated `platform.tenants.update`). Contact/display fields only; `tenantCode`,
- *  `tenantType` and lifecycle `status` are never part of the body. Carries a stable
- *  Idempotency-Key. Returns the updated row, parsed 1:1 into TenantListItem. */
+/** PUT /tenants/{tenantId} → 200 TenantDetailDto — platform-console tenant edit
+ *  (gated `platform.tenants.update`). Contact/display fields + geo centroid only;
+ *  `tenantCode`, `tenantType` and lifecycle `status` are never part of the body. Carries
+ *  a stable Idempotency-Key. Returns the fresh detail so the caller can seed the cache. */
 export async function updateTenant(
   tenantId: string,
   req: UpdateTenantRequest,
   idempotencyKey: string,
-): Promise<TenantListItem> {
+): Promise<TenantDetail> {
   const raw = await apiFetch<unknown>(`/tenants/${encodeURIComponent(tenantId)}`, {
     method: 'PUT',
     idempotency: idempotencyKey,
     body: req,
   });
-  return TenantListItemSchema.parse(raw);
+  return TenantDetailSchema.parse(raw);
 }
 
 /** PUT /tenants/{tenantId}/suspend → 200 TenantDetailDto — DANGEROUS lifecycle action
@@ -767,6 +775,28 @@ export async function acceptInvitation(req: AcceptInvitationRequest): Promise<Ac
     body: req,
   });
   return AcceptInvitationResultSchema.parse(raw);
+}
+
+/** POST /auth/forgot-password — PUBLIC (no JWT). ANTI-ENUMERATION: ALWAYS resolves
+ *  200 { requested:true } regardless of whether the email exists; the caller shows a
+ *  single generic confirmation either way (never revealing account existence). */
+export async function forgotPassword(req: ForgotPasswordRequest): Promise<ForgotPasswordResult> {
+  const raw = await apiFetch<unknown>('/auth/forgot-password', {
+    method: 'POST',
+    body: { email: req.email },
+  });
+  return ForgotPasswordResultSchema.parse(raw);
+}
+
+/** POST /auth/reset-password — PUBLIC (the token IS the authorization; no JWT). The
+ *  user sets their own newPassword; single-use. Invalid/expired/used tokens all yield
+ *  the same generic 4xx (the caller shows one generic inline message). */
+export async function resetPassword(req: ResetPasswordRequest): Promise<ResetPasswordResult> {
+  const raw = await apiFetch<unknown>('/auth/reset-password', {
+    method: 'POST',
+    body: { token: req.token, newPassword: req.newPassword },
+  });
+  return ResetPasswordResultSchema.parse(raw);
 }
 
 // ── DOCTORS DIRECTORY ──────────────────────────────────────────────────────────
@@ -2704,6 +2734,23 @@ export async function resetUserAccess(
     body: { reason },
   });
   return ResetAccessResultSchema.parse(raw);
+}
+
+/** POST /tenants/{tenantId}/users/{userId}/reset-password — admin-initiated password
+ *  reset (gated tenant.users.update). Returns a ONE-TIME live resetLink + expiresAt for
+ *  the admin to hand off (email delivery is offline for now). The link is never persisted
+ *  or re-fetchable; the response is never idempotency-cached. Idempotency-Key on the POST. */
+export async function adminResetUserPassword(
+  userId: string,
+  idempotencyKey: string,
+): Promise<AdminResetPasswordResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/users/${userId}/reset-password`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {},
+  });
+  return AdminResetPasswordResultSchema.parse(raw);
 }
 
 /** POST /role-assignments — assign a role to a user in the tenant. The new role then

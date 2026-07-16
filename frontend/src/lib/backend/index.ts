@@ -25,6 +25,9 @@ import {
   reactivateTenantMock,
   noShowBookingMock,
   rescheduleBookingMock,
+  forgotPasswordMock,
+  resetPasswordMock,
+  adminResetUserPasswordMock,
 } from './mutations-mock';
 import type { Analytics } from '@/lib/mock/contracts';
 
@@ -252,6 +255,16 @@ export const suspendTenant = USE_REAL_API ? real.suspendTenant : suspendTenantMo
 export const reactivateTenant = USE_REAL_API ? real.reactivateTenant : reactivateTenantMock;
 export const acceptInvitation = USE_REAL_API ? real.acceptInvitation : mock.acceptInvitation;
 export const lookupPincode = USE_REAL_API ? real.lookupPincode : mock.lookupPincode;
+
+// PASSWORD RESET — self-service (PUBLIC: POST /auth/forgot-password | /auth/reset-password;
+// the email/token IS the authz, no JWT) + admin-initiated (authed, gated tenant.users.update:
+// POST /tenants/{id}/users/{userId}/reset-password → one-time resetLink). forgot ALWAYS
+// resolves { requested:true } (anti-enumeration); reset consumes a one-time token; the admin
+// action returns a one-time live link the admin copies (delivery is offline). Mocks make each
+// exercisable flag-off.
+export const forgotPassword = USE_REAL_API ? real.forgotPassword : forgotPasswordMock;
+export const resetPassword = USE_REAL_API ? real.resetPassword : resetPasswordMock;
+export const adminResetUserPassword = USE_REAL_API ? real.adminResetUserPassword : adminResetUserPasswordMock;
 
 // ── IAM / ROLES & PERMISSIONS (Slice 2) ───────────────────────────────────────
 // Privilege-matrix grid + duplicate + effective-access viewer. READS pass through

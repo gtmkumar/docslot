@@ -14,6 +14,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   addIpAllowlist,
+  adminResetUserPassword,
   assignRole,
   bulkImportUsers,
   createInvitation,
@@ -269,6 +270,19 @@ export function useUpdateUser() {
         { fullName: vars.fullName, phone: vars.phone ?? null, preferredLanguage: vars.preferredLanguage },
         vars.idempotencyKey,
       ),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: usersQueryKey }),
+  });
+}
+
+/** Admin-initiated password reset (gated tenant.users.update). Returns a ONE-TIME live
+ *  resetLink the admin copies (email delivery is offline) — it is NEVER written into any
+ *  query cache; the caller reveals it in a copyable panel and drops it on close. Invalidates
+ *  the users list so the pending-reset chip refreshes. Idempotency-Key per action. */
+export function useAdminResetUserPassword() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { userId: string; idempotencyKey: string }) =>
+      adminResetUserPassword(vars.userId, vars.idempotencyKey),
     onSuccess: () => void qc.invalidateQueries({ queryKey: usersQueryKey }),
   });
 }

@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Threading.RateLimiting;
 using mediq.Api.Extensions;
 using mediq.Api.Middleware;
@@ -8,6 +9,7 @@ using mediq.Infrastructure;
 using mediq.ServiceDefaults;
 using mediq.Utilities.Middlewares.ExceptionsMiddleware;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.ResponseCompression;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -82,6 +84,22 @@ builder.Services.AddProblemDetails();
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();   // .NET 10 native OpenAPI (Swashbuckle is incompatible with ASP.NET Core 10)
 
+// --- Response compression (Brotli preferred, gzip fallback) for the JSON/ProblemDetails bodies this API
+// serves. EnableForHttps is safe here: every response is our own JSON/text, never a third-party stream, so
+// there's no CRIME/BREACH-style secret-reflection risk. MimeTypes stays at the default text/json allow-list
+// (ResponseCompressionDefaults already covers application/json) plus problem+json for AddProblemDetails()
+// error bodies — binary/already-compressed content types (images, octet-stream) are never matched, so a
+// response that's already encoded is skipped rather than recompressed. ---
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Append("application/problem+json");
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+
 // --- Rate limiting (defense in depth; the gateway also rate-limits at the edge) ---
 // Production: 100 req/min/IP. Development: a much higher cap so local SPA work and
 // automated screenshot/QA sweeps (which re-fetch /me + menus + permissions per
@@ -104,6 +122,7 @@ JwtSigningKeyGuard.Validate(app.Configuration, app.Environment, app.Logger);
 
 // --- Pipeline order matters ---
 app.UseMiddleware<ExceptionHandler>();   // reuse Utilities global exception → ApiResponse envelope (DRY)
+app.UseResponseCompression();             // must run early — before anything else writes to the response body
 app.UseCorrelationId();                   // honor/generate X-Correlation-ID, push into log scope
 
 // X-Forwarded-For aware per-IP rate limiting (STRICT default-deny). MUST precede UseRateLimiter so the limiter

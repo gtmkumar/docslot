@@ -3,8 +3,8 @@
 // stores/session; these hooks just orchestrate the calls + cache.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getMe, login, logout } from '@/lib/backend';
-import type { LoginRequest } from '@/lib/mock/contracts';
+import { forgotPassword, getMe, login, logout, resetPassword } from '@/lib/backend';
+import type { ForgotPasswordRequest, LoginRequest, ResetPasswordRequest } from '@/lib/mock/contracts';
 import { useSession } from '@/stores/session';
 
 export const meQueryKey = ['me', 'profile'] as const;
@@ -36,6 +36,20 @@ export function useLogin() {
         tenantId: token.activeTenantId,
       }),
   });
+}
+
+/** Self-service forgot-password (PUBLIC). ALWAYS resolves (anti-enumeration): the
+ *  screen shows one generic confirmation regardless of whether the email exists. No
+ *  session/cache interaction. */
+export function useForgotPassword() {
+  return useMutation({ mutationFn: (req: ForgotPasswordRequest) => forgotPassword(req) });
+}
+
+/** Self-service reset-password (PUBLIC; the token IS the authorization). On success
+ *  the screen redirects to /login. Invalid/expired/used tokens reject with the generic
+ *  4xx — the screen surfaces one generic inline message. No session/cache interaction. */
+export function useResetPassword() {
+  return useMutation({ mutationFn: (req: ResetPasswordRequest) => resetPassword(req) });
 }
 
 export function useLogout() {

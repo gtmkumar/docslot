@@ -63,11 +63,13 @@ public sealed class SetTenantStatusCommandHandler(
             ctx.UserId, TenantId: null, ctx.CorrelationId, ctx.IpAddress, ctx.UserAgent, Success: true,
             ChangeSummary: summary), ct);
 
-        // Full detail shape (same as GET) so the frontend re-syncs. Contact/display fields are unchanged (from the
-        // loaded row); status + suspended_reason reflect what we just wrote.
+        // Full detail shape (same as GET) so the frontend re-syncs. Contact/display fields + geo are unchanged
+        // (from the loaded row); status + suspended_reason reflect what we just wrote.
+        var (latitude, longitude) = TenantGeo.Read(existing.Settings);
         return new TenantDetailDto(
             existing.TenantId, existing.TenantCode, existing.DisplayName, existing.TenantType,
             existing.LegalName, existing.PrimaryEmail, existing.PrimaryPhone,
-            targetStatus, existing.Country, existing.City, existing.State, existing.PinCode, reason);
+            targetStatus, existing.Country, existing.City, existing.State, existing.PinCode, reason,
+            latitude, longitude);
     }
 }

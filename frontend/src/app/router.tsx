@@ -19,6 +19,8 @@ import { PlaceholderScreen } from '@/components/layout/PlaceholderScreen';
 import { NotFoundScreen } from '@/components/layout/NotFoundScreen';
 import { LoginScreen } from '@/features/auth/LoginScreen';
 import { AcceptInviteScreen } from '@/features/auth/AcceptInviteScreen';
+import { ForgotPasswordScreen } from '@/features/auth/ForgotPasswordScreen';
+import { ResetPasswordScreen } from '@/features/auth/ResetPasswordScreen';
 import { useSession } from '@/stores/session';
 
 // Heavy feature screens are code-split: each becomes its own chunk, loaded on
@@ -124,6 +126,28 @@ const acceptInviteRoute = createRoute({
     token: typeof search.token === 'string' ? search.token : undefined,
   }),
   component: AcceptInviteScreen,
+});
+
+// ── /forgot-password (standalone, PUBLIC) ────────────────────────────────────
+// Self-service password reset request: the email IS the identity claim (no session).
+// The screen always shows a generic confirmation (anti-enumeration).
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/forgot-password',
+  component: ForgotPasswordScreen,
+});
+
+// ── /reset-password (standalone, PUBLIC) ─────────────────────────────────────
+// Set a new password via a one-time token in the search param — the token IS the
+// authorization (no session), captured once then stripped from the URL (mirrors
+// /accept-invite). Signed-in users can still open it (the token decides).
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reset-password',
+  validateSearch: (search: Record<string, unknown>) => ({
+    token: typeof search.token === 'string' ? search.token : undefined,
+  }),
+  component: ResetPasswordScreen,
 });
 
 // ── authed layout (pathless) — the guarded AppShell ──────────────────────────
@@ -267,6 +291,8 @@ const labRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   loginRoute,
   acceptInviteRoute,
+  forgotPasswordRoute,
+  resetPasswordRoute,
   authLayoutRoute.addChildren([
     indexRoute,
     bookingsRoute,

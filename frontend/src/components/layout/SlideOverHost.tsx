@@ -34,6 +34,7 @@ const InviteUserPanel = lazy(() => import('@/features/team/components/InviteUser
 const BulkImportUsersPanel = lazy(() => import('@/features/team/components/BulkImportUsersPanel').then((m) => ({ default: m.BulkImportUsersPanel })));
 const NewInvitationPanel = lazy(() => import('@/features/team/components/NewInvitationPanel').then((m) => ({ default: m.NewInvitationPanel })));
 const InvitationTokenPanel = lazy(() => import('@/features/team/components/InvitationTokenPanel').then((m) => ({ default: m.InvitationTokenPanel })));
+const AdminResetPasswordPanel = lazy(() => import('@/features/team/components/AdminResetPasswordPanel').then((m) => ({ default: m.AdminResetPasswordPanel })));
 const ManageUserPanel = lazy(() => import('@/features/team/components/ManageUserPanel').then((m) => ({ default: m.ManageUserPanel })));
 const EditUserPanel = lazy(() => import('@/features/team/components/EditUserPanel').then((m) => ({ default: m.EditUserPanel })));
 const RoleViewPanel = lazy(() => import('@/features/team/components/RoleViewPanel').then((m) => ({ default: m.RoleViewPanel })));
@@ -89,6 +90,7 @@ type PanelType = Panel['type'];
 type TransientPanelType =
   | 'clientSecret'
   | 'invitationToken'
+  | 'adminResetPassword'
   | 'tenantCreated'
   | 'deletionCertificate'
   | 'prescriptionDetail'
@@ -106,7 +108,7 @@ type TransientPanelType =
 /** URL-addressable panel types. */
 type UrlPanelType = Exclude<PanelType, TransientPanelType>;
 const TRANSIENT_SET = new Set<PanelType>([
-  'clientSecret', 'invitationToken', 'tenantCreated', 'deletionCertificate',
+  'clientSecret', 'invitationToken', 'adminResetPassword', 'tenantCreated', 'deletionCertificate',
   'prescriptionDetail', 'labReportDetail', 'uploadReport', 'abdmDetail',
   // Medical-history create/edit + import + attachment viewer + the clinical
   // break-glass carry PHI and/or a declared purpose-of-use — never URL-encoded or
@@ -276,6 +278,8 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <NewInvitationPanel open onClose={closePanel} />;
     case 'invitationToken':
       return <InvitationTokenPanel result={panel.result} email={panel.email} open onClose={closePanel} />;
+    case 'adminResetPassword':
+      return <AdminResetPasswordPanel result={panel.result} userName={panel.userName} open onClose={closePanel} />;
     case 'manageUser':
       return <ManageUserPanel userId={panel.userId} open onClose={closePanel} />;
     case 'editUser':

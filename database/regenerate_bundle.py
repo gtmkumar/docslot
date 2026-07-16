@@ -25,7 +25,8 @@ PARTS = [
     ("09_chat_identity.sql",     "Chat Identity & Discount", "WA contact memory, behalf-booking consent, direct discount — docslot.*"),
     ("04_future_products.sql",   "Future Products (Optional)","RuralReach + SafeHer + GenericFirst"),
     ("10_roles_grants.sql",      "Roles & Grants",           "Least-privilege docslot_app role + grants (RLS-enforced, audit append-only)"),
-    ("11_rbac_hardening.sql",    "RBAC Hardening",           "RLS on RBAC tables, tenant-status gate, grant-option guard, menu ancestors, SoD, scoped impersonation — runs LAST"),
+    ("11_rbac_hardening.sql",    "RBAC Hardening",           "RLS on RBAC tables, tenant-status gate, grant-option guard, menu ancestors, SoD, scoped impersonation"),
+    ("12_password_reset.sql",    "Password Reset",           "Self-service + admin-initiated password reset (SECURITY DEFINER, R3-guarded) — runs LAST"),
 ]
 
 HEADER = """\

@@ -5,6 +5,7 @@
 import { create } from 'zustand';
 import type { Booking } from '@/lib/types';
 import type {
+  AdminResetPasswordResult,
   ApiClientSecretResult,
   BreakGlassResourceType,
   CreateTenantResult,
@@ -46,6 +47,10 @@ export type Panel =
   // `clientSecret`, the token must not survive a refresh (re-mint via resend).
   | { type: 'newInvitation' }
   | { type: 'invitationToken'; result: InvitationTokenResult; email: string }
+  // Admin-initiated password reset reveal (one-time live link). DELIBERATELY NOT
+  // URL-restorable — like `invitationToken`, the credential must not survive a refresh
+  // (re-mint by resetting again). Opened from the manage-user panel; replaces it.
+  | { type: 'adminResetPassword'; result: AdminResetPasswordResult; userName: string }
   | { type: 'manageUser'; userId: string }
   // editUser carries a userId, so it is URL-restorable via ?panel=&id=.
   | { type: 'editUser'; userId: string }

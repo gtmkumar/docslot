@@ -48,10 +48,13 @@ public interface ITenantRepository
     /// NEVER touched here. <c>platform.tenants</c> carries no RLS, so a direct parameterised UPDATE on the ambient
     /// UoW transaction is the sanctioned path (the caller is gated on <c>platform.tenants.update</c>); the
     /// <c>updated_at</c> stamp is owned by the table's BEFORE UPDATE trigger. A unique-constraint clash surfaces as
-    /// ConflictException (409). Returns false when no LIVE row matched (soft-deleted or concurrently removed).</summary>
+    /// ConflictException (409). Returns false when no LIVE row matched (soft-deleted or concurrently removed).
+    /// A <paramref name="latitude"/>/<paramref name="longitude"/> pair re-tags <c>settings.geo</c> using the SAME
+    /// JSONB shape as CreateAsync (merged into settings, preserving other keys); when either is null the existing
+    /// geo tag is left UNTOUCHED (a contact-only edit never wipes coordinates).</summary>
     Task<bool> UpdateAsync(
         Guid tenantId, string displayName, string legalName, string primaryEmail, string primaryPhone,
-        string? city, string? state, string? pinCode, CancellationToken ct);
+        string? city, string? state, string? pinCode, decimal? latitude, decimal? longitude, CancellationToken ct);
 
     /// <summary>Suspend or reactivate a tenant — the ONLY path that writes <c>status</c> (gated on the DANGEROUS
     /// <c>platform.tenants.suspend</c>). Sets <c>status</c> and, atomically, <c>suspended_reason</c>: the mandatory

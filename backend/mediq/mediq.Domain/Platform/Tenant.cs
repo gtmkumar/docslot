@@ -17,6 +17,9 @@ public sealed class Tenant
     public string Timezone { get; private set; } = "Asia/Kolkata";
     public string Status { get; private set; } = "pending";
     public string? SuspendedReason { get; private set; }
+    /// <summary>Per-tenant config bag (JSONB). Read-only here; the geo centroid lives under <c>settings.geo</c>.
+    /// Written only via parameterised SQL (CreateAsync/UpdateAsync), never through the change tracker.</summary>
+    public string Settings { get; private set; } = "{}";
     public DateTime CreatedAt { get; private set; }
     public DateTime UpdatedAt { get; private set; }
     public DateTime? DeletedAt { get; private set; }

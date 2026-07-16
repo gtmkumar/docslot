@@ -10,13 +10,14 @@ public sealed record TenantDto(
 /// suspend/reactivate responses). A superset of <see cref="TenantDto"/> carrying every field the edit form
 /// pre-fills — <c>LegalName</c>, <c>PrimaryPhone</c>, <c>State</c>, <c>PinCode</c> — so the panel never opens fields
 /// blank. <c>TenantCode</c>/<c>TenantType</c> are included for read-only display; they are NEVER editable.
-/// <c>SuspendedReason</c> surfaces WHY a suspended clinic is suspended (NULL when active). Geo lat/long
-/// (settings.geo) is intentionally omitted — the edit form doesn't surface coordinates.</summary>
+/// <c>SuspendedReason</c> surfaces WHY a suspended clinic is suspended (NULL when active). <c>Latitude</c>/
+/// <c>Longitude</c> are the stored <c>settings.geo</c> centroid (NULL when the clinic has no geo tag) so the edit
+/// form pre-fills the current coordinates.</summary>
 public sealed record TenantDetailDto(
     Guid TenantId, string TenantCode, string DisplayName, string TenantType,
     string LegalName, string PrimaryEmail, string PrimaryPhone,
     string Status, string Country, string? City, string? State, string? PinCode,
-    string? SuspendedReason);
+    string? SuspendedReason, decimal? Latitude = null, decimal? Longitude = null);
 
 /// <summary>Onboard a new tenant (clinic/hospital/lab) from the platform console. <c>AdminEmail</c> is the
 /// initial Tenant Owner — a password is never involved: the command mints a <c>tenant_owner</c> invitation
@@ -38,10 +39,13 @@ public sealed record CreateTenantResult(
 /// <c>platform.tenants.update</c>. <c>TenantCode</c> (identity) and <c>TenantType</c> (structural) are
 /// deliberately absent — they are NEVER mutable here. <c>Status</c> is NOT editable through this path either:
 /// suspend/reactivate is a distinct DANGEROUS action with its own permission and mandatory reason — see
-/// <see cref="SetTenantStatusRequest"/>.</summary>
+/// <see cref="SetTenantStatusReasonRequest"/>. <c>Latitude</c>/<c>Longitude</c> geo-tag the facility (typically
+/// from the PIN-code centroid, same as onboarding) and are stored under <c>settings.geo</c>; supplied as a pair
+/// (both or neither). Omitting them (both null) leaves any existing geo tag UNTOUCHED — a contact-only edit
+/// never wipes the coordinates.</summary>
 public sealed record UpdateTenantRequest(
     string DisplayName, string LegalName, string PrimaryEmail, string PrimaryPhone,
-    string? City, string? State, string? PinCode);
+    string? City, string? State, string? PinCode, decimal? Latitude = null, decimal? Longitude = null);
 
 /// <summary>Body for the DANGEROUS tenant suspend/reactivate endpoints (mirrors the broker
 /// <c>SetBrokerStatusReasonRequest</c>). The transition is implied by the ROUTE

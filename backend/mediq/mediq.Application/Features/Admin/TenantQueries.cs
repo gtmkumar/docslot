@@ -30,9 +30,10 @@ public sealed class GetTenantQueryHandler(ITenantRepository tenants)
     {
         var t = await tenants.GetByIdAsync(query.TenantId, ct)
             ?? throw new KeyNotFoundException("Tenant not found.");
+        var (latitude, longitude) = TenantGeo.Read(t.Settings);
         return new TenantDetailDto(t.TenantId, t.TenantCode, t.DisplayName, t.TenantType,
             t.LegalName, t.PrimaryEmail, t.PrimaryPhone, t.Status, t.Country, t.City, t.State, t.PinCode,
-            t.SuspendedReason);
+            t.SuspendedReason, latitude, longitude);
     }
 }
 

@@ -32,6 +32,7 @@ import { usePermissions } from '@/lib/permissions';
 import { useTenants } from '@/features/impersonation/api';
 import type { TenantDetail } from '@/lib/mock/contracts';
 import { useSetTenantSuspension, useTenant, useUpdateTenant } from '../api';
+import { usePincodeGeo } from '../usePincodeGeo';
 import { INDIA_STATES } from '../india-geo';
 import { TenantStatusChip } from './TenantStatusChip';
 
@@ -127,7 +128,7 @@ export function ManageTenantPanel({
 
   const updateTenant = useUpdateTenant();
 
-  const { register, handleSubmit, formState, watch, setValue, reset } = useForm<TenantForm>({
+  const { register, handleSubmit, formState, watch, setValue, getValues, reset } = useForm<TenantForm>({
     defaultValues: EMPTY_FORM,
     resolver: async (values) => {
       const parsed = schemaWithCityEscape.safeParse(values);
@@ -143,6 +144,18 @@ export function ManageTenantPanel({
     if (detail) reset(formFromDetail(detail));
   }, [detail, reset]);
 
+  // PIN-code auto-fill + centroid capture, shared with NewTenantPanel. A new lookup
+  // autofills state/city and holds the centroid; on submit the geo tag is the lookup's
+  // centroid when its PIN matches, otherwise the clinic's EXISTING geo is kept (never wiped
+  // by a routine contact edit).
+  const { pinStatus, pinLookup, onPinChange } = usePincodeGeo(
+    {
+      setField: (name, value) => setValue(name, value, { shouldDirty: true }),
+      getField: (name) => getValues(name),
+    },
+    CITY_OTHER,
+  );
+
   // The state select drives the city options; CITY_OTHER swaps the city select for a
   // free-text input (reference list is district-level, not exhaustive). Mirrors NewTenantPanel.
   const stateSel = watch('state');
@@ -150,6 +163,12 @@ export function ManageTenantPanel({
   const stateCities = INDIA_STATES.find((s) => s.name === stateSel)?.cities ?? [];
 
   const onSubmit = handleSubmit(async (values) => {
+    // Geo: use the fresh lookup centroid when it belongs to the submitted PIN; otherwise
+    // keep the clinic's existing geo (from the detail) rather than clearing it.
+    const geoTag =
+      pinLookup?.pinCode === values.pinCode
+        ? { latitude: pinLookup.latitude, longitude: pinLookup.longitude }
+        : { latitude: detail?.latitude ?? null, longitude: detail?.longitude ?? null };
     try {
       await updateTenant.mutateAsync({
         tenantId,
@@ -161,6 +180,8 @@ export function ManageTenantPanel({
           city: (values.city === CITY_OTHER ? values.cityOther : values.city) || null,
           state: values.state || null,
           pinCode: values.pinCode || null,
+          latitude: geoTag.latitude,
+          longitude: geoTag.longitude,
         },
         idempotencyKey: idempotencyKey(),
       });
@@ -354,9 +375,26 @@ export function ManageTenantPanel({
                     maxLength={6}
                     disabled={!canEdit}
                     placeholder="854301"
-                    {...register('pinCode')}
                     aria-invalid={Boolean(formState.errors.pinCode)}
+                    {...register('pinCode', { onChange: (e) => void onPinChange(String(e.target.value)) })}
                   />
+                  {/* PIN lookup status + geo: the fresh lookup wins; otherwise the clinic's
+                      stored centroid is shown so the admin sees the current geo tag. */}
+                  <p className="mt-1.5 text-[12px] text-muted" aria-live="polite">
+                    {pinStatus === 'looking'
+                      ? t('tenants.new.pinLooking')
+                      : pinStatus === 'notFound'
+                        ? t('tenants.new.pinNotFound')
+                        : pinStatus === 'found' && pinLookup
+                          ? `${pinLookup.district}, ${pinLookup.state}` +
+                            (pinLookup.latitude != null ? ` · ${t('tenants.new.pinGeoTagged')}` : '')
+                          : detail?.latitude != null && detail?.longitude != null
+                            ? t('tenants.manage.geoTagged', {
+                                lat: detail.latitude.toFixed(5),
+                                long: detail.longitude.toFixed(5),
+                              })
+                            : t('tenants.new.pinHint')}
+                  </p>
                 </FieldShell>
               </div>
             </>

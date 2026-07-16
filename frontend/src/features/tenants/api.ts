@@ -10,7 +10,6 @@ import type {
   CreateTenantRequest,
   CreateTenantResult,
   TenantDetail,
-  TenantListItem,
   UpdateTenantRequest,
 } from '@/lib/mock/contracts';
 
@@ -50,10 +49,12 @@ export function useUpdateTenant() {
       tenantId: string;
       request: UpdateTenantRequest;
       idempotencyKey: string;
-    }): Promise<TenantListItem> => updateTenant(vars.tenantId, vars.request, vars.idempotencyKey),
-    onSuccess: (_data, vars) => {
+    }): Promise<TenantDetail> => updateTenant(vars.tenantId, vars.request, vars.idempotencyKey),
+    onSuccess: (detail, vars) => {
+      // The PUT returns the fresh detail — seed it so a re-open shows the new geo/fields
+      // immediately; invalidate the list so the row/count re-sync.
+      qc.setQueryData(tenantDetailQueryKey(vars.tenantId), detail);
       void qc.invalidateQueries({ queryKey: tenantsQueryKey });
-      void qc.invalidateQueries({ queryKey: tenantDetailQueryKey(vars.tenantId) });
     },
   });
 }
