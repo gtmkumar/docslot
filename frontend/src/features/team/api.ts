@@ -245,14 +245,27 @@ export function useBulkImportUsers() {
 }
 
 // ── User lifecycle: deactivate/reactivate, edit profile, reset access ─────────
-/** Deactivate (revoke memberships in this tenant) or reactivate a user. Invalidates the
- *  users list + that user's effective access (status changes what they can do). */
+/** Deactivate (revoke memberships in this tenant) or reactivate a user. OPTIMISTIC:
+ *  the cached row's isActive (status badge + row dimming) flips instantly, rolls back
+ *  on error (the caller toasts the revert), then reconciles on settle — the users list
+ *  AND that user's effective access re-sync (status changes what they can do). */
 export function useSetUserStatus() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (vars: SetUserStatusRequest & { userId: string; idempotencyKey: string }) =>
       setUserActive(vars.userId, { isActive: vars.isActive, reason: vars.reason }, vars.idempotencyKey),
-    onSuccess: (_r, vars) => {
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: usersQueryKey });
+      const previous = qc.getQueryData<UserListItem[]>(usersQueryKey);
+      qc.setQueryData<UserListItem[]>(usersQueryKey, (old) =>
+        old?.map((u) => (u.userId === vars.userId ? { ...u, isActive: vars.isActive } : u)),
+      );
+      return { previous };
+    },
+    onError: (_e, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(usersQueryKey, ctx.previous);
+    },
+    onSettled: (_r, _e, vars) => {
       void qc.invalidateQueries({ queryKey: usersQueryKey });
       void qc.invalidateQueries({ queryKey: ['team', 'effective', vars.userId] });
       void qc.invalidateQueries({ queryKey: effectiveAccessQueryKey(vars.userId) });

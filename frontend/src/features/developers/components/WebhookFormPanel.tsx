@@ -62,32 +62,38 @@ export function WebhookFormPanel({
     setTouched(true);
     if (nameInvalid || urlInvalid || eventsInvalid || clientInvalid) return;
 
-    // try/catch so a failed create/update surfaces an error toast instead of an unhandled
-    // rejection with zero feedback (#55).
-    try {
-      if (editing && webhookId) {
-        await update.mutateAsync({
+    // Edit is OPTIMISTIC: the hook patches the cached row instantly, so the panel
+    // closes at once; on failure the row snaps back and the revert is toasted.
+    // Create must WAIT — its result carries the one-time signing secret for the
+    // reveal panel, so there is nothing to show until the server answers (#55:
+    // try/catch so a failed create surfaces a toast, not a silent rejection).
+    if (editing && webhookId) {
+      update.mutate(
+        {
           webhookId,
           req: { name, url, eventTypes: [...selectedEvents], isActive: active },
           idempotencyKey: idempotencyKey(),
-        });
-        toast.success(t('developers.webhookForm.saved'));
-        onClose();
-      } else {
-        const result = await create.mutateAsync({
-          clientId,
-          tenantId: null,
-          name,
-          url,
-          eventTypes: [...selectedEvents],
-          secret: secret || null,
-          maxRetries: 5,
-          timeoutSeconds: 30,
-          idempotencyKey: idempotencyKey(),
-        });
-        // One-time signing-secret reveal.
-        openPanel({ type: 'clientSecret', result, kind: 'webhook', intent: 'created' });
-      }
+        },
+        { onError: (e) => toast.error(t('common.reverted', { error: toUserError(e) })) },
+      );
+      toast.success(t('developers.webhookForm.saved'));
+      onClose();
+      return;
+    }
+    try {
+      const result = await create.mutateAsync({
+        clientId,
+        tenantId: null,
+        name,
+        url,
+        eventTypes: [...selectedEvents],
+        secret: secret || null,
+        maxRetries: 5,
+        timeoutSeconds: 30,
+        idempotencyKey: idempotencyKey(),
+      });
+      // One-time signing-secret reveal.
+      openPanel({ type: 'clientSecret', result, kind: 'webhook', intent: 'created' });
     } catch (e) {
       toast.error(toUserError(e));
     }

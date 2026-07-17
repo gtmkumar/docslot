@@ -10,6 +10,7 @@ import type {
   CreateTenantRequest,
   CreateTenantResult,
   TenantDetail,
+  TenantListItem,
   UpdateTenantRequest,
 } from '@/lib/mock/contracts';
 
@@ -61,9 +62,13 @@ export function useUpdateTenant() {
 
 /** Mutation behind the DANGEROUS suspend/reactivate action (gated `platform.tenants.suspend`).
  *  Picks the route by direction: `isActive: false` → PUT /tenants/{id}/suspend (reason
- *  MANDATORY), `isActive: true` → PUT /tenants/{id}/reactivate (reason cleared). Both
- *  return the fresh TenantDetail; on success we seed the detail cache with it (instant
- *  chip + reason re-sync) and invalidate the shared list. Carries a stable Idempotency-Key. */
+ *  MANDATORY), `isActive: true` → PUT /tenants/{id}/reactivate (reason cleared).
+ *
+ *  OPTIMISTIC: the detail cache's status chip + suspendedReason and the shared list row
+ *  flip instantly; on error BOTH roll back (the caller toasts the revert). On success the
+ *  server's fresh TenantDetail seeds the detail cache (authoritative — e.g. reactivation
+ *  may restore a non-'active' prior status); the list re-syncs via invalidate on settle.
+ *  Carries a stable Idempotency-Key. */
 export function useSetTenantSuspension() {
   const qc = useQueryClient();
   return useMutation({
@@ -76,9 +81,30 @@ export function useSetTenantSuspension() {
       vars.isActive
         ? reactivateTenant(vars.tenantId, vars.reason ?? null, vars.idempotencyKey)
         : suspendTenant(vars.tenantId, (vars.reason ?? '').trim(), vars.idempotencyKey),
+    onMutate: async (vars) => {
+      const detailKey = tenantDetailQueryKey(vars.tenantId);
+      await qc.cancelQueries({ queryKey: detailKey });
+      await qc.cancelQueries({ queryKey: tenantsQueryKey });
+      const previousDetail = qc.getQueryData<TenantDetail>(detailKey);
+      const previousList = qc.getQueryData<TenantListItem[]>(tenantsQueryKey);
+      const nextStatus = vars.isActive ? 'active' : 'suspended';
+      qc.setQueryData<TenantDetail>(detailKey, (old) =>
+        old
+          ? { ...old, status: nextStatus, suspendedReason: vars.isActive ? null : (vars.reason ?? '').trim() }
+          : old,
+      );
+      qc.setQueryData<TenantListItem[]>(tenantsQueryKey, (old) =>
+        old?.map((row) => (row.tenantId === vars.tenantId ? { ...row, status: nextStatus } : row)),
+      );
+      return { previousDetail, previousList };
+    },
+    onError: (_e, vars, ctx) => {
+      if (ctx?.previousDetail) qc.setQueryData(tenantDetailQueryKey(vars.tenantId), ctx.previousDetail);
+      if (ctx?.previousList) qc.setQueryData(tenantsQueryKey, ctx.previousList);
+    },
     onSuccess: (detail, vars) => {
       qc.setQueryData(tenantDetailQueryKey(vars.tenantId), detail);
-      void qc.invalidateQueries({ queryKey: tenantsQueryKey });
     },
+    onSettled: () => void qc.invalidateQueries({ queryKey: tenantsQueryKey }),
   });
 }

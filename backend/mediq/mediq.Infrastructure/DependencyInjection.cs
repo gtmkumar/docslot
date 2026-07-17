@@ -9,6 +9,7 @@ using mediq.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Polly;
 
 namespace mediq.Infrastructure;
 
@@ -92,7 +93,10 @@ public static class InfrastructureRegistration
         services.AddScoped<IWebhookDeliveryAdminStore, WebhookDeliveryAdminStore>();
         services.AddSingleton<IWebhookSigner, WebhookSigner>();
         services.AddHttpClient("webhooks");
-        services.AddScoped<IWebhookHttpDispatcher, WebhookHttpDispatcher>();
+        // Singleton (not scoped): its per-host circuit-breaker state (WebhookHttpDispatcher) must survive
+        // across worker ticks — a scoped instance would rebuild an empty breaker cache every tick and a
+        // "tripped" host would never actually stay open.
+        services.AddSingleton<IWebhookHttpDispatcher, WebhookHttpDispatcher>();
         services.AddScoped<IWebhookPublisher, WebhookPublisher>();
 
         // PIN-code reference lookup (address auto-fill + clinic geo-tagging). Two public upstreams:
@@ -232,12 +236,12 @@ public static class InfrastructureRegistration
                 "http", StringComparison.OrdinalIgnoreCase))
         {
             services.AddHttpContextAccessor();   // the HTTP adapters forward the caller's bearer JWT to the AI service
-            services.AddHttpClient<IAiNoShowClient, Ai.HttpAiNoShowClient>(ConfigureAiHttp);
-            services.AddHttpClient<IAiTriageClient, Ai.HttpAiTriageClient>(ConfigureAiHttp);
+            services.AddHttpClient<IAiNoShowClient, Ai.HttpAiNoShowClient>(ConfigureAiHttp).AddResilienceHandler("ai-service", ConfigureAiResilience);
+            services.AddHttpClient<IAiTriageClient, Ai.HttpAiTriageClient>(ConfigureAiHttp).AddResilienceHandler("ai-service", ConfigureAiResilience);
             // Slice-11 PHI proxies (OCR lab-report extraction + RAG ask). Same seam; the adapters forward the
             // caller JWT + X-Purpose-Of-Use and propagate the AI's 4xx so a gate decision is never masked.
-            services.AddHttpClient<IAiOcrClient, Ai.HttpAiOcrClient>(ConfigureAiHttp);
-            services.AddHttpClient<IAiRagClient, Ai.HttpAiRagClient>(ConfigureAiHttp);
+            services.AddHttpClient<IAiOcrClient, Ai.HttpAiOcrClient>(ConfigureAiHttp).AddResilienceHandler("ai-service", ConfigureAiResilience);
+            services.AddHttpClient<IAiRagClient, Ai.HttpAiRagClient>(ConfigureAiHttp).AddResilienceHandler("ai-service", ConfigureAiResilience);
         }
         else
         {
@@ -251,7 +255,40 @@ public static class InfrastructureRegistration
         {
             var o = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<mediq.Application.Options.AiServiceOptions>>().Value;
             http.BaseAddress = new Uri(o.BaseUrl);
-            http.Timeout = TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds));
+            // Backstop only — the resilience pipeline's own per-attempt timeout below is what actually enforces
+            // this; HttpClient.Timeout stays as a hard ceiling in case the pipeline is ever bypassed.
+            http.Timeout = TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds) + 2);
+        }
+
+        // Bulkhead + circuit breaker applied to each of the 4 AI typed clients (OCR/RAG/Triage/NoShow). Each
+        // gets its OWN pipeline instance (AddResilienceHandler keys the registry by the typed client's name +
+        // this pipeline name), so e.g. a stuck RAG endpoint trips only the RAG breaker — it fast-fails RAG
+        // callers without also degrading OCR/Triage/NoShow, which may be perfectly healthy. Order matters:
+        // concurrency limiter (cheapest, outermost check) → circuit breaker (fails fast without attempting) →
+        // per-attempt timeout (innermost, bounds the actual call). Once a client's breaker is open, every
+        // caller of THAT endpoint fails in milliseconds instead of separately waiting out the full timeout —
+        // which is what used to let one slow AI endpoint pile up in-flight requests/threads indefinitely.
+        static void ConfigureAiResilience(
+            Polly.ResiliencePipelineBuilder<HttpResponseMessage> builder,
+            Microsoft.Extensions.Http.Resilience.ResilienceHandlerContext context)
+        {
+            var o = context.ServiceProvider
+                .GetRequiredService<Microsoft.Extensions.Options.IOptions<mediq.Application.Options.AiServiceOptions>>().Value;
+
+            builder
+                .AddConcurrencyLimiter(Math.Max(1, o.MaxConcurrentRequests), Math.Max(0, o.MaxQueuedRequests))
+                .AddCircuitBreaker(new Polly.CircuitBreaker.CircuitBreakerStrategyOptions<HttpResponseMessage>
+                {
+                    FailureRatio = o.CircuitBreakerFailureRatio,
+                    MinimumThroughput = Math.Max(2, o.CircuitBreakerMinimumThroughput),
+                    SamplingDuration = TimeSpan.FromSeconds(Math.Max(1, o.CircuitBreakerSamplingSeconds)),
+                    BreakDuration = TimeSpan.FromSeconds(Math.Max(1, o.CircuitBreakerBreakSeconds)),
+                    ShouldHandle = new Polly.PredicateBuilder<HttpResponseMessage>()
+                        .Handle<HttpRequestException>()
+                        .Handle<Polly.Timeout.TimeoutRejectedException>()
+                        .HandleResult(r => (int)r.StatusCode >= 500),
+                })
+                .AddTimeout(TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds)));
         }
 
         // Proactive no-show prediction backfill (slice 16): a config-gated worker (NoShowPredictionWorker,

@@ -1,9 +1,11 @@
 using mediq.Api.Authorization;
+using mediq.Api.Caching;
 using mediq.Application.Cqrs;
 using mediq.Application.Features.PlatformApi.Webhooks;
 using mediq.SharedDataModel.Docslot.PlatformApi;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 
 namespace mediq.Api.Controllers;
 
@@ -18,6 +20,7 @@ public sealed class WebhooksController(ICommandDispatcher commands, IQueryDispat
 {
     [HttpGet("event-types")]
     [RequirePermission("platform.api_clients.manage")]
+    [OutputCache(PolicyName = OutputCachePolicies.ApiCatalog)]   // seeded registry, identical for every caller; the permission gate above still runs on cache hits (UseOutputCache is after UseAuthorization)
     [ProducesResponseType<IReadOnlyList<EventTypeDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<EventTypeDto>>> EventTypes(CancellationToken ct)
         => Ok(await queries.Query(new ListEventTypesQuery(), ct));

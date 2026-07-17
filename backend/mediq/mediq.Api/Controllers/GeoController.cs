@@ -1,8 +1,10 @@
+using mediq.Api.Caching;
 using mediq.Application.Cqrs;
 using mediq.Application.Features.Geo;
 using mediq.SharedDataModel.Docslot.Geo;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 
 namespace mediq.Api.Controllers;
 
@@ -18,6 +20,7 @@ public sealed class GeoController(IQueryDispatcher queries) : ControllerBase
     /// <summary>Resolve an Indian PIN code → state, district, post-office areas, and (best-effort)
     /// centroid coordinates. 404 for a code the postal directory doesn't know; 422 for a malformed one.</summary>
     [HttpGet("pincode/{pinCode}")]
+    [OutputCache(PolicyName = OutputCachePolicies.GeoReference)]   // caller-invariant postal reference; 200s only (a 404/422 is never stored)
     [ProducesResponseType<PincodeLookupResult>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PincodeLookupResult>> LookupPincode(string pinCode, CancellationToken ct)

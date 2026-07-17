@@ -57,20 +57,32 @@ public sealed class WebhookDeliveryWorker(
     private async Task DrainOnceAsync(CancellationToken ct)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
-        var store = scope.ServiceProvider.GetRequiredService<IWebhookDeliveryDrainStore>();
+        var claimStore = scope.ServiceProvider.GetRequiredService<IWebhookDeliveryDrainStore>();
         var signer = scope.ServiceProvider.GetRequiredService<IWebhookSigner>();
         var dispatcher = scope.ServiceProvider.GetRequiredService<IWebhookHttpDispatcher>();
 
-        var batch = await store.ClaimDueAsync(_options.BatchSize, _options.LeaseSeconds, DateTime.UtcNow, ct);
+        var batch = await claimStore.ClaimDueAsync(_options.BatchSize, _options.LeaseSeconds, DateTime.UtcNow, ct);
         if (batch.Count == 0)
             return;
 
         logger.LogDebug("WebhookDeliveryWorker claimed {Count} due delivery(ies).", batch.Count);
-        foreach (var delivery in batch)
-        {
-            ct.ThrowIfCancellationRequested();
-            await DeliverAsync(store, signer, dispatcher, delivery, ct);
-        }
+
+        // Bounded concurrency across the batch (bulkhead): one claimed batch can span many different,
+        // unrelated subscriber hosts, so delivering them one at a time let a single slow/dead host stall
+        // everyone else's delivery for the rest of the tick. dispatcher's own per-host circuit breaker (see
+        // WebhookHttpDispatcher) additionally fast-fails a known-broken host instead of burning its timeout on
+        // every attempt. Each concurrent unit gets its OWN scope (hence its own DbContext) for the
+        // delivered/failed write — DbContext is not thread-safe, so writes can never share the outer scope's
+        // instance; signer/dispatcher ARE safe to share (stateless / internally thread-safe).
+        await Parallel.ForEachAsync(
+            batch,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, _options.MaxDegreeOfParallelism), CancellationToken = ct },
+            async (delivery, itemCt) =>
+            {
+                await using var itemScope = scopeFactory.CreateAsyncScope();
+                var store = itemScope.ServiceProvider.GetRequiredService<IWebhookDeliveryDrainStore>();
+                await DeliverAsync(store, signer, dispatcher, delivery, itemCt);
+            });
     }
 
     /// <summary>Deliver one claimed row. Any failure (returned result OR thrown exception) becomes a retry/

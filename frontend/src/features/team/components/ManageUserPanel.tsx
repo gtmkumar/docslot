@@ -126,17 +126,17 @@ function AccountSection({ user, isSelf, canManage }: { user: UserListItem; isSel
     setReasonTouched(false);
   };
 
-  const onConfirmStatus = async () => {
+  const onConfirmStatus = () => {
     setReasonTouched(true);
     if (reasonMissing) return; // reason is MANDATORY
-    const key = idempotencyKey();
-    try {
-      await setStatus.mutateAsync({ userId: user.userId, isActive: !user.isActive, reason: reason.trim(), idempotencyKey: key });
-      toast.success(user.isActive ? t('team.toast.deactivated') : t('team.toast.reactivated'));
-      resetForm();
-    } catch (e) {
-      toast.error(toUserError(e));
-    }
+    // OPTIMISTIC: the hook flips the cached row's isActive instantly (badge + action
+    // labels update at once); on failure it snaps back and the revert is toasted.
+    setStatus.mutate(
+      { userId: user.userId, isActive: !user.isActive, reason: reason.trim(), idempotencyKey: idempotencyKey() },
+      { onError: (e) => toast.error(t('common.reverted', { error: toUserError(e) })) },
+    );
+    toast.success(user.isActive ? t('team.toast.deactivated') : t('team.toast.reactivated'));
+    resetForm();
   };
 
   const onConfirmReset = async () => {

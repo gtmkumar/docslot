@@ -436,25 +436,26 @@ function LifecycleSection({
     setReasonTouched(false);
   };
 
-  const onConfirm = async () => {
+  const onConfirm = () => {
     // Reason is MANDATORY when suspending; reactivation needs none.
     if (isSuspendAction) {
       setReasonTouched(true);
       if (reasonMissing) return;
     }
-    try {
-      await suspension.mutateAsync({
+    // OPTIMISTIC: the hook flips the status chip + list row instantly, so the confirm
+    // closes at once; on failure everything snaps back and the revert is toasted.
+    suspension.mutate(
+      {
         tenantId,
         // isActive:false → /suspend (reason mandatory); isActive:true → /reactivate.
         isActive: !isSuspendAction,
         reason: isSuspendAction ? reason.trim() : null,
         idempotencyKey: idempotencyKey(),
-      });
-      toast.success(isSuspendAction ? t('tenants.manage.suspendedToast') : t('tenants.manage.reactivatedToast'));
-      resetConfirm();
-    } catch (e) {
-      toast.error(toUserError(e));
-    }
+      },
+      { onError: (e) => toast.error(t('common.reverted', { error: toUserError(e) })) },
+    );
+    toast.success(isSuspendAction ? t('tenants.manage.suspendedToast') : t('tenants.manage.reactivatedToast'));
+    resetConfirm();
   };
 
   return (

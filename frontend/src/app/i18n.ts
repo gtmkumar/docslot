@@ -81,6 +81,7 @@ export const en = {
     today: 'Today',
     token: 'Token',
     undo: 'Undo',
+    reverted: 'Change reverted — {{error}}',
   },
   greeting: {
     morning: 'Good morning',
@@ -2647,6 +2648,7 @@ export const hi: typeof en = {
     today: 'आज',
     token: 'टोकन',
     undo: 'पूर्ववत करें',
+    reverted: 'बदलाव वापस लिया गया — {{error}}',
   },
   greeting: {
     morning: 'सुप्रभात',
