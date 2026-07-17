@@ -4,6 +4,9 @@ using mediq.Utilities.ApiResponse.ResponseUtil;
 using mediq.Utilities.Exceptions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Polly.CircuitBreaker;
+using Polly.RateLimiting;
+using Polly.Timeout;
 
 namespace mediq.Utilities.Middlewares.ExceptionsMiddleware;
 
@@ -139,6 +142,26 @@ public class ExceptionHandler
                 return new MappedError(
                     ErrorMessageEnum.UnAuthorized, HttpStatusCode.Unauthorized,
                     "Unauthorized.", SingleError(ex, "Unauthorized."));
+
+            // A dependency's circuit breaker is open (it's been failing/timing out) or its concurrency
+            // bulkhead is saturated (see AI/webhook resilience pipelines in mediq.Infrastructure). Both mean
+            // "this dependency is degraded right now" — surface a clean 503 instead of leaking a Polly type
+            // name or falling through to a generic 500 that hides the real, actionable cause.
+            case BrokenCircuitException:
+            case RateLimiterRejectedException:
+                return new MappedError(
+                    ErrorMessageEnum.Error, HttpStatusCode.ServiceUnavailable,
+                    "A dependent service is temporarily unavailable. Please try again shortly.",
+                    SingleError(ex, "A dependent service is temporarily unavailable. Please try again shortly."));
+
+            // The resilience pipeline's own per-attempt timeout fired (distinct from BrokenCircuitException —
+            // the breaker may still be closed; this single call just ran too slow). Still a clean, actionable
+            // 503 rather than a generic 500.
+            case TimeoutRejectedException:
+                return new MappedError(
+                    ErrorMessageEnum.Error, HttpStatusCode.ServiceUnavailable,
+                    "A dependent service took too long to respond. Please try again shortly.",
+                    SingleError(ex, "A dependent service took too long to respond. Please try again shortly."));
 
             default:
                 // A sentinel-marked exception (thrown with UnauthorizedMarker as its Message) maps to 401;

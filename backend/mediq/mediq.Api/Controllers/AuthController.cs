@@ -5,6 +5,7 @@ using mediq.Application.Features.Auth.ChangePassword;
 using mediq.Application.Features.Auth.Impersonation;
 using mediq.Application.Features.Auth.Login;
 using mediq.Application.Features.Auth.Logout;
+using mediq.Application.Features.Auth.PasswordReset;
 using mediq.Application.Features.Auth.Refresh;
 using mediq.Application.Features.Auth.SwitchTenant;
 using mediq.SharedDataModel.Docslot.Auth;
@@ -81,6 +82,31 @@ public sealed class AuthController(ICommandDispatcher commands, ITokenService to
     [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
     public async Task<ActionResult<ChangePasswordResult>> ChangePassword([FromBody] ChangePasswordRequest request, CancellationToken ct)
         => Ok(await commands.Send(new ChangePasswordCommand(request), ct));
+
+    /// <summary>
+    /// POST /api/v1/auth/forgot-password — self-service reset request. ANONYMOUS + ANTI-ENUMERATION: always
+    /// returns 200 <c>{ requested: true }</c> whether or not the email maps to an account. A reset link is
+    /// minted + dispatched (offline notifier) only for a live account; the response never reveals which.
+    /// </summary>
+    [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    [ProducesResponseType<ForgotPasswordResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ForgotPasswordResult>> ForgotPassword(
+        [FromBody] ForgotPasswordRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new ForgotPasswordCommand(request), ct));
+
+    /// <summary>
+    /// POST /api/v1/auth/reset-password — redeem a one-time reset token (ANONYMOUS; the token IS the
+    /// authorization). Sets the new password, clears must-change/lockout, and revokes all active sessions.
+    /// An invalid / expired / already-used token returns one generic 422 (no enumeration).
+    /// </summary>
+    [HttpPost("reset-password")]
+    [AllowAnonymous]
+    [ProducesResponseType<ResetPasswordResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<ActionResult<ResetPasswordResult>> ResetPassword(
+        [FromBody] ResetPasswordRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new ResetPasswordCommand(request), ct));
 
     /// <summary>POST /api/v1/auth/logout — revoke the current session (and the refresh chain if supplied).</summary>
     [HttpPost("logout")]

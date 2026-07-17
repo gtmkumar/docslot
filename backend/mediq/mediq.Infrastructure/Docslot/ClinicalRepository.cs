@@ -462,13 +462,35 @@ public sealed class ClinicalRepository(PlatformDbContext db) : IClinicalReposito
         return h.HistoryId;
     }
 
+    // Keeps each chunk's parameter count (24 cols/row) safely under Postgres's 65535-parameter-per-statement
+    // limit, and keeps any single INSERT small even for an unusually large paper-import batch.
+    private const int MedicalHistoryInsertChunkSize = 500;
+
     public async Task<IReadOnlyList<Guid>> AddMedicalHistoryBatchAsync(IReadOnlyList<MedicalHistory> rows, CancellationToken ct)
     {
-        // One INSERT per row, all inside the ONE command UoW tx → the whole batch commits or rolls back atomically.
+        if (rows.Count == 0) return [];
+        // Chunked multi-row VALUES insert (mirrors AddDrugAlertsAsync below) instead of one round trip per row.
+        // All chunks run inside the ONE command UoW tx → the whole batch still commits or rolls back atomically.
         // Every row already carries the shared import_batch_id + attachment pointer (set by the handler). RLS WITH
         // CHECK admits them (app.tenant_id set for the tx); each is UNVERIFIED (schema chk_history_verify_pair holds).
-        foreach (var h in rows)
-            await db.Database.ExecuteSqlRawAsync(InsertMedicalHistorySql, InsertMedicalHistoryParams(h, "@p"));
+        foreach (var chunk in rows.Chunk(MedicalHistoryInsertChunkSize))
+        {
+            var values = new List<string>(chunk.Length);
+            var ps = new List<NpgsqlParameter>(chunk.Length * 24);
+            for (var i = 0; i < chunk.Length; i++)
+            {
+                var prefix = $"@p{i}_";
+                values.Add('(' + string.Join(",", Enumerable.Range(0, 24).Select(j => $"{prefix}{j}")) + ')');
+                ps.AddRange(InsertMedicalHistoryParams(chunk[i], prefix));
+            }
+            var sql = "INSERT INTO docslot.patient_medical_history " +
+                      "(history_id, patient_id, tenant_id, record_type, title, description, severity, icd10_code, " +
+                      "started_date, ended_date, is_active, is_critical, added_by_user_id, added_at, " +
+                      "source, external_doctor_name, recorded_date, verified_by_user_id, verified_at, import_batch_id, " +
+                      "attachment_url, attachment_file_name, attachment_mime_type, attachment_size_bytes) " +
+                      "VALUES " + string.Join(",", values);
+            await db.Database.ExecuteSqlRawAsync(sql, ps, ct);
+        }
         return rows.Select(r => r.HistoryId).ToList();
     }
 

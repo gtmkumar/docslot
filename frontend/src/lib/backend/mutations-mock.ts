@@ -10,8 +10,19 @@
 import {
   BookingMutationResultSchema,
   TenantListItemSchema,
+  TenantDetailSchema,
+  ForgotPasswordResultSchema,
+  ResetPasswordResultSchema,
+  AdminResetPasswordResultSchema,
   type BookingMutationResult,
   type TenantListItem,
+  type TenantDetail,
+  type UpdateTenantRequest,
+  type ForgotPasswordRequest,
+  type ForgotPasswordResult,
+  type ResetPasswordRequest,
+  type ResetPasswordResult,
+  type AdminResetPasswordResult,
 } from '@/lib/mock/contracts';
 import { BOOKINGS } from '@/lib/data';
 import type { Booking } from '@/lib/types';
@@ -32,6 +43,98 @@ export function listTenantsMock(): Promise<TenantListItem[]> {
       { tenantId: '33333333-3333-3333-3333-333333333333', tenantCode: 'SUNRISE-DEL', displayName: 'Sunrise Clinic · New Delhi', tenantType: 'clinic', status: 'active', country: 'IN', city: 'New Delhi' },
     ]),
   );
+}
+
+// Mock tenant edit (live mode hits PUT /tenants/{id}, super_admin only). Echoes the
+// merged row back as a TenantDto so the panel's success path + toast are exercisable
+// offline. Contact/display fields + geo only — lifecycle status is changed via
+// suspend/reactivate. Echoes the fresh TenantDetail (merging the request onto the seed
+// row) so the geo/city/etc. round-trip and the panel's detail cache re-syncs.
+export async function updateTenantMock(
+  tenantId: string,
+  req: UpdateTenantRequest,
+  _idempotencyKey: string,
+): Promise<TenantDetail> {
+  const detail = await getTenantMock(tenantId);
+  return TenantDetailSchema.parse({
+    ...detail,
+    displayName: req.displayName,
+    legalName: req.legalName,
+    primaryEmail: req.primaryEmail,
+    primaryPhone: req.primaryPhone,
+    city: req.city ?? null,
+    state: req.state ?? null,
+    pinCode: req.pinCode ?? null,
+    latitude: req.latitude ?? null,
+    longitude: req.longitude ?? null,
+  });
+}
+
+// Mock tenant lifecycle actions (live: PUT /tenants/{id}/suspend | /reactivate, gated
+// platform.tenants.suspend). Each echoes the fresh TenantDetail with the new status +
+// suspended_reason so the confirm flow + chip re-sync are exercisable offline.
+export async function suspendTenantMock(tenantId: string, reason: string, _idempotencyKey: string): Promise<TenantDetail> {
+  const detail = await getTenantMock(tenantId);
+  return TenantDetailSchema.parse({ ...detail, status: 'suspended', suspendedReason: reason });
+}
+
+export async function reactivateTenantMock(tenantId: string, _reason: string | null, _idempotencyKey: string): Promise<TenantDetail> {
+  const detail = await getTenantMock(tenantId);
+  return TenantDetailSchema.parse({ ...detail, status: 'active', suspendedReason: null });
+}
+
+// ── PASSWORD RESET (mock) ──────────────────────────────────────────────────────
+// forgot-password ALWAYS resolves { requested:true } (mirrors the live anti-enumeration
+// contract — never reveals whether the email exists). reset-password "succeeds" for any
+// non-empty token so the public page is demoable offline (the live endpoint 4xxs bad/
+// expired tokens). adminResetUserPassword fabricates a one-time link + expiry so the
+// admin copyable panel is exercisable with the flag off.
+export function forgotPasswordMock(_req: ForgotPasswordRequest): Promise<ForgotPasswordResult> {
+  return delay(ForgotPasswordResultSchema.parse({ requested: true }));
+}
+
+export function resetPasswordMock(req: ResetPasswordRequest): Promise<ResetPasswordResult> {
+  if (!req.token.trim()) {
+    return Promise.reject(new Error('This reset link is invalid or has expired.'));
+  }
+  return delay(ResetPasswordResultSchema.parse({ reset: true }));
+}
+
+export function adminResetUserPasswordMock(_userId: string, _idempotencyKey: string): Promise<AdminResetPasswordResult> {
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1h
+  const token = crypto.randomUUID().replace(/-/g, '');
+  return delay(
+    AdminResetPasswordResultSchema.parse({
+      resetLink: `${window.location.origin}/reset-password?token=${token}`,
+      expiresAt,
+    }),
+  );
+}
+
+// Mock tenant detail (live: GET /tenants/{id} → TenantDetailDto). Augments the matching
+// static list row with placeholder legalName/primaryPhone/state/pinCode so the edit
+// form's pre-fill path is exercisable offline.
+export async function getTenantMock(tenantId: string): Promise<TenantDetail> {
+  const list = await listTenantsMock();
+  const row = list.find((tn) => tn.tenantId === tenantId);
+  const suspended = row?.status === 'suspended';
+  return TenantDetailSchema.parse({
+    tenantId,
+    tenantCode: row?.tenantCode ?? 'MOCK-CODE',
+    displayName: row?.displayName ?? 'Mock Clinic',
+    tenantType: row?.tenantType ?? 'hospital',
+    legalName: `${row?.displayName ?? 'Mock Clinic'} Pvt Ltd`,
+    primaryEmail: row?.primaryEmail ?? 'ops@clinic.in',
+    primaryPhone: '+91 98200 11223',
+    status: row?.status ?? 'active',
+    country: row?.country ?? 'IN',
+    city: row?.city ?? null,
+    state: null,
+    pinCode: null,
+    suspendedReason: suspended ? 'Mock suspension reason' : null,
+    latitude: null,
+    longitude: null,
+  });
 }
 
 // Idempotent replay cache, mirroring the lib/mock withIdem helper.

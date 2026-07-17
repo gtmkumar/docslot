@@ -33,6 +33,35 @@ public interface ITenantRepository
 
     /// <summary>The user's active (non-revoked) role labels within one tenant — display-only for GET /me.</summary>
     Task<IReadOnlyList<UserRoleLabel>> GetRoleLabelsAsync(Guid userId, Guid tenantId, CancellationToken ct);
+
+    /// <summary>Inserts a <c>platform.tenants</c> row (status <c>active</c>; DB defaults fill country/timezone).
+    /// A lat/long pair geo-tags the facility under <c>settings.geo</c> (no dedicated columns yet — the JSONB
+    /// tag is the portable form until a schema migration promotes it). Returns the new tenant_id.
+    /// A duplicate <c>tenant_code</c> surfaces as ConflictException (409).</summary>
+    Task<Guid> CreateAsync(
+        string tenantCode, string legalName, string displayName, string tenantType,
+        string primaryEmail, string primaryPhone, string? city, string? state,
+        string? pinCode, decimal? latitude, decimal? longitude, CancellationToken ct);
+
+    /// <summary>Updates a tenant's mutable attributes (display/legal name, primary contact, city/state/pin_code).
+    /// <c>tenant_code</c>/<c>tenant_type</c> (identity/structure) and <c>status</c> (owned by the suspend path) are
+    /// NEVER touched here. <c>platform.tenants</c> carries no RLS, so a direct parameterised UPDATE on the ambient
+    /// UoW transaction is the sanctioned path (the caller is gated on <c>platform.tenants.update</c>); the
+    /// <c>updated_at</c> stamp is owned by the table's BEFORE UPDATE trigger. A unique-constraint clash surfaces as
+    /// ConflictException (409). Returns false when no LIVE row matched (soft-deleted or concurrently removed).
+    /// A <paramref name="latitude"/>/<paramref name="longitude"/> pair re-tags <c>settings.geo</c> using the SAME
+    /// JSONB shape as CreateAsync (merged into settings, preserving other keys); when either is null the existing
+    /// geo tag is left UNTOUCHED (a contact-only edit never wipes coordinates).</summary>
+    Task<bool> UpdateAsync(
+        Guid tenantId, string displayName, string legalName, string primaryEmail, string primaryPhone,
+        string? city, string? state, string? pinCode, decimal? latitude, decimal? longitude, CancellationToken ct);
+
+    /// <summary>Suspend or reactivate a tenant — the ONLY path that writes <c>status</c> (gated on the DANGEROUS
+    /// <c>platform.tenants.suspend</c>). Sets <c>status</c> and, atomically, <c>suspended_reason</c>: the mandatory
+    /// reason on suspend, cleared (NULL) on reactivate. Direct parameterised UPDATE on the UoW transaction (no RLS on
+    /// platform.tenants). Returns false when no LIVE row matched.</summary>
+    Task<bool> SetStatusAsync(
+        Guid tenantId, string status, string? suspendedReason, CancellationToken ct);
 }
 
 public sealed record UserTenantMembership(Guid TenantId, string TenantCode, string DisplayName, string TenantType, bool IsPrimary);

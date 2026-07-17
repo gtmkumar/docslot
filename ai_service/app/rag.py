@@ -45,20 +45,20 @@ def index_patient(tenant_id: str, patient_id: str, user_id: str | None = None) -
         text = repo.build_chunk_text(row)
         chunks.append((row, text, _sha256(text)))
 
-    # Idempotent: skip chunks already stored (same tenant + source + hash).
+    # Idempotent: skip chunks already stored (same tenant + source + hash). One round
+    # trip for the whole patient instead of probing embedding_exists() per chunk.
+    already_stored = repo.embedding_hashes_for_patient(tenant_id, patient_id)
     to_embed = [
         (row, text, h)
         for (row, text, h) in chunks
-        if not repo.embedding_exists(tenant_id, str(row["history_id"]), h)
+        if (str(row["history_id"]), h) not in already_stored
     ]
 
     indexed = 0
     if to_embed:
         vectors = embedder.embed([t for (_, t, _) in to_embed])
-        for (row, text, h), vec in zip(to_embed, vectors):
-            repo.insert_embedding(
-                tenant_id=tenant_id,
-                patient_id=patient_id,
+        pending = [
+            repo.PendingEmbedding(
                 source_id=str(row["history_id"]),
                 chunk_text=text,
                 chunk_text_hash=h,
@@ -72,9 +72,13 @@ def index_patient(tenant_id: str, patient_id: str, user_id: str | None = None) -
                     "icd10_code": row["icd10_code"],
                     "is_critical": bool(row["is_critical"]),
                 },
-                user_id=user_id,
             )
-            indexed += 1
+            for (row, text, h), vec in zip(to_embed, vectors)
+        ]
+        repo.insert_embeddings_batch(
+            tenant_id=tenant_id, patient_id=patient_id, items=pending, user_id=user_id
+        )
+        indexed = len(pending)
 
     # Tenant-wide document count for the KB registry row.
     total = repo.status_for_tenant(tenant_id)["embeddings"]

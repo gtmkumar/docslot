@@ -5,8 +5,10 @@
 import { create } from 'zustand';
 import type { Booking } from '@/lib/types';
 import type {
+  AdminResetPasswordResult,
   ApiClientSecretResult,
   BreakGlassResourceType,
+  CreateTenantResult,
   CreateWebhookResult,
   ErasureResult,
   InvitationTokenResult,
@@ -45,6 +47,10 @@ export type Panel =
   // `clientSecret`, the token must not survive a refresh (re-mint via resend).
   | { type: 'newInvitation' }
   | { type: 'invitationToken'; result: InvitationTokenResult; email: string }
+  // Admin-initiated password reset reveal (one-time live link). DELIBERATELY NOT
+  // URL-restorable — like `invitationToken`, the credential must not survive a refresh
+  // (re-mint by resetting again). Opened from the manage-user panel; replaces it.
+  | { type: 'adminResetPassword'; result: AdminResetPasswordResult; userName: string }
   | { type: 'manageUser'; userId: string }
   // editUser carries a userId, so it is URL-restorable via ?panel=&id=.
   | { type: 'editUser'; userId: string }
@@ -65,7 +71,14 @@ export type Panel =
   // DELIBERATELY NOT URL-restorable — the secret can't survive a refresh.
   | { type: 'registerClient' }
   | { type: 'manageClient'; clientId: string }
-  | { type: 'clientSecret'; result: ApiClientSecretResult | CreateWebhookResult; kind: 'client' | 'webhook' }
+  | {
+      type: 'clientSecret';
+      result: ApiClientSecretResult | CreateWebhookResult;
+      kind: 'client' | 'webhook';
+      // Why the secret exists — drives the panel title ("registered" vs "rotated" vs
+      // "webhook created"); `kind` alone can't tell a fresh client from a rotation.
+      intent: 'created' | 'rotated';
+    }
   | { type: 'createWebhook' }
   | { type: 'webhookForm'; webhookId: string }
   | { type: 'webhookDeliveries'; webhookId: string }
@@ -140,7 +153,14 @@ export type Panel =
   // Support impersonation (issue #3). Payloadless + URL-addressable: a super_admin
   // opens it to begin acting as a tenant. No PHI/secret payload — the target
   // tenant id is picked inside the panel, never URL-encoded.
-  | { type: 'beginImpersonation' };
+  | { type: 'beginImpersonation' }
+  // Tenant onboarding (platform console). `tenantCreated` carries the ONE-TIME owner
+  // invite token — transient (never URL-synced), like `invitationToken`.
+  | { type: 'newTenant' }
+  | { type: 'tenantCreated'; result: CreateTenantResult }
+  // Tenant management (platform console). Manage/edit a single tenant by id —
+  // URL-addressable (?panel=manageTenant&id=<tenantId>); no PHI/secret payload.
+  | { type: 'manageTenant'; tenantId: string };
 
 interface UIState {
   orgId: string;

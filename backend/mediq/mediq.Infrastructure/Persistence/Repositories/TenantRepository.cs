@@ -1,5 +1,6 @@
 using mediq.Application.Abstractions;
 using mediq.Domain.Platform;
+using mediq.Utilities.Exceptions;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -76,4 +77,137 @@ public sealed class TenantRepository(PlatformDbContext db) : ITenantRepository
     }
 
     private sealed record RoleLabelRow(string RoleKey, string Name);
+
+    /// <summary>
+    /// Onboarding insert — platform.tenants carries no RLS, so a direct parameterised INSERT on the ambient
+    /// UoW transaction is the sanctioned path (the caller is gated on <c>platform.tenants.create</c>). Status
+    /// starts <c>active</c> so the owner can sign in the moment they accept their invitation; country/timezone/
+    /// settings/regulatory_metadata come from the schema defaults.
+    /// </summary>
+    public async Task<Guid> CreateAsync(
+        string tenantCode, string legalName, string displayName, string tenantType,
+        string primaryEmail, string primaryPhone, string? city, string? state,
+        string? pinCode, decimal? latitude, decimal? longitude, CancellationToken ct)
+    {
+        try
+        {
+            // The geo tag lives under settings.geo (JSONB) — platform.tenants has no coordinate
+            // columns yet, and settings is the sanctioned per-tenant config bag. Both-or-neither is
+            // enforced by the validator; the CASE keeps settings '{}' when untagged.
+            var rows = await db.Database.SqlQueryRaw<Guid>(
+                    """
+                    INSERT INTO platform.tenants
+                        (tenant_code, legal_name, display_name, tenant_type, primary_email, primary_phone,
+                         city, state, pin_code, settings, status)
+                    VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8,
+                            CASE WHEN @p9::numeric IS NOT NULL AND @p10::numeric IS NOT NULL
+                                 THEN jsonb_build_object('geo', jsonb_build_object(
+                                          'latitude', @p9::numeric, 'longitude', @p10::numeric,
+                                          'source', 'pincode_lookup', 'tagged_at', now()))
+                                 -- argless jsonb_build_object() = empty object; a literal brace pair
+                                 -- anywhere in this string breaks SqlQueryRaw placeholder parsing.
+                                 ELSE jsonb_build_object() END,
+                            'active')
+                    RETURNING tenant_id AS "Value"
+                    """,
+                    new NpgsqlParameter("@p0", tenantCode),
+                    new NpgsqlParameter("@p1", legalName),
+                    new NpgsqlParameter("@p2", displayName),
+                    new NpgsqlParameter("@p3", tenantType),
+                    new NpgsqlParameter("@p4", primaryEmail),
+                    new NpgsqlParameter("@p5", primaryPhone),
+                    new NpgsqlParameter("@p6", (object?)city ?? DBNull.Value),
+                    new NpgsqlParameter("@p7", (object?)state ?? DBNull.Value),
+                    new NpgsqlParameter("@p8", (object?)pinCode ?? DBNull.Value),
+                    new NpgsqlParameter("@p9", NpgsqlTypes.NpgsqlDbType.Numeric) { Value = (object?)latitude ?? DBNull.Value },
+                    new NpgsqlParameter("@p10", NpgsqlTypes.NpgsqlDbType.Numeric) { Value = (object?)longitude ?? DBNull.Value })
+                .ToListAsync(ct);
+            return rows.First();
+        }
+        catch (PostgresException pg) when (pg.SqlState == "23505")
+        {
+            throw new ConflictException($"A tenant with code '{tenantCode}' already exists.", pg);
+        }
+    }
+
+    /// <summary>
+    /// Edit path — platform.tenants carries no RLS, so a direct parameterised UPDATE on the ambient UoW
+    /// transaction is the sanctioned path (the caller is gated on <c>platform.tenants.update</c>). tenant_code,
+    /// tenant_type AND status are intentionally NOT in the SET list — identity/structure are immutable here and
+    /// status is owned by <see cref="SetStatusAsync"/> (the suspend path). updated_at is left to the
+    /// <c>trg_tenants_updated_at</c> BEFORE UPDATE trigger. The <c>deleted_at IS NULL</c> guard means a
+    /// soft-deleted tenant matches nothing → returns false (the handler already 404s on a prior GetByIdAsync).
+    /// </summary>
+    public async Task<bool> UpdateAsync(
+        Guid tenantId, string displayName, string legalName, string primaryEmail, string primaryPhone,
+        string? city, string? state, string? pinCode, decimal? latitude, decimal? longitude, CancellationToken ct)
+    {
+        try
+        {
+            // Geo re-tag reuses CreateAsync's settings.geo shape, MERGED into the existing settings (|| preserves
+            // other keys). When either coordinate is null the CASE keeps settings unchanged, so a contact-only edit
+            // never wipes an existing geo tag. jsonb_build_object (no literal braces) keeps SqlRaw placeholder
+            // parsing happy — same reason CreateAsync avoids '{}'::jsonb.
+            var affected = await db.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE platform.tenants
+                SET display_name  = @p1,
+                    legal_name    = @p2,
+                    primary_email = @p3,
+                    primary_phone = @p4,
+                    city          = @p5,
+                    state         = @p6,
+                    pin_code      = @p7,
+                    settings      = CASE WHEN @p8::numeric IS NOT NULL AND @p9::numeric IS NOT NULL
+                                         THEN settings || jsonb_build_object('geo', jsonb_build_object(
+                                                  'latitude', @p8::numeric, 'longitude', @p9::numeric,
+                                                  'source', 'pincode_lookup', 'tagged_at', now()))
+                                         ELSE settings END
+                WHERE tenant_id = @p0 AND deleted_at IS NULL
+                """,
+                [
+                    new NpgsqlParameter("@p0", tenantId),
+                    new NpgsqlParameter("@p1", displayName),
+                    new NpgsqlParameter("@p2", legalName),
+                    new NpgsqlParameter("@p3", primaryEmail),
+                    new NpgsqlParameter("@p4", primaryPhone),
+                    new NpgsqlParameter("@p5", (object?)city ?? DBNull.Value),
+                    new NpgsqlParameter("@p6", (object?)state ?? DBNull.Value),
+                    new NpgsqlParameter("@p7", (object?)pinCode ?? DBNull.Value),
+                    new NpgsqlParameter("@p8", NpgsqlTypes.NpgsqlDbType.Numeric) { Value = (object?)latitude ?? DBNull.Value },
+                    new NpgsqlParameter("@p9", NpgsqlTypes.NpgsqlDbType.Numeric) { Value = (object?)longitude ?? DBNull.Value },
+                ],
+                ct);
+            return affected > 0;
+        }
+        catch (PostgresException pg) when (pg.SqlState == "23505")
+        {
+            throw new ConflictException("A tenant with these details already exists.", pg);
+        }
+    }
+
+    /// <summary>
+    /// Suspend / reactivate — the ONLY write path for <c>status</c> (caller gated on the DANGEROUS
+    /// <c>platform.tenants.suspend</c>). Sets status and <c>suspended_reason</c> atomically: the mandatory reason on
+    /// suspend, NULL on reactivate. Direct parameterised UPDATE on the UoW transaction (no RLS on platform.tenants);
+    /// updated_at is left to the trigger. Returns false when no LIVE row matched.
+    /// </summary>
+    public async Task<bool> SetStatusAsync(
+        Guid tenantId, string status, string? suspendedReason, CancellationToken ct)
+    {
+        var affected = await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE platform.tenants
+            SET status           = @p1,
+                suspended_reason = @p2
+            WHERE tenant_id = @p0 AND deleted_at IS NULL
+            """,
+            [
+                new NpgsqlParameter("@p0", tenantId),
+                new NpgsqlParameter("@p1", status),
+                new NpgsqlParameter("@p2", (object?)suspendedReason ?? DBNull.Value),
+            ],
+            ct);
+        return affected > 0;
+    }
 }

@@ -9,6 +9,7 @@ using mediq.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Polly;
 
 namespace mediq.Infrastructure;
 
@@ -43,6 +44,7 @@ public static class InfrastructureRegistration
         services.AddScoped<IRoleAssignmentRepository, RoleAssignmentRepository>();
         services.AddScoped<IImpersonationRepository, ImpersonationRepository>();
         services.AddScoped<IInvitationRepository, Persistence.Repositories.InvitationRepository>();
+        services.AddScoped<IPasswordResetRepository, Persistence.Repositories.PasswordResetRepository>();
 
         // Read-side projections + provisioning.
         services.AddScoped<IUserDirectory, UserDirectory>();
@@ -57,11 +59,13 @@ public static class InfrastructureRegistration
         // Security.
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
         services.AddSingleton<IInvitationTokenFactory, Security.InvitationTokenFactory>();
+        services.AddSingleton<IPasswordResetTokenFactory, Security.PasswordResetTokenFactory>();
         services.AddScoped<ITokenService, JwtTokenService>();
         services.AddScoped<ISessionStore, SessionStore>();
         services.AddScoped<ISessionAdminService, Security.SessionAdminService>();
         services.AddScoped<ILoginAttemptService, LoginAttemptService>();
         AddInvitationNotifier(services, config);
+        AddPasswordResetNotifier(services, config);
         // Geo-IP city resolution for the audit-log + active-session surfaces (issue #94). Offline default:
         // NullGeoIpResolver (no external lookup, city=null). A live provider (MaxMind/ip-api) is config-gated.
         services.AddSingleton<IGeoIpResolver, Security.NullGeoIpResolver>();
@@ -89,8 +93,28 @@ public static class InfrastructureRegistration
         services.AddScoped<IWebhookDeliveryAdminStore, WebhookDeliveryAdminStore>();
         services.AddSingleton<IWebhookSigner, WebhookSigner>();
         services.AddHttpClient("webhooks");
-        services.AddScoped<IWebhookHttpDispatcher, WebhookHttpDispatcher>();
+        // Singleton (not scoped): its per-host circuit-breaker state (WebhookHttpDispatcher) must survive
+        // across worker ticks — a scoped instance would rebuild an empty breaker cache every tick and a
+        // "tripped" host would never actually stay open.
+        services.AddSingleton<IWebhookHttpDispatcher, WebhookHttpDispatcher>();
         services.AddScoped<IWebhookPublisher, WebhookPublisher>();
+
+        // PIN-code reference lookup (address auto-fill + clinic geo-tagging). Two public upstreams:
+        // India Post (authoritative postal directory) + OSM Nominatim (best-effort centroid — its
+        // usage policy requires the identifying User-Agent below). Results cache in-memory for 24h.
+        services.AddMemoryCache();
+        services.AddHttpClient(Geo.PincodeLookupService.IndiaPostClient, c =>
+        {
+            c.BaseAddress = new Uri("https://api.postalpincode.in/");
+            c.Timeout = TimeSpan.FromSeconds(6);
+        });
+        services.AddHttpClient(Geo.PincodeLookupService.NominatimClient, c =>
+        {
+            c.BaseAddress = new Uri("https://nominatim.openstreetmap.org/");
+            c.Timeout = TimeSpan.FromSeconds(6);
+            c.DefaultRequestHeaders.UserAgent.ParseAdd("DocSlot/1.0 (healthcare-saas; contact: ops@docslot.in)");
+        });
+        services.AddScoped<IPincodeLookupService, Geo.PincodeLookupService>();
 
         // Durable transactional INTEGRATION-EVENT OUTBOX (phase-4 seam). WebhookPublisher captures EVERY event
         // into platform_api.integration_event_outbox atomically with the business write (closing the lost-event
@@ -212,12 +236,12 @@ public static class InfrastructureRegistration
                 "http", StringComparison.OrdinalIgnoreCase))
         {
             services.AddHttpContextAccessor();   // the HTTP adapters forward the caller's bearer JWT to the AI service
-            services.AddHttpClient<IAiNoShowClient, Ai.HttpAiNoShowClient>(ConfigureAiHttp);
-            services.AddHttpClient<IAiTriageClient, Ai.HttpAiTriageClient>(ConfigureAiHttp);
+            services.AddHttpClient<IAiNoShowClient, Ai.HttpAiNoShowClient>(ConfigureAiHttp).AddResilienceHandler("ai-service", ConfigureAiResilience);
+            services.AddHttpClient<IAiTriageClient, Ai.HttpAiTriageClient>(ConfigureAiHttp).AddResilienceHandler("ai-service", ConfigureAiResilience);
             // Slice-11 PHI proxies (OCR lab-report extraction + RAG ask). Same seam; the adapters forward the
             // caller JWT + X-Purpose-Of-Use and propagate the AI's 4xx so a gate decision is never masked.
-            services.AddHttpClient<IAiOcrClient, Ai.HttpAiOcrClient>(ConfigureAiHttp);
-            services.AddHttpClient<IAiRagClient, Ai.HttpAiRagClient>(ConfigureAiHttp);
+            services.AddHttpClient<IAiOcrClient, Ai.HttpAiOcrClient>(ConfigureAiHttp).AddResilienceHandler("ai-service", ConfigureAiResilience);
+            services.AddHttpClient<IAiRagClient, Ai.HttpAiRagClient>(ConfigureAiHttp).AddResilienceHandler("ai-service", ConfigureAiResilience);
         }
         else
         {
@@ -231,7 +255,40 @@ public static class InfrastructureRegistration
         {
             var o = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<mediq.Application.Options.AiServiceOptions>>().Value;
             http.BaseAddress = new Uri(o.BaseUrl);
-            http.Timeout = TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds));
+            // Backstop only — the resilience pipeline's own per-attempt timeout below is what actually enforces
+            // this; HttpClient.Timeout stays as a hard ceiling in case the pipeline is ever bypassed.
+            http.Timeout = TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds) + 2);
+        }
+
+        // Bulkhead + circuit breaker applied to each of the 4 AI typed clients (OCR/RAG/Triage/NoShow). Each
+        // gets its OWN pipeline instance (AddResilienceHandler keys the registry by the typed client's name +
+        // this pipeline name), so e.g. a stuck RAG endpoint trips only the RAG breaker — it fast-fails RAG
+        // callers without also degrading OCR/Triage/NoShow, which may be perfectly healthy. Order matters:
+        // concurrency limiter (cheapest, outermost check) → circuit breaker (fails fast without attempting) →
+        // per-attempt timeout (innermost, bounds the actual call). Once a client's breaker is open, every
+        // caller of THAT endpoint fails in milliseconds instead of separately waiting out the full timeout —
+        // which is what used to let one slow AI endpoint pile up in-flight requests/threads indefinitely.
+        static void ConfigureAiResilience(
+            Polly.ResiliencePipelineBuilder<HttpResponseMessage> builder,
+            Microsoft.Extensions.Http.Resilience.ResilienceHandlerContext context)
+        {
+            var o = context.ServiceProvider
+                .GetRequiredService<Microsoft.Extensions.Options.IOptions<mediq.Application.Options.AiServiceOptions>>().Value;
+
+            builder
+                .AddConcurrencyLimiter(Math.Max(1, o.MaxConcurrentRequests), Math.Max(0, o.MaxQueuedRequests))
+                .AddCircuitBreaker(new Polly.CircuitBreaker.CircuitBreakerStrategyOptions<HttpResponseMessage>
+                {
+                    FailureRatio = o.CircuitBreakerFailureRatio,
+                    MinimumThroughput = Math.Max(2, o.CircuitBreakerMinimumThroughput),
+                    SamplingDuration = TimeSpan.FromSeconds(Math.Max(1, o.CircuitBreakerSamplingSeconds)),
+                    BreakDuration = TimeSpan.FromSeconds(Math.Max(1, o.CircuitBreakerBreakSeconds)),
+                    ShouldHandle = new Polly.PredicateBuilder<HttpResponseMessage>()
+                        .Handle<HttpRequestException>()
+                        .Handle<Polly.Timeout.TimeoutRejectedException>()
+                        .HandleResult(r => (int)r.StatusCode >= 500),
+                })
+                .AddTimeout(TimeSpan.FromSeconds(Math.Max(1, o.TimeoutSeconds)));
         }
 
         // Proactive no-show prediction backfill (slice 16): a config-gated worker (NoShowPredictionWorker,
@@ -322,5 +379,22 @@ public static class InfrastructureRegistration
         // offline stub. When one is built, branch here on `provider` exactly like AddWhatsAppSender.
         _ = provider;
         services.AddScoped<IInvitationNotifier, Security.StubInvitationNotifier>();
+    }
+
+    /// <summary>
+    /// Selects the password-reset notifier from config, mirroring <see cref="AddInvitationNotifier"/>. With no
+    /// live provider configured (dev/test DEFAULT) the offline <see cref="Security.StubPasswordResetNotifier"/>
+    /// is wired — it RECORDS the intended send but performs NO live delivery, so the reset-send path runs
+    /// end-to-end without an email/WhatsApp credential. A real transport is wired only when
+    /// <c>PasswordReset:NotifierProvider</c> names one AND its secret is set.
+    /// </summary>
+    private static void AddPasswordResetNotifier(IServiceCollection services, IConfiguration config)
+    {
+        var provider = config["PasswordReset:NotifierProvider"];
+
+        // No live email/WhatsApp reset transport ships yet: every configured value falls back to the offline
+        // stub. When one is built, branch here on `provider` exactly like AddWhatsAppSender.
+        _ = provider;
+        services.AddScoped<IPasswordResetNotifier, Security.StubPasswordResetNotifier>();
     }
 }

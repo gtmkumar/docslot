@@ -19,8 +19,15 @@ import {
   completeBookingMock,
   getBookingMock,
   listTenantsMock,
+  getTenantMock,
+  updateTenantMock,
+  suspendTenantMock,
+  reactivateTenantMock,
   noShowBookingMock,
   rescheduleBookingMock,
+  forgotPasswordMock,
+  resetPasswordMock,
+  adminResetUserPasswordMock,
 } from './mutations-mock';
 import type { Analytics } from '@/lib/mock/contracts';
 
@@ -36,6 +43,9 @@ export const getPermissions = USE_REAL_API ? real.getPermissions : mock.getPermi
 // TENANTS — begin-impersonation target picker. Live: GET /tenants (super_admin,
 // `platform.tenants.read`). Mock: a small seed list so the selector is usable.
 export const listTenants = USE_REAL_API ? real.listTenants : listTenantsMock;
+// TENANT DETAIL — GET /tenants/{id} → full editable shape (superset of the list row)
+// so the manage/edit form pre-fills every field. Mock augments the static seed.
+export const getTenant = USE_REAL_API ? real.getTenant : getTenantMock;
 
 // MENUS + BADGES (backend-driven nav)
 export const getMenus = USE_REAL_API ? real.getMenus : mock.getMenus;
@@ -231,6 +241,30 @@ export const listInvitations = USE_REAL_API ? real.listInvitations : mock.listIn
 export const createInvitation = USE_REAL_API ? real.createInvitation : mock.createInvitation;
 export const resendInvitation = USE_REAL_API ? real.resendInvitation : mock.resendInvitation;
 export const revokeInvitation = USE_REAL_API ? real.revokeInvitation : mock.revokeInvitation;
+
+// PLATFORM CONSOLE — tenant onboarding (create clinic + owner invite) and the
+// PUBLIC invitation redemption behind /accept-invite.
+export const createTenant = USE_REAL_API ? real.createTenant : mock.createTenant;
+// TENANT EDIT — platform console. Live: PUT /tenants/{id} (super_admin,
+// `platform.tenants.update`). Mock echoes the merged row so the edit flow is demoable.
+export const updateTenant = USE_REAL_API ? real.updateTenant : updateTenantMock;
+// TENANT LIFECYCLE — DANGEROUS suspend/reactivate (gated `platform.tenants.suspend`).
+// Live: PUT /tenants/{id}/suspend (reason mandatory) | /reactivate (reason cleared);
+// both return the fresh TenantDetailDto. Mocks echo the new status + suspended_reason.
+export const suspendTenant = USE_REAL_API ? real.suspendTenant : suspendTenantMock;
+export const reactivateTenant = USE_REAL_API ? real.reactivateTenant : reactivateTenantMock;
+export const acceptInvitation = USE_REAL_API ? real.acceptInvitation : mock.acceptInvitation;
+export const lookupPincode = USE_REAL_API ? real.lookupPincode : mock.lookupPincode;
+
+// PASSWORD RESET — self-service (PUBLIC: POST /auth/forgot-password | /auth/reset-password;
+// the email/token IS the authz, no JWT) + admin-initiated (authed, gated tenant.users.update:
+// POST /tenants/{id}/users/{userId}/reset-password → one-time resetLink). forgot ALWAYS
+// resolves { requested:true } (anti-enumeration); reset consumes a one-time token; the admin
+// action returns a one-time live link the admin copies (delivery is offline). Mocks make each
+// exercisable flag-off.
+export const forgotPassword = USE_REAL_API ? real.forgotPassword : forgotPasswordMock;
+export const resetPassword = USE_REAL_API ? real.resetPassword : resetPasswordMock;
+export const adminResetUserPassword = USE_REAL_API ? real.adminResetUserPassword : adminResetUserPasswordMock;
 
 // ── IAM / ROLES & PERMISSIONS (Slice 2) ───────────────────────────────────────
 // Privilege-matrix grid + duplicate + effective-access viewer. READS pass through

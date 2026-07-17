@@ -32,10 +32,12 @@ import {
 } from '@/lib/backend';
 import type { ApiRequestLogFilter } from '@/lib/mock';
 import type {
+  ApiClient,
   CreateWebhookRequest,
   RegisterApiClientRequest,
   SetClientRateLimitsRequest,
   UpdateWebhookRequest,
+  WebhookSubscription,
 } from '@/lib/mock/contracts';
 
 export const apiClientsQueryKey = ['developers', 'clients'] as const;
@@ -96,6 +98,10 @@ export function useRotateSecret() {
   });
 }
 
+/** Approve / suspend / reactivate a client — OPTIMISTIC: the cached row's
+ *  isActive/isVerified (and the derived status chip) flip instantly, roll back on
+ *  error (the caller toasts the revert), then reconcile on settle via invalidate
+ *  (server state wins). */
 export function useSetClientStatus() {
   const qc = useQueryClient();
   return useMutation({
@@ -110,7 +116,29 @@ export function useSetClientStatus() {
       isVerified: boolean;
       idempotencyKey: string;
     }) => setClientStatus(clientId, { isActive, isVerified }, idempotencyKey),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: apiClientsQueryKey }),
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: apiClientsQueryKey });
+      const previous = qc.getQueryData<ApiClient[]>(apiClientsQueryKey);
+      qc.setQueryData<ApiClient[]>(apiClientsQueryKey, (old) =>
+        old?.map((c) =>
+          c.clientId === vars.clientId
+            ? {
+                ...c,
+                isActive: vars.isActive,
+                isVerified: vars.isVerified,
+                // Same derivation the server uses: inactive → suspended,
+                // verified+active → approved, unverified → pending.
+                status: !vars.isActive ? 'suspended' : vars.isVerified ? 'approved' : 'pending',
+              }
+            : c,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_e, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(apiClientsQueryKey, ctx.previous);
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: apiClientsQueryKey }),
   });
 }
 
@@ -157,6 +185,9 @@ export function useCreateWebhook() {
   });
 }
 
+/** Edit a webhook (name / URL / events / active) — OPTIMISTIC: the cached row
+ *  reflects the edit instantly (the panel closes without waiting), rolls back on
+ *  error (the caller toasts the revert), then reconciles on settle via invalidate. */
 export function useUpdateWebhook() {
   const qc = useQueryClient();
   return useMutation({
@@ -169,7 +200,29 @@ export function useUpdateWebhook() {
       req: UpdateWebhookRequest;
       idempotencyKey: string;
     }) => updateWebhook(webhookId, req, idempotencyKey),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: webhooksQueryKey }),
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: webhooksQueryKey });
+      const previous = qc.getQueryData<WebhookSubscription[]>(webhooksQueryKey);
+      qc.setQueryData<WebhookSubscription[]>(webhooksQueryKey, (old) =>
+        old?.map((w) =>
+          w.webhookId === vars.webhookId
+            ? {
+                ...w,
+                // PATCH semantics: only the supplied (non-null) fields change.
+                ...(vars.req.name != null ? { name: vars.req.name } : null),
+                ...(vars.req.url != null ? { url: vars.req.url } : null),
+                ...(vars.req.eventTypes != null ? { eventTypes: vars.req.eventTypes } : null),
+                ...(vars.req.isActive != null ? { isActive: vars.req.isActive } : null),
+              }
+            : w,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_e, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(webhooksQueryKey, ctx.previous);
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: webhooksQueryKey }),
   });
 }
 

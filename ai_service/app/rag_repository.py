@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -19,6 +20,10 @@ from .db import get_connection
 from .encryption import EncryptionContext, FieldEncryptor
 
 logger = logging.getLogger("ai_service.rag_repository")
+
+# Keeps each INSERT's parameter count (12 cols/row) small and bounds how many
+# large BYTEA vector payloads go into one statement, even for an unusually long history.
+_EMBEDDING_INSERT_CHUNK_SIZE = 200
 
 MEDICAL_HISTORY_READ_PERMISSION = "docslot.medical_history.read"
 # PHI written by the RAG path carries the 'medical_history' data_class (it is
@@ -133,6 +138,25 @@ def embedding_exists(tenant_id: str, source_id: str, chunk_text_hash: str) -> bo
         return cur.fetchone() is not None
 
 
+def embedding_hashes_for_patient(tenant_id: str, patient_id: str) -> set[tuple[str, str]]:
+    """All (source_id, chunk_text_hash) pairs already stored for this tenant + patient's
+    patient_medical_history embeddings, in ONE round trip. index_patient() indexes every
+    chunk of one patient in a single call, so this replaces probing embedding_exists()
+    once per chunk with a single existence set the caller filters against locally."""
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT source_id, chunk_text_hash FROM ai.embeddings
+            WHERE tenant_id = %(tenant_id)s
+              AND patient_id = %(patient_id)s
+              AND source_type = 'patient_medical_history'
+              AND deleted_at IS NULL
+            """,
+            {"tenant_id": tenant_id, "patient_id": patient_id},
+        )
+        return {(str(r["source_id"]), r["chunk_text_hash"]) for r in cur.fetchall()}
+
+
 def insert_embedding(
     *,
     tenant_id: str,
@@ -191,6 +215,91 @@ def insert_embedding(
                     "key_id": key_id,
                 },
             )
+
+
+@dataclass(frozen=True)
+class PendingEmbedding:
+    """One not-yet-stored chunk, ready to encrypt + insert as part of a batch."""
+
+    source_id: str
+    chunk_text: str
+    chunk_text_hash: str
+    embedding_model: str
+    embedding_dimensions: int
+    vector: np.ndarray
+    metadata: dict
+
+
+def insert_embeddings_batch(
+    *,
+    tenant_id: str,
+    patient_id: str,
+    items: list[PendingEmbedding],
+    user_id: str | None = None,
+) -> None:
+    """Insert many ai.embeddings rows for ONE patient in a handful of round trips
+    instead of one INSERT per chunk (index_patient() can write dozens of rows for a
+    patient with a long history or a freshly digitized paper import).
+
+    Encryption + the forensic key_usage_log write STAY per-row (see FieldEncryptor):
+    each chunk's active-key resolution and usage-log entry must be individually
+    auditable, so only the resulting ai.embeddings write is batched into chunked
+    multi-row INSERTs — on the SAME connection/transaction as the per-row encrypt
+    calls that produced them, so the whole patient's batch commits or rolls back
+    together (previously each row opened its own connection/transaction).
+    """
+    if not items:
+        return
+    with get_connection() as conn:
+        enc = FieldEncryptor(conn, _enc_ctx(tenant_id, patient_id, user_id))
+        rows: list[dict] = []
+        for item in items:
+            raw_vec = item.vector.astype("<f4").tobytes()
+            meta = dict(item.metadata)
+            title = meta.pop("title", None)
+            chunk_payload, key_id = enc.encrypt_text(item.chunk_text)
+            vec_payload, _ = enc.encrypt_blob(raw_vec)
+            if title:
+                meta["title_enc"], _ = enc.encrypt_text(title)
+            rows.append(
+                {
+                    "source_id": item.source_id,
+                    "chunk_text": chunk_payload,
+                    "hash": item.chunk_text_hash,
+                    "model": item.embedding_model,
+                    "dims": item.embedding_dimensions,
+                    "vector": vec_payload.encode("ascii"),
+                    "metadata": json.dumps(meta),
+                    "key_id": key_id,
+                }
+            )
+
+        with conn.cursor() as cur:
+            for start in range(0, len(rows), _EMBEDDING_INSERT_CHUNK_SIZE):
+                chunk = rows[start : start + _EMBEDDING_INSERT_CHUNK_SIZE]
+                placeholders: list[str] = []
+                params: dict[str, object] = {"tenant_id": tenant_id, "patient_id": patient_id}
+                for i, row in enumerate(chunk):
+                    placeholders.append(
+                        f"(%(tenant_id)s, 'patient_medical_history', %(source_id_{i})s, 0, "
+                        f"%(chunk_text_{i})s, %(hash_{i})s, %(model_{i})s, %(dims_{i})s, "
+                        f"%(vector_{i})s, %(metadata_{i})s, %(patient_id)s, %(key_id_{i})s)"
+                    )
+                    params[f"source_id_{i}"] = row["source_id"]
+                    params[f"chunk_text_{i}"] = row["chunk_text"]
+                    params[f"hash_{i}"] = row["hash"]
+                    params[f"model_{i}"] = row["model"]
+                    params[f"dims_{i}"] = row["dims"]
+                    params[f"vector_{i}"] = row["vector"]
+                    params[f"metadata_{i}"] = row["metadata"]
+                    params[f"key_id_{i}"] = row["key_id"]
+                sql = (
+                    "INSERT INTO ai.embeddings (tenant_id, source_type, source_id, chunk_index, "
+                    "chunk_text, chunk_text_hash, embedding_model, embedding_dimensions, "
+                    "embedding_vector, metadata, patient_id, encryption_key_id) VALUES "
+                    + ", ".join(placeholders)
+                )
+                cur.execute(sql, params)
 
 
 def fetch_patient_embeddings(

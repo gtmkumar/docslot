@@ -28,4 +28,27 @@ public sealed class WebhookDeliveryOptions
 
     /// <summary>Consecutive failures after which a subscription is auto-disabled (stops further delivery attempts).</summary>
     public int AutoDisableThreshold { get; set; } = 20;
+
+    // --- Resilience (circuit breaker + bulkhead). Subscriber URLs are arbitrary third-party endpoints
+    // belonging to many different tenants — one dead/slow subscriber must never stall delivery to everyone
+    // else's healthy subscriptions in the same batch.
+
+    /// <summary>Max deliveries processed concurrently within one drain tick (overall bulkhead for this batch).</summary>
+    public int MaxDegreeOfParallelism { get; set; } = 8;
+
+    /// <summary>Max concurrent in-flight deliveries to any ONE destination host (per-host bulkhead) —
+    /// independent of MaxDegreeOfParallelism, so one host can't consume the whole batch's concurrency budget.</summary>
+    public int PerHostMaxConcurrent { get; set; } = 3;
+
+    /// <summary>Fraction of attempts to a given host, within the sampling window, that must fail to trip that host's breaker.</summary>
+    public double PerHostCircuitBreakerFailureRatio { get; set; } = 0.5;
+
+    /// <summary>Minimum attempts to a given host in the window before its failure ratio is evaluated.</summary>
+    public int PerHostCircuitBreakerMinimumThroughput { get; set; } = 4;
+
+    /// <summary>Rolling window (seconds) a host's failure ratio is evaluated over.</summary>
+    public int PerHostCircuitBreakerSamplingSeconds { get; set; } = 60;
+
+    /// <summary>How long (seconds) a host's breaker stays open — fast-failing every delivery to it — before probing recovery.</summary>
+    public int PerHostCircuitBreakerBreakSeconds { get; set; } = 30;
 }

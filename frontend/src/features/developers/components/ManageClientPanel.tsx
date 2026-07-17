@@ -16,6 +16,7 @@ import { TextInput, labelClass } from '@/components/ui/Field';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { dateTime, shortDate } from '@/lib/format';
 import { idempotencyKey } from '@/lib/api-client';
+import { toUserError } from '@/lib/backend';
 import { useUI } from '@/stores/ui';
 import {
   useApiClients,
@@ -70,29 +71,36 @@ function DetailsSection({
   const rotate = useRotateSecret();
   const openPanel = useUI((s) => s.openPanel);
 
+  // Status actions are OPTIMISTIC: the badge + action cluster flip instantly (the
+  // hook patches the cached row); on failure the row snaps back and we toast the
+  // revert so the user isn't misled.
+  const onRevert = (e: unknown) => toast.error(t('common.reverted', { error: toUserError(e) }));
   const onApprove = () => {
     setStatus.mutate(
       { clientId: client.clientId, isActive: true, isVerified: true, idempotencyKey: idempotencyKey() },
-      { onSuccess: () => toast.success(t('developers.manage.approved')) },
+      { onError: onRevert },
     );
+    toast.success(t('developers.manage.approved'));
   };
   const onSuspend = () => {
     setStatus.mutate(
       { clientId: client.clientId, isActive: false, isVerified: client.isVerified, idempotencyKey: idempotencyKey() },
-      { onSuccess: () => toast(t('developers.manage.suspended')) },
+      { onError: onRevert },
     );
+    toast(t('developers.manage.suspended'));
   };
   const onReactivate = () => {
     setStatus.mutate(
       { clientId: client.clientId, isActive: true, isVerified: client.isVerified, idempotencyKey: idempotencyKey() },
-      { onSuccess: () => toast.success(t('developers.manage.reactivated')) },
+      { onError: onRevert },
     );
+    toast.success(t('developers.manage.reactivated'));
   };
 
   const onRotate = async () => {
     const result = await rotate.mutateAsync({ clientId: client.clientId, idempotencyKey: idempotencyKey() });
     // Hand the one-time secret straight to the reveal panel (never cached).
-    openPanel({ type: 'clientSecret', result, kind: 'client' });
+    openPanel({ type: 'clientSecret', result, kind: 'client', intent: 'rotated' });
   };
 
   const rows: { label: string; value: string; mono?: boolean }[] = [

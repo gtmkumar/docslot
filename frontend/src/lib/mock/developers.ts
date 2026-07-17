@@ -47,10 +47,11 @@ function withIdem<T>(key: string, compute: () => T): Promise<T> {
   return delay(result);
 }
 
-/** Derive the UI status from the DB's is_active/is_verified pair. */
+/** Derive the UI status from the DB's is_active/is_verified pair. Never-approved wins
+ *  over inactive: a fresh client is "pending approval", not "suspended". */
 function statusOf(isActive: boolean, isVerified: boolean): ApiClientStatus {
-  if (!isActive) return 'suspended';
   if (!isVerified) return 'pending';
+  if (!isActive) return 'suspended';
   return 'approved';
 }
 
@@ -338,9 +339,16 @@ export function setClientStatus(
   next: { isActive: boolean; isVerified: boolean },
   idempotencyKey: string,
 ): Promise<ApiClientMutationResult> {
-  return withIdem(idempotencyKey, () =>
-    ApiClientMutationResultSchema.parse({ clientId, status: statusOf(next.isActive, next.isVerified) }),
-  );
+  return withIdem(idempotencyKey, () => {
+    // Persist to the seed like the live endpoint would — the post-mutation list
+    // refetch must reflect the change (otherwise the reconcile silently undoes it).
+    const client = CLIENTS.find((c) => c.clientId === clientId);
+    if (client) {
+      client.isActive = next.isActive;
+      client.isVerified = next.isVerified;
+    }
+    return ApiClientMutationResultSchema.parse({ clientId, status: statusOf(next.isActive, next.isVerified) });
+  });
 }
 
 export function setClientRateLimits(
@@ -383,10 +391,21 @@ export function createWebhook(req: CreateWebhookRequest, idempotencyKey: string)
 
 export function updateWebhook(
   webhookId: string,
-  _req: UpdateWebhookRequest,
+  req: UpdateWebhookRequest,
   idempotencyKey: string,
 ): Promise<{ webhookId: string }> {
-  return withIdem(idempotencyKey, () => ({ webhookId }));
+  return withIdem(idempotencyKey, () => {
+    // Persist the PATCHed fields to the seed like the live endpoint would — the
+    // post-mutation list refetch must reflect the edit.
+    const webhook = WEBHOOKS.find((w) => w.webhookId === webhookId);
+    if (webhook) {
+      if (req.name != null) webhook.name = req.name;
+      if (req.url != null) webhook.url = req.url;
+      if (req.eventTypes != null) webhook.eventTypes = req.eventTypes;
+      if (req.isActive != null) webhook.isActive = req.isActive;
+    }
+    return { webhookId };
+  });
 }
 
 export function retryWebhookDelivery(deliveryId: string, idempotencyKey: string): Promise<WebhookDelivery> {

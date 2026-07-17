@@ -14,8 +14,8 @@ export const agentPanelQueryKey = ['dashboard', 'agent'] as const;
 export const departmentLoadQueryKey = ['dashboard', 'departmentLoad'] as const;
 export const floorDoctorsQueryKey = ['dashboard', 'floor'] as const;
 
-export function useDashboardSummary() {
-  return useQuery({ queryKey: dashboardSummaryQueryKey, queryFn: getDashboardSummary });
+export function useDashboardSummary(enabled = true) {
+  return useQuery({ queryKey: dashboardSummaryQueryKey, queryFn: getDashboardSummary, enabled });
 }
 
 export function useAgentPanel() {

@@ -521,6 +521,31 @@ export const TenantListItemSchema = z.object({
 });
 export type TenantListItem = z.infer<typeof TenantListItemSchema>;
 
+/** `GET /api/v1/tenants/{tenantId}` row. Mirrors TenantDetailDto (gated
+ *  `platform.tenants.read`) — a SUPERSET of the list DTO: adds legalName, primaryPhone,
+ *  state, pinCode and suspendedReason so the manage/edit form pre-fills every field.
+ *  tenantCode + tenantType are immutable display-only. */
+export const TenantDetailSchema = z.object({
+  tenantId: z.string(),
+  tenantCode: z.string(),
+  displayName: z.string(),
+  tenantType: z.string(),
+  legalName: z.string(),
+  primaryEmail: z.string(),
+  primaryPhone: z.string(),
+  status: z.string(),
+  country: z.string(),
+  city: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  pinCode: z.string().nullable().optional(),
+  suspendedReason: z.string().nullable().optional(),
+  // Stored geo centroid (settings.geo) — null when the clinic has no geo tag. Lets the
+  // edit panel show the current geo + keep it unless a PIN lookup changes it.
+  latitude: z.number().nullable().optional(),
+  longitude: z.number().nullable().optional(),
+});
+export type TenantDetail = z.infer<typeof TenantDetailSchema>;
+
 /** `POST /api/v1/auth/impersonation/begin` body. Mirrors BeginImpersonationRequest. */
 export const BeginImpersonationRequestSchema = z.object({
   targetTenantId: z.string(),
@@ -1588,6 +1613,144 @@ export const CreateInvitationRequestSchema = z.object({
   roleId: z.string().nullable().optional(),
 });
 export type CreateInvitationRequest = z.infer<typeof CreateInvitationRequestSchema>;
+
+/** `POST /api/v1/tenants` body. Mirrors CreateTenantRequest — tenant onboarding from
+ *  the platform console (gated `platform.tenants.create`). `adminEmail` is the initial
+ *  Tenant Owner; no password crosses the wire — the owner sets their own on accept. */
+export const CreateTenantRequestSchema = z.object({
+  tenantCode: z.string(),
+  legalName: z.string(),
+  displayName: z.string(),
+  tenantType: z.string(),
+  primaryEmail: z.string(),
+  primaryPhone: z.string(),
+  city: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  pinCode: z.string().nullable().optional(),
+  latitude: z.number().nullable().optional(),
+  longitude: z.number().nullable().optional(),
+  adminEmail: z.string(),
+});
+export type CreateTenantRequest = z.infer<typeof CreateTenantRequestSchema>;
+
+/** `PUT /api/v1/tenants/{tenantId}` body. Mirrors UpdateTenantRequest — platform-console
+ *  tenant edit (gated `platform.tenants.update`). Contact/display fields ONLY.
+ *  `tenantCode` and `tenantType` are IMMUTABLE (they scope menus + billing) and are NOT
+ *  part of the payload. Lifecycle `status` is deliberately NOT here — suspend/reactivate
+ *  is a separate, more-privileged action (the /suspend + /reactivate endpoints) so a routine contact
+ *  edit can never flip a clinic's status. The endpoint returns the updated TenantDto. */
+export const UpdateTenantRequestSchema = z.object({
+  displayName: z.string(),
+  legalName: z.string(),
+  primaryEmail: z.string(),
+  primaryPhone: z.string(),
+  city: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  pinCode: z.string().nullable().optional(),
+  // Geo centroid (settings.geo) — typically captured from the PIN-code lookup, matching
+  // CreateTenantRequest. Null clears the tag.
+  latitude: z.number().nullable().optional(),
+  longitude: z.number().nullable().optional(),
+});
+export type UpdateTenantRequest = z.infer<typeof UpdateTenantRequestSchema>;
+
+/** Body for the tenant lifecycle actions — `PUT /api/v1/tenants/{tenantId}/suspend` and
+ *  `.../reactivate` (both gated `platform.tenants.suspend`, distinct from the edit perm).
+ *  Mirrors SetTenantStatusReasonRequest. `reason` is MANDATORY on SUSPEND (backend 422s
+ *  without; the UI enforces zod .min(1)) and persisted to tenants.suspended_reason;
+ *  IGNORED on reactivate (which clears it). Both endpoints return the fresh TenantDetail. */
+export const TenantStatusReasonRequestSchema = z.object({
+  reason: z.string().nullable().optional(),
+});
+export type TenantStatusReasonRequest = z.infer<typeof TenantStatusReasonRequestSchema>;
+
+/** `GET /api/v1/geo/pincode/{pin}` — India PIN-code reference lookup. `areas` are the
+ *  post-office localities inside the code; lat/long are the code's approximate centroid
+ *  (null when only the postal directory answered — a lookup is useful without them). */
+export const PincodeLookupSchema = z.object({
+  pinCode: z.string(),
+  state: z.string(),
+  district: z.string(),
+  areas: z.array(z.string()),
+  latitude: z.number().nullable(),
+  longitude: z.number().nullable(),
+});
+export type PincodeLookup = z.infer<typeof PincodeLookupSchema>;
+
+/** `POST /api/v1/tenants` result. Mirrors CreateTenantResult. `inviteToken` is the
+ *  ONE-TIME plaintext owner-invitation token — surfaced exactly once, never re-fetchable
+ *  (only its hash is persisted; the response is never idempotency-cached). */
+export const CreateTenantResultSchema = z.object({
+  tenantId: z.string(),
+  tenantCode: z.string(),
+  displayName: z.string(),
+  invitationId: z.string(),
+  inviteToken: z.string(),
+  inviteExpiresAt: z.string(),
+  adminEmail: z.string(),
+});
+export type CreateTenantResult = z.infer<typeof CreateTenantResultSchema>;
+
+/** `POST /api/v1/invitations/accept` body. Mirrors AcceptInvitationRequest — the token
+ *  IS the authorization (no JWT); the invitee sets their own displayName + password. */
+export const AcceptInvitationRequestSchema = z.object({
+  token: z.string(),
+  displayName: z.string(),
+  password: z.string(),
+});
+export type AcceptInvitationRequest = z.infer<typeof AcceptInvitationRequestSchema>;
+
+/** `POST /api/v1/invitations/accept` result. Mirrors AcceptInvitationResult. */
+export const AcceptInvitationResultSchema = z.object({
+  userId: z.string(),
+  tenantId: z.string(),
+  alreadyExisted: z.boolean(),
+});
+export type AcceptInvitationResult = z.infer<typeof AcceptInvitationResultSchema>;
+
+// ── PASSWORD RESET ─────────────────────────────────────────────────────────────
+// Self-service forgot/reset + admin-initiated reset. The self-service pair is PUBLIC
+// (the email/token IS the authorization — no JWT). ANTI-ENUMERATION: forgot-password
+// ALWAYS resolves 200 { requested:true } regardless of whether the email exists, so
+// the UI must show one generic confirmation either way. reset-password consumes a
+// one-time token (invalid/expired/used → the same generic 4xx). The admin action is
+// authed + gated tenant.users.update and returns a ONE-TIME live resetLink (email
+// delivery is offline, so the admin copies the link) — never persisted, never cached.
+
+/** `POST /api/v1/auth/forgot-password` body. Mirrors ForgotPasswordRequest. */
+export const ForgotPasswordRequestSchema = z.object({
+  email: z.string(),
+});
+export type ForgotPasswordRequest = z.infer<typeof ForgotPasswordRequestSchema>;
+
+/** `POST /api/v1/auth/forgot-password` result. ALWAYS { requested:true } (anti-enumeration). */
+export const ForgotPasswordResultSchema = z.object({
+  requested: z.boolean(),
+});
+export type ForgotPasswordResult = z.infer<typeof ForgotPasswordResultSchema>;
+
+/** `POST /api/v1/auth/reset-password` body. Mirrors ResetPasswordRequest — the token
+ *  IS the authorization (no JWT); the user sets their own newPassword. Single-use. */
+export const ResetPasswordRequestSchema = z.object({
+  token: z.string(),
+  newPassword: z.string(),
+});
+export type ResetPasswordRequest = z.infer<typeof ResetPasswordRequestSchema>;
+
+/** `POST /api/v1/auth/reset-password` result. Mirrors ResetPasswordResult. */
+export const ResetPasswordResultSchema = z.object({
+  reset: z.boolean(),
+});
+export type ResetPasswordResult = z.infer<typeof ResetPasswordResultSchema>;
+
+/** `POST /api/v1/tenants/{id}/users/{userId}/reset-password` result. Mirrors
+ *  AdminResetPasswordResult. `resetLink` is the ONE-TIME live credential surfaced
+ *  exactly once for hand-off (delivery is offline); never persisted or re-fetchable. */
+export const AdminResetPasswordResultSchema = z.object({
+  resetLink: z.string(),
+  expiresAt: z.string(),
+});
+export type AdminResetPasswordResult = z.infer<typeof AdminResetPasswordResultSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLINICAL PHI (Slice 03b) — mirrors mediq.SharedDataModel/Docslot/Clinical

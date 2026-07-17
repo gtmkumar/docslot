@@ -34,6 +34,7 @@ const InviteUserPanel = lazy(() => import('@/features/team/components/InviteUser
 const BulkImportUsersPanel = lazy(() => import('@/features/team/components/BulkImportUsersPanel').then((m) => ({ default: m.BulkImportUsersPanel })));
 const NewInvitationPanel = lazy(() => import('@/features/team/components/NewInvitationPanel').then((m) => ({ default: m.NewInvitationPanel })));
 const InvitationTokenPanel = lazy(() => import('@/features/team/components/InvitationTokenPanel').then((m) => ({ default: m.InvitationTokenPanel })));
+const AdminResetPasswordPanel = lazy(() => import('@/features/team/components/AdminResetPasswordPanel').then((m) => ({ default: m.AdminResetPasswordPanel })));
 const ManageUserPanel = lazy(() => import('@/features/team/components/ManageUserPanel').then((m) => ({ default: m.ManageUserPanel })));
 const EditUserPanel = lazy(() => import('@/features/team/components/EditUserPanel').then((m) => ({ default: m.EditUserPanel })));
 const RoleViewPanel = lazy(() => import('@/features/team/components/RoleViewPanel').then((m) => ({ default: m.RoleViewPanel })));
@@ -73,6 +74,9 @@ const ResolveDisputePanel = lazy(() => import('@/features/commission/components/
 const GenerateLinkPanel = lazy(() => import('@/features/portal/components/GenerateLinkPanel').then((m) => ({ default: m.GenerateLinkPanel })));
 const BookOnBehalfPanel = lazy(() => import('@/features/portal/components/BookOnBehalfPanel').then((m) => ({ default: m.BookOnBehalfPanel })));
 const BeginImpersonationPanel = lazy(() => import('@/features/impersonation/components/BeginImpersonationPanel').then((m) => ({ default: m.BeginImpersonationPanel })));
+const NewTenantPanel = lazy(() => import('@/features/tenants/components/NewTenantPanel').then((m) => ({ default: m.NewTenantPanel })));
+const TenantCreatedPanel = lazy(() => import('@/features/tenants/components/TenantCreatedPanel').then((m) => ({ default: m.TenantCreatedPanel })));
+const ManageTenantPanel = lazy(() => import('@/features/tenants/components/ManageTenantPanel').then((m) => ({ default: m.ManageTenantPanel })));
 import { BOOKINGS } from '@/lib/data';
 import { useUI, type Panel } from '@/stores/ui';
 
@@ -86,6 +90,8 @@ type PanelType = Panel['type'];
 type TransientPanelType =
   | 'clientSecret'
   | 'invitationToken'
+  | 'adminResetPassword'
+  | 'tenantCreated'
   | 'deletionCertificate'
   | 'prescriptionDetail'
   | 'labReportDetail'
@@ -102,7 +108,7 @@ type TransientPanelType =
 /** URL-addressable panel types. */
 type UrlPanelType = Exclude<PanelType, TransientPanelType>;
 const TRANSIENT_SET = new Set<PanelType>([
-  'clientSecret', 'invitationToken', 'deletionCertificate',
+  'clientSecret', 'invitationToken', 'adminResetPassword', 'tenantCreated', 'deletionCertificate',
   'prescriptionDetail', 'labReportDetail', 'uploadReport', 'abdmDetail',
   // Medical-history create/edit + import + attachment viewer + the clinical
   // break-glass carry PHI and/or a declared purpose-of-use — never URL-encoded or
@@ -124,7 +130,7 @@ const PAYLOADLESS: PanelType[] = [
   'exportData', 'reportBreach', 'breakGlass',
   'registerBroker', 'createCommissionRule', 'createCampaign',
   'generateLink', 'bookOnBehalf',
-  'beginImpersonation',
+  'beginImpersonation', 'newTenant',
 ];
 
 function panelToSearch(panel: Panel | null): { panel?: UrlPanelType; id?: string } {
@@ -144,6 +150,7 @@ function panelToSearch(panel: Panel | null): { panel?: UrlPanelType; id?: string
   if (panel.type === 'manageClient') return { panel: panel.type, id: panel.clientId };
   if (panel.type === 'webhookForm' || panel.type === 'webhookDeliveries') return { panel: panel.type, id: panel.webhookId };
   if (panel.type === 'eraseData') return panel.requestId ? { panel: panel.type, id: panel.requestId } : { panel: panel.type };
+  if (panel.type === 'manageTenant') return { panel: panel.type, id: panel.tenantId };
   if (panel.type === 'manageBroker') return { panel: panel.type, id: panel.brokerId };
   if (panel.type === 'raiseDispute') return { panel: panel.type, id: panel.attributionId };
   if (panel.type === 'resolveDispute') return { panel: panel.type, id: panel.disputeId };
@@ -175,6 +182,8 @@ function searchToPanel(type: PanelType | undefined, id: string | undefined): Pan
   if (type === 'webhookDeliveries') return id ? { type, webhookId: id } : null;
   // Security: eraseData carries an OPTIONAL source DPDP requestId.
   if (type === 'eraseData') return { type, requestId: id };
+  // Platform-console tenant management carries a tenant id.
+  if (type === 'manageTenant') return id ? { type, tenantId: id } : null;
   // Commission panels that carry an id.
   if (type === 'manageBroker') return id ? { type, brokerId: id } : null;
   if (type === 'raiseDispute') return id ? { type, attributionId: id } : null;
@@ -269,6 +278,8 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <NewInvitationPanel open onClose={closePanel} />;
     case 'invitationToken':
       return <InvitationTokenPanel result={panel.result} email={panel.email} open onClose={closePanel} />;
+    case 'adminResetPassword':
+      return <AdminResetPasswordPanel result={panel.result} userName={panel.userName} open onClose={closePanel} />;
     case 'manageUser':
       return <ManageUserPanel userId={panel.userId} open onClose={closePanel} />;
     case 'editUser':
@@ -292,7 +303,7 @@ function renderPanel(panel: Panel, closePanel: () => void) {
     case 'manageClient':
       return <ManageClientPanel clientId={panel.clientId} open onClose={closePanel} />;
     case 'clientSecret':
-      return <SecretRevealPanel result={panel.result} kind={panel.kind} open onClose={closePanel} />;
+      return <SecretRevealPanel result={panel.result} kind={panel.kind} intent={panel.intent} open onClose={closePanel} />;
     case 'createWebhook':
       return <WebhookFormPanel open onClose={closePanel} />;
     case 'webhookForm':
@@ -351,6 +362,12 @@ function renderPanel(panel: Panel, closePanel: () => void) {
       return <BookOnBehalfPanel open onClose={closePanel} />;
     case 'beginImpersonation':
       return <BeginImpersonationPanel open onClose={closePanel} />;
+    case 'newTenant':
+      return <NewTenantPanel open onClose={closePanel} />;
+    case 'tenantCreated':
+      return <TenantCreatedPanel result={panel.result} open onClose={closePanel} />;
+    case 'manageTenant':
+      return <ManageTenantPanel tenantId={panel.tenantId} open onClose={closePanel} />;
     default:
       return null;
   }

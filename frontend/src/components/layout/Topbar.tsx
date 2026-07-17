@@ -23,7 +23,10 @@ export function Topbar({ onOpenPalette, onOpenMenu }: { onOpenPalette: () => voi
   const tenantId = useSession((s) => s.tenantId);
   const activeTenantName = user?.tenants.find((tn) => tn.tenantId === tenantId)?.displayName;
   const orgName = USE_REAL_API ? (activeTenantName ?? t('topbar.platformScope')) : org.name;
-  const showReceptionSuffix = !USE_REAL_API || Boolean(activeTenantName);
+  const isPlatformScope = USE_REAL_API && !activeTenantName;
+  const showReceptionSuffix = !isPlatformScope;
+  // Platform scope has no patients/bookings to search — the palette only offers actions.
+  const searchPlaceholder = t(isPlatformScope ? 'topbar.searchPlaceholderPlatform' : 'topbar.searchPlaceholder');
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface px-4 sm:px-5">
@@ -60,8 +63,8 @@ export function Topbar({ onOpenPalette, onOpenMenu }: { onOpenPalette: () => voi
           readOnly
           onFocus={onOpenPalette}
           onClick={onOpenPalette}
-          placeholder={t('topbar.searchPlaceholder')}
-          aria-label={t('topbar.searchPlaceholder')}
+          placeholder={searchPlaceholder}
+          aria-label={searchPlaceholder}
           className="w-full cursor-pointer rounded-[var(--radius-sm)] border border-line bg-surface-sunk py-2 pl-9 pr-12 text-[13px] text-ink outline-none placeholder:text-muted-2 focus:border-primary focus:ring-2 focus:ring-primary-soft"
         />
         <kbd className="mono pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 rounded border border-line bg-surface px-1.5 py-0.5 text-[10px] text-muted-2">

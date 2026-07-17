@@ -26,11 +26,68 @@ public sealed class AdminController(ICommandDispatcher commands, IQueryDispatche
         [FromQuery] int skip = 0, [FromQuery] int take = 50, CancellationToken ct = default)
         => Ok(await queries.Query(new ListTenantsQuery(skip, take), ct));
 
+    /// <summary>Full editable detail for one tenant (superset of the list DTO): adds legal name, primary phone,
+    /// state and PIN so the edit form pre-fills every field. tenant_code/tenant_type are read-only display fields.</summary>
     [HttpGet("tenants/{tenantId:guid}")]
     [RequirePermission("platform.tenants.read")]
-    [ProducesResponseType<TenantDto>(StatusCodes.Status200OK)]
-    public async Task<ActionResult<TenantDto>> GetTenant(Guid tenantId, CancellationToken ct)
+    [ProducesResponseType<TenantDetailDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<TenantDetailDto>> GetTenant(Guid tenantId, CancellationToken ct)
         => Ok(await queries.Query(new GetTenantQuery(tenantId), ct));
+
+    /// <summary>Onboard a new tenant + mint its one-time <c>tenant_owner</c> invitation (single transaction).
+    /// The response carries the plaintext invite token EXACTLY ONCE — the owner redeems it on the public
+    /// accept page and sets their own password; no credential is ever created here.</summary>
+    [HttpPost("tenants")]
+    [RequirePermission("platform.tenants.create")]
+    [ProducesResponseType<CreateTenantResult>(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<CreateTenantResult>> CreateTenant(
+        [FromBody] CreateTenantRequest request, CancellationToken ct)
+    {
+        var result = await commands.Send(new CreateTenantCommand(request), ct);
+        return CreatedAtAction(nameof(GetTenant), new { tenantId = result.TenantId }, result);
+    }
+
+    /// <summary>Edit a tenant's mutable attributes (display/legal name, primary contact, city/state/PIN).
+    /// <c>tenant_code</c> and <c>tenant_type</c> are immutable and not accepted; <c>status</c> is NOT editable here
+    /// either — suspend/reactivate is a distinct DANGEROUS action (see <see cref="SetTenantStatus"/>). Returns the
+    /// updated <see cref="TenantDetailDto"/> (same detail shape as GET, so the edit form re-syncs); 404 when the
+    /// tenant does not exist; 409 on conflict.</summary>
+    [HttpPut("tenants/{tenantId:guid}")]
+    [RequirePermission("platform.tenants.update")]
+    [ProducesResponseType<TenantDetailDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<TenantDetailDto>> UpdateTenant(
+        Guid tenantId, [FromBody] UpdateTenantRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new UpdateTenantCommand(tenantId, request), ct));
+
+    // Suspend and reactivate are SEPARATE endpoints (the broker pattern — CommissionController
+    // SuspendBroker/ActivateBroker), the transition implied by the route. BOTH are gated on the DANGEROUS
+    // platform.tenants.suspend key (distinct from platform.tenants.update), per the security auditor's veto.
+
+    /// <summary>Suspend a tenant — DANGEROUS. A reason is MANDATORY (422 without) and is persisted to
+    /// <c>suspended_reason</c>. Returns the fresh <see cref="TenantDetailDto"/> (status chip + reason re-sync);
+    /// 404 when the tenant does not exist.</summary>
+    [HttpPut("tenants/{tenantId:guid}/suspend")]
+    [RequirePermission("platform.tenants.suspend")]
+    [ProducesResponseType<TenantDetailDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<ActionResult<TenantDetailDto>> SuspendTenant(
+        Guid tenantId, [FromBody] SetTenantStatusReasonRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new SetTenantStatusCommand(tenantId, IsActive: false, request.Reason), ct));
+
+    /// <summary>Reactivate a suspended tenant — DANGEROUS (same permission as suspend). Clears
+    /// <c>suspended_reason</c>; no reason required. Returns the fresh <see cref="TenantDetailDto"/>;
+    /// 404 when the tenant does not exist.</summary>
+    [HttpPut("tenants/{tenantId:guid}/reactivate")]
+    [RequirePermission("platform.tenants.suspend")]
+    [ProducesResponseType<TenantDetailDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<TenantDetailDto>> ReactivateTenant(
+        Guid tenantId, [FromBody] SetTenantStatusReasonRequest request, CancellationToken ct)
+        => Ok(await commands.Send(new SetTenantStatusCommand(tenantId, IsActive: true, request.Reason), ct));
 
     // ---- Users in a tenant ---------------------------------------------------------------------
 

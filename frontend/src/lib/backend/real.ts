@@ -50,6 +50,24 @@ import {
   RevokeAllSessionsResultSchema,
   InvitationListSchema,
   InvitationTokenResultSchema,
+  AcceptInvitationResultSchema,
+  ForgotPasswordResultSchema,
+  ResetPasswordResultSchema,
+  AdminResetPasswordResultSchema,
+  CreateTenantResultSchema,
+  PincodeLookupSchema,
+  type AcceptInvitationRequest,
+  type AcceptInvitationResult,
+  type ForgotPasswordRequest,
+  type ForgotPasswordResult,
+  type ResetPasswordRequest,
+  type ResetPasswordResult,
+  type AdminResetPasswordResult,
+  type CreateTenantRequest,
+  type CreateTenantResult,
+  type UpdateTenantRequest,
+  type TenantStatusReasonRequest,
+  type PincodeLookup,
   RevokeInvitationResultSchema,
   IpAllowlistEntrySchema,
   SecurityPolicyViewSchema,
@@ -161,7 +179,9 @@ import {
   RegisterBrokerResultSchema,
   RegisterPatientResultDtoSchema,
   TenantListItemSchema,
+  TenantDetailSchema,
   type TenantListItem,
+  type TenantDetail,
   ReviewQueueItemSchema,
   ScopeSchema,
   SlotDtoSchema,
@@ -661,6 +681,122 @@ export async function listPatients(): Promise<PatientRow[]> {
 export async function listTenants(): Promise<TenantListItem[]> {
   const raw = await apiFetch<unknown[]>('/tenants?skip=0&take=200');
   return TenantListItemSchema.array().parse(raw);
+}
+
+/** GET /tenants/{tenantId} → TenantDetailDto (gated `platform.tenants.read`). Superset of
+ *  the list row (adds legalName, primaryPhone, state, pinCode, suspendedReason) so the
+ *  manage/edit form pre-fills every field. 404 when the tenant does not exist. */
+export async function getTenant(tenantId: string): Promise<TenantDetail> {
+  const raw = await apiFetch<unknown>(`/tenants/${encodeURIComponent(tenantId)}`);
+  return TenantDetailSchema.parse(raw);
+}
+
+/** POST /tenants → 201 CreateTenantResult — tenant onboarding (gated
+ *  `platform.tenants.create`). Creates the clinic AND mints its one-time tenant_owner
+ *  invitation in one transaction; `inviteToken` is surfaced exactly once. 409 = the
+ *  tenantCode is taken. */
+export async function createTenant(
+  req: CreateTenantRequest,
+  idempotencyKey: string,
+): Promise<CreateTenantResult> {
+  const raw = await apiFetch<unknown>('/tenants', {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: req,
+  });
+  return CreateTenantResultSchema.parse(raw);
+}
+
+/** PUT /tenants/{tenantId} → 200 TenantDetailDto — platform-console tenant edit
+ *  (gated `platform.tenants.update`). Contact/display fields + geo centroid only;
+ *  `tenantCode`, `tenantType` and lifecycle `status` are never part of the body. Carries
+ *  a stable Idempotency-Key. Returns the fresh detail so the caller can seed the cache. */
+export async function updateTenant(
+  tenantId: string,
+  req: UpdateTenantRequest,
+  idempotencyKey: string,
+): Promise<TenantDetail> {
+  const raw = await apiFetch<unknown>(`/tenants/${encodeURIComponent(tenantId)}`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body: req,
+  });
+  return TenantDetailSchema.parse(raw);
+}
+
+/** PUT /tenants/{tenantId}/suspend → 200 TenantDetailDto — DANGEROUS lifecycle action
+ *  (gated `platform.tenants.suspend`, distinct from edit). `reason` is MANDATORY
+ *  (backend 422s without) and persisted to suspended_reason. Carries a stable
+ *  Idempotency-Key; returns the fresh detail so the chip + reason re-sync. */
+export async function suspendTenant(
+  tenantId: string,
+  reason: string,
+  idempotencyKey: string,
+): Promise<TenantDetail> {
+  const body: TenantStatusReasonRequest = { reason };
+  const raw = await apiFetch<unknown>(`/tenants/${encodeURIComponent(tenantId)}/suspend`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body,
+  });
+  return TenantDetailSchema.parse(raw);
+}
+
+/** PUT /tenants/{tenantId}/reactivate → 200 TenantDetailDto — DANGEROUS lifecycle action
+ *  (same `platform.tenants.suspend` key). Clears suspended_reason; no reason required.
+ *  Carries a stable Idempotency-Key; returns the fresh detail. */
+export async function reactivateTenant(
+  tenantId: string,
+  reason: string | null,
+  idempotencyKey: string,
+): Promise<TenantDetail> {
+  const body: TenantStatusReasonRequest = { reason: reason ?? null };
+  const raw = await apiFetch<unknown>(`/tenants/${encodeURIComponent(tenantId)}/reactivate`, {
+    method: 'PUT',
+    idempotency: idempotencyKey,
+    body,
+  });
+  return TenantDetailSchema.parse(raw);
+}
+
+/** GET /geo/pincode/{pin} — India PIN-code reference lookup (auth-only, no tenant scope).
+ *  404 = unknown code; lat/long may be null (postal directory answered, geocoder didn't). */
+export async function lookupPincode(pinCode: string): Promise<PincodeLookup> {
+  const raw = await apiFetch<unknown>(`/geo/pincode/${encodeURIComponent(pinCode)}`);
+  return PincodeLookupSchema.parse(raw);
+}
+
+/** POST /invitations/accept — PUBLIC (the token IS the authorization; no JWT). The
+ *  invitee sets their own displayName + password; single-use; invalid/expired/used
+ *  tokens all yield the same generic 422. */
+export async function acceptInvitation(req: AcceptInvitationRequest): Promise<AcceptInvitationResult> {
+  const raw = await apiFetch<unknown>('/invitations/accept', {
+    method: 'POST',
+    body: req,
+  });
+  return AcceptInvitationResultSchema.parse(raw);
+}
+
+/** POST /auth/forgot-password — PUBLIC (no JWT). ANTI-ENUMERATION: ALWAYS resolves
+ *  200 { requested:true } regardless of whether the email exists; the caller shows a
+ *  single generic confirmation either way (never revealing account existence). */
+export async function forgotPassword(req: ForgotPasswordRequest): Promise<ForgotPasswordResult> {
+  const raw = await apiFetch<unknown>('/auth/forgot-password', {
+    method: 'POST',
+    body: { email: req.email },
+  });
+  return ForgotPasswordResultSchema.parse(raw);
+}
+
+/** POST /auth/reset-password — PUBLIC (the token IS the authorization; no JWT). The
+ *  user sets their own newPassword; single-use. Invalid/expired/used tokens all yield
+ *  the same generic 4xx (the caller shows one generic inline message). */
+export async function resetPassword(req: ResetPasswordRequest): Promise<ResetPasswordResult> {
+  const raw = await apiFetch<unknown>('/auth/reset-password', {
+    method: 'POST',
+    body: { token: req.token, newPassword: req.newPassword },
+  });
+  return ResetPasswordResultSchema.parse(raw);
 }
 
 // ── DOCTORS DIRECTORY ──────────────────────────────────────────────────────────
@@ -1634,10 +1770,12 @@ export async function getCalendarGrid(): Promise<CalendarGrid> {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /** Derive the UI status from the DB's is_active/is_verified pair (mirrors the
- *  mock's statusOf — the ApiClientDto omits the computed `status`). */
+ *  mock's statusOf — the ApiClientDto omits the computed `status`). Never-approved
+ *  wins over inactive: a FRESH client (inactive AND unverified) is awaiting approval,
+ *  not "suspended" — and the Approve action sets both flags in one click. */
 function clientStatusOf(isActive: boolean, isVerified: boolean): ApiClient['status'] {
-  if (!isActive) return 'suspended';
   if (!isVerified) return 'pending';
+  if (!isActive) return 'suspended';
   return 'approved';
 }
 
@@ -2596,6 +2734,23 @@ export async function resetUserAccess(
     body: { reason },
   });
   return ResetAccessResultSchema.parse(raw);
+}
+
+/** POST /tenants/{tenantId}/users/{userId}/reset-password — admin-initiated password
+ *  reset (gated tenant.users.update). Returns a ONE-TIME live resetLink + expiresAt for
+ *  the admin to hand off (email delivery is offline for now). The link is never persisted
+ *  or re-fetchable; the response is never idempotency-cached. Idempotency-Key on the POST. */
+export async function adminResetUserPassword(
+  userId: string,
+  idempotencyKey: string,
+): Promise<AdminResetPasswordResult> {
+  const tenantId = getSessionSnapshot().tenantId;
+  const raw = await apiFetch<unknown>(`/tenants/${tenantId}/users/${userId}/reset-password`, {
+    method: 'POST',
+    idempotency: idempotencyKey,
+    body: {},
+  });
+  return AdminResetPasswordResultSchema.parse(raw);
 }
 
 /** POST /role-assignments — assign a role to a user in the tenant. The new role then

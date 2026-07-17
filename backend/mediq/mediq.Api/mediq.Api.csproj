@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -15,7 +15,10 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Enrichers.Span" Version="3.1.0" />
-    <PackageReference Include="Microsoft.OpenApi" Version="3.9.0" />
+    <!-- Microsoft.OpenApi must stay on the 2.x line that Microsoft.AspNetCore.OpenApi 10.0.x
+         targets: its source generator assigns IOpenApiMediaType.Example, which 3.x made
+         read-only (CS0200 in generated code). GHSA-v5pm-xwqc-g5wc is patched from 2.7.5. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.11.0" />
   </ItemGroup>
 
   <ItemGroup>

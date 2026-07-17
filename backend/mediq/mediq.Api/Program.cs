@@ -1,13 +1,17 @@
+using System.IO.Compression;
 using System.Threading.RateLimiting;
+using mediq.Api.Caching;
 using mediq.Api.Extensions;
 using mediq.Api.Middleware;
 using mediq.Api.Authorization;
+using mediq.Infrastructure.Security;
 using mediq.Application;
 using mediq.Application.Options;
 using mediq.Infrastructure;
 using mediq.ServiceDefaults;
 using mediq.Utilities.Middlewares.ExceptionsMiddleware;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.ResponseCompression;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -82,6 +86,63 @@ builder.Services.AddProblemDetails();
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();   // .NET 10 native OpenAPI (Swashbuckle is incompatible with ASP.NET Core 10)
 
+// --- Response compression (Brotli preferred, gzip fallback) for the JSON/ProblemDetails bodies this API
+// serves. EnableForHttps is safe here: every response is our own JSON/text, never a third-party stream, so
+// there's no CRIME/BREACH-style secret-reflection risk. MimeTypes stays at the default text/json allow-list
+// (ResponseCompressionDefaults already covers application/json) plus problem+json for AddProblemDetails()
+// error bodies — binary/already-compressed content types (images, octet-stream) are never matched, so a
+// response that's already encoded is skipped rather than recompressed. ---
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Append("application/problem+json");
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+
+// --- Output caching for rendered reference/catalog responses that are identical across callers and change
+// rarely: the IAM permission catalog, the module list (per-tenant licensed flag → keyed by tenant claim),
+// the seeded api-scope/event-type registries, and PIN-code lookups. OPT-IN ONLY: no base policy, so nothing
+// is cached unless an endpoint carries [OutputCache(PolicyName=...)]. All candidates are authenticated, so
+// each policy composes AuthenticatedReferenceCachePolicy (see its remarks for why that is safe here: the
+// middleware sits AFTER authorization, so RBAC gates still run on every cache hit). TTLs are the schedule-
+// based regeneration backstop; content-change eviction is by tag (IamController evicts on catalog writes).
+// NOTE the store is per-instance memory: a write on one instance TTL-heals (≤ the policy TTL) on others.
+// None of these payloads is localized (bilingual strings live in the per-user menus, which are NOT cached),
+// so locale is deliberately not part of any key — the real variation axes are query, path, and tenant.
+builder.Services.AddOutputCache(options =>
+{
+    // Permission catalog: platform-wide; the ?module= filter is the only variation.
+    options.AddPolicy(OutputCachePolicies.IamPermissions, b => b
+        .AddPolicy<AuthenticatedReferenceCachePolicy>()
+        .Expire(TimeSpan.FromMinutes(10))
+        .SetVaryByQuery("module")
+        .Tag(OutputCachePolicies.IamCatalogTag), excludeDefaultPolicy: true);
+
+    // Module list: rows are platform-wide but Licensed is per-tenant → key on the signed tenant claims
+    // (tenant_id + impersonated_tenant; never a client header — mirrors CurrentUserContext).
+    options.AddPolicy(OutputCachePolicies.IamModules, b => b
+        .AddPolicy<AuthenticatedReferenceCachePolicy>()
+        .Expire(TimeSpan.FromMinutes(10))
+        .VaryByValue(httpContext => new KeyValuePair<string, string>(
+            "tenant",
+            $"{httpContext.User.FindFirst(JwtTokenService.TenantClaim)?.Value}|{httpContext.User.FindFirst(JwtTokenService.ImpersonatedTenantClaim)?.Value}"))
+        .Tag(OutputCachePolicies.IamCatalogTag), excludeDefaultPolicy: true);
+
+    // Seeded registries (api-scopes, webhook event-types): no write endpoint exists; TTL-only regeneration.
+    options.AddPolicy(OutputCachePolicies.ApiCatalog, b => b
+        .AddPolicy<AuthenticatedReferenceCachePolicy>()
+        .Expire(TimeSpan.FromMinutes(30)), excludeDefaultPolicy: true);
+
+    // PIN-code reference: public postal geography, effectively immutable; keyed by path (the PIN).
+    // Matches the 24h TTL of the in-service lookup cache; this additionally skips MVC + serialization.
+    options.AddPolicy(OutputCachePolicies.GeoReference, b => b
+        .AddPolicy<AuthenticatedReferenceCachePolicy>()
+        .Expire(TimeSpan.FromHours(24)), excludeDefaultPolicy: true);
+});
+
 // --- Rate limiting (defense in depth; the gateway also rate-limits at the edge) ---
 // Production: 100 req/min/IP. Development: a much higher cap so local SPA work and
 // automated screenshot/QA sweeps (which re-fetch /me + menus + permissions per
@@ -103,6 +164,11 @@ var app = builder.Build();
 JwtSigningKeyGuard.Validate(app.Configuration, app.Environment, app.Logger);
 
 // --- Pipeline order matters ---
+// ResponseCompression must be the OUTERMOST middleware: it wraps Response.Body around the call to next() and
+// tears the wrapper back down (uncompressed) once that call returns or throws. Registering it after
+// ExceptionHandler would mean an exception unwinds the compression wrapper before ExceptionHandler gets to
+// write the error body, so error JSON would silently ship uncompressed.
+app.UseResponseCompression();
 app.UseMiddleware<ExceptionHandler>();   // reuse Utilities global exception → ApiResponse envelope (DRY)
 app.UseCorrelationId();                   // honor/generate X-Correlation-ID, push into log scope
 
@@ -124,6 +190,12 @@ app.UseScopeResolution();                 // client-token: resolve scopes once +
 app.UseApiClientRequestLog();             // log client requests to api_requests + per-client rate limit
 app.UsePermissionResolution();            // user-token: resolve-once-per-request permission set (NFR-PERF-01)
 app.UseAuthorization();
+
+// AFTER UseAuthorization — deliberately. A cache hit short-circuits everything DOWNSTREAM of this point
+// (MVC + handlers + EF + serialization), but authentication, permission resolution, and the endpoint's
+// [Authorize]/[RequirePermission] policies above have already run, so cached catalog JSON is never served
+// to a caller who couldn't have rendered it. Opt-in per endpoint via [OutputCache(PolicyName = ...)].
+app.UseOutputCache();
 
 app.MapControllers();
 app.MapDefaultEndpoints();                // /health + /alive from ServiceDefaults

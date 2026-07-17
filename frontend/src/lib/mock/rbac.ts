@@ -620,16 +620,19 @@ export function setOverride(req: SetOverrideRequest, idempotencyKey: string): Pr
   });
 }
 
-// User-lifecycle mock stubs — no-op (return the synthetic result shape) like the other
-// mock mutations above; flag-off keeps the static user list, so the screens just re-render.
+// User-lifecycle mocks. setUserActive PERSISTS to the seed (like setMemberScope) —
+// the status flip is optimistic in the UI, so the post-mutation list refetch must
+// reflect the change or the reconcile silently undoes it. The rest stay no-op stubs.
 export function setUserActive(
   userId: string,
   req: { isActive: boolean; reason: string },
   idempotencyKey: string,
 ): Promise<{ userId: string; isActive: boolean }> {
-  return withIdem(idempotencyKey, () =>
-    SetUserStatusResultSchema.parse({ userId, isActive: req.isActive }),
-  );
+  return withIdem(idempotencyKey, () => {
+    const user = USERS.find((u) => u.userId === userId);
+    if (user) user.isActive = req.isActive;
+    return SetUserStatusResultSchema.parse({ userId, isActive: req.isActive });
+  });
 }
 
 export function updateUser(

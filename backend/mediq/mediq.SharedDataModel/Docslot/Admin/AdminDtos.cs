@@ -1,9 +1,58 @@
 namespace mediq.SharedDataModel.Docslot.Admin;
 
-/// <summary>Tenant summary for the platform admin list/get surface (maps to <c>platform.tenants</c>).</summary>
+/// <summary>Tenant summary for the platform admin LIST surface (maps to <c>platform.tenants</c>). Deliberately
+/// lean — the directory grid never needs the full editable shape.</summary>
 public sealed record TenantDto(
     Guid TenantId, string TenantCode, string DisplayName, string TenantType,
     string PrimaryEmail, string Status, string Country, string? City);
+
+/// <summary>Full editable tenant shape for the DETAIL surface (GET /tenants/{id}, the edit PUT response, and the
+/// suspend/reactivate responses). A superset of <see cref="TenantDto"/> carrying every field the edit form
+/// pre-fills — <c>LegalName</c>, <c>PrimaryPhone</c>, <c>State</c>, <c>PinCode</c> — so the panel never opens fields
+/// blank. <c>TenantCode</c>/<c>TenantType</c> are included for read-only display; they are NEVER editable.
+/// <c>SuspendedReason</c> surfaces WHY a suspended clinic is suspended (NULL when active). <c>Latitude</c>/
+/// <c>Longitude</c> are the stored <c>settings.geo</c> centroid (NULL when the clinic has no geo tag) so the edit
+/// form pre-fills the current coordinates.</summary>
+public sealed record TenantDetailDto(
+    Guid TenantId, string TenantCode, string DisplayName, string TenantType,
+    string LegalName, string PrimaryEmail, string PrimaryPhone,
+    string Status, string Country, string? City, string? State, string? PinCode,
+    string? SuspendedReason, decimal? Latitude = null, decimal? Longitude = null);
+
+/// <summary>Onboard a new tenant (clinic/hospital/lab) from the platform console. <c>AdminEmail</c> is the
+/// initial Tenant Owner — a password is never involved: the command mints a <c>tenant_owner</c> invitation
+/// and the owner sets their own credential on accept. Gated on <c>platform.tenants.create</c>.
+/// <c>Latitude</c>/<c>Longitude</c> geo-tag the facility (typically from the PIN-code lookup) and are
+/// stored under <c>settings.geo</c>; <c>PinCode</c> lands in the tenants.pin_code column.</summary>
+public sealed record CreateTenantRequest(
+    string TenantCode, string LegalName, string DisplayName, string TenantType,
+    string PrimaryEmail, string PrimaryPhone, string? City, string? State,
+    string? PinCode, decimal? Latitude, decimal? Longitude, string AdminEmail);
+
+/// <summary>Result of onboarding a tenant. <c>InviteToken</c> is the ONE-TIME plaintext owner-invitation
+/// token — surfaced exactly once (the response is never idempotency-cached); only its hash is persisted.</summary>
+public sealed record CreateTenantResult(
+    Guid TenantId, string TenantCode, string DisplayName,
+    Guid InvitationId, string InviteToken, DateTime InviteExpiresAt, string AdminEmail);
+
+/// <summary>Edit a tenant's mutable attributes from the platform console. Gated on
+/// <c>platform.tenants.update</c>. <c>TenantCode</c> (identity) and <c>TenantType</c> (structural) are
+/// deliberately absent — they are NEVER mutable here. <c>Status</c> is NOT editable through this path either:
+/// suspend/reactivate is a distinct DANGEROUS action with its own permission and mandatory reason — see
+/// <see cref="SetTenantStatusReasonRequest"/>. <c>Latitude</c>/<c>Longitude</c> geo-tag the facility (typically
+/// from the PIN-code centroid, same as onboarding) and are stored under <c>settings.geo</c>; supplied as a pair
+/// (both or neither). Omitting them (both null) leaves any existing geo tag UNTOUCHED — a contact-only edit
+/// never wipes the coordinates.</summary>
+public sealed record UpdateTenantRequest(
+    string DisplayName, string LegalName, string PrimaryEmail, string PrimaryPhone,
+    string? City, string? State, string? PinCode, decimal? Latitude = null, decimal? Longitude = null);
+
+/// <summary>Body for the DANGEROUS tenant suspend/reactivate endpoints (mirrors the broker
+/// <c>SetBrokerStatusReasonRequest</c>). The transition is implied by the ROUTE
+/// (<c>/tenants/{id}/suspend</c> vs <c>/tenants/{id}/reactivate</c>), each gated on
+/// <c>platform.tenants.suspend</c>. <c>Reason</c> is MANDATORY on suspend (persisted to
+/// <c>tenants.suspended_reason</c>) and ignored on reactivate (which clears it).</summary>
+public sealed record SetTenantStatusReasonRequest(string? Reason);
 
 /// <summary>A role a user holds in the tenant (for the user-row role chips). Carries the assignment id so
 /// the manage panel can revoke without a second lookup.</summary>

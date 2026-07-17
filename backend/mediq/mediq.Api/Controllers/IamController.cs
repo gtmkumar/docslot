@@ -1,9 +1,11 @@
 using mediq.Api.Authorization;
+using mediq.Api.Caching;
 using mediq.Application.Cqrs;
 using mediq.Application.Features.Iam;
 using mediq.SharedDataModel.Docslot.Iam;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 
 namespace mediq.Api.Controllers;
 
@@ -21,13 +23,19 @@ namespace mediq.Api.Controllers;
 [ApiController]
 [Route("api/v1/iam")]
 [Authorize]
-public sealed class IamController(ICommandDispatcher commands, IQueryDispatcher queries) : ControllerBase
+public sealed class IamController(
+    ICommandDispatcher commands, IQueryDispatcher queries, IOutputCacheStore outputCache) : ControllerBase
 {
     // ---- Catalog reads -------------------------------------------------------------------------
+    // Both lists are output-cached (rendered JSON reused across callers): the permission catalog is
+    // platform-wide keyed by the ?module= filter; the module list carries a PER-TENANT Licensed flag so
+    // its key varies by the signed tenant claims. The catalog writes below evict the shared tag, so a
+    // create/license change is visible on the next read; the 10-min TTL is the cross-instance backstop.
 
     /// <summary>Lists the modules (privilege groups) that head the matrix.</summary>
     [HttpGet("modules")]
     [RequirePermission("tenant.users.read")]
+    [OutputCache(PolicyName = OutputCachePolicies.IamModules)]
     [ProducesResponseType<IReadOnlyList<ModuleDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<ModuleDto>>> ListModules(CancellationToken ct)
         => Ok(await queries.Query(new ListModulesQuery(), ct));
@@ -35,6 +43,7 @@ public sealed class IamController(ICommandDispatcher commands, IQueryDispatcher 
     /// <summary>Lists catalog permissions, optionally narrowed to one module via <c>?module=</c>.</summary>
     [HttpGet("permissions")]
     [RequirePermission("tenant.users.read")]
+    [OutputCache(PolicyName = OutputCachePolicies.IamPermissions)]
     [ProducesResponseType<IReadOnlyList<PermissionDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<PermissionDto>>> ListPermissions(
         [FromQuery(Name = "module")] string? module = null, CancellationToken ct = default)
@@ -93,6 +102,8 @@ public sealed class IamController(ICommandDispatcher commands, IQueryDispatcher 
         [FromBody] CreateModuleRequest request, CancellationToken ct)
     {
         var result = await commands.Send(new CreateModuleCommand(request), ct);
+        // Content changed → drop every cached catalog rendering so the new module is on the next read.
+        await outputCache.EvictByTagAsync(OutputCachePolicies.IamCatalogTag, ct);
         return CreatedAtAction(nameof(ListModules), null, result);
     }
 
@@ -107,6 +118,8 @@ public sealed class IamController(ICommandDispatcher commands, IQueryDispatcher 
         [FromBody] CreatePermissionRequest request, CancellationToken ct)
     {
         var result = await commands.Send(new CreatePermissionCommand(request), ct);
+        // Content changed → drop every cached catalog rendering so the new permission is on the next read.
+        await outputCache.EvictByTagAsync(OutputCachePolicies.IamCatalogTag, ct);
         return CreatedAtAction(nameof(ListPermissions), null, result);
     }
 
@@ -118,7 +131,12 @@ public sealed class IamController(ICommandDispatcher commands, IQueryDispatcher 
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<SetModuleLicenseResult>> SetModuleLicense(
         Guid resourceTypeId, [FromBody] SetModuleLicenseRequest request, CancellationToken ct)
-        => Ok(await commands.Send(new SetModuleLicenseCommand(resourceTypeId, request), ct));
+    {
+        var result = await commands.Send(new SetModuleLicenseCommand(resourceTypeId, request), ct);
+        // The Licensed flag in the cached module list changed for some tenant → evict the catalog tag.
+        await outputCache.EvictByTagAsync(OutputCachePolicies.IamCatalogTag, ct);
+        return Ok(result);
+    }
 
     // ---- Effective access ----------------------------------------------------------------------
 

@@ -1,9 +1,11 @@
 using mediq.Api.Authorization;
+using mediq.Api.Caching;
 using mediq.Application.Cqrs;
 using mediq.Application.Features.PlatformApi.Clients;
 using mediq.SharedDataModel.Docslot.PlatformApi;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 
 namespace mediq.Api.Controllers;
 
@@ -26,6 +28,7 @@ public sealed class ApiClientsController(ICommandDispatcher commands, IQueryDisp
 
     [HttpGet("/api/v1/api-scopes")]
     [RequirePermission("platform.api_clients.manage")]
+    [OutputCache(PolicyName = OutputCachePolicies.ApiCatalog)]   // seeded registry, identical for every caller; the permission gate above still runs on cache hits (UseOutputCache is after UseAuthorization)
     [ProducesResponseType<IReadOnlyList<ScopeDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<ScopeDto>>> ListScopes(CancellationToken ct)
         => Ok(await queries.Query(new ListScopesQuery(), ct));
